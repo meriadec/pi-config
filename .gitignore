@@ -1,0 +1,9 @@
+/agent/auth.json
+/agent/sessions/
+
+# Defensive: never commit credentials or session data, even if moved/renamed
+auth.json
+**/auth.json
+sessions/
+**/sessions/
+*.session
