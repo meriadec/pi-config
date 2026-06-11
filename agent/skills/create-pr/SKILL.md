@@ -67,7 +67,7 @@ Optional extra information if genuinely useful.
 Tested with: `<command>`
 ```
 
-Include the `Tested with:` line only when there is concrete, reviewer-useful testing information from the user, git history, command output, or the current session. Do not add filler like "Not run (PR creation only)" or "no validation command was provided"; if no relevant test signal exists, omit the line entirely.
+Omit the `Tested with:` line by default, especially when it would only repeat routine local checks that CI already covers. Include it only when the testing information is reviewer-useful beyond "CI will pass/fail", such as a manual reproduction, environment-specific verification, non-obvious smoke test, skipped test with meaningful reason, or validation that CI cannot run. Do not add filler like "Not run (PR creation only)" or "no validation command was provided".
 
 Tone: sharp, precise, professional, unenthusiastic, and slightly bored. Add a tiny spark of fun only if it does not reduce clarity.
 
@@ -80,7 +80,7 @@ Tone: sharp, precise, professional, unenthusiastic, and slightly bored. Add a ti
 - If the user requested a draft PR, create it with `gh pr create --draft`; do not create a regular PR and mark it draft later unless `gh pr create --draft` fails and the user approves the fallback.
 - Do not run `gh pr create` until the user explicitly confirms.
 - If the user wants changes, enter a refinement phase: identify unresolved parts, offer concrete alternatives, keep agreed wording, then summarize and ask for approval again.
-- If tests were explicitly skipped for a meaningful reason, say so plainly. If there is no relevant test signal, omit testing status rather than inventing a useless sentence.
+- If tests were explicitly skipped for a meaningful reason, say so plainly. If validation is routine CI-equivalent or otherwise not reviewer-useful, omit testing status rather than inventing a useless sentence.
 - If there is an existing PR for the branch, do not create a duplicate; offer to update title/body instead, with confirmation.
 - If there are uncommitted changes, stop and ask whether to include/commit them or create the PR from committed work only.
 - If the branch is behind base, still create the PR unless the diff is confusing or conflicts are visible; mention notable risk in the body.
@@ -95,11 +95,11 @@ Before creating:
 - [ ] Branch is pushed or push command is approved/ready.
 - [ ] Title is conventional and <= ~80 chars.
 - [ ] Body explains why/what/how with reviewer-relevant bullets.
-- [ ] Testing status is included only when known and reviewer-useful.
+- [ ] Testing status is omitted unless it is genuinely reviewer-useful beyond routine CI-equivalent checks.
 - [ ] No oversized headers, hype, or vague filler.
 
 After creating:
 
 - Return the PR URL.
 - Include title, base/head, and state.
-- Mention tests only when there is concrete, reviewer-useful testing information.
+- Mention tests only when there is concrete, reviewer-useful testing information beyond routine CI-equivalent checks.
