@@ -1,0 +1,15 @@
+{
+  "name": "pi-smart-copy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsgo --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.79.4",
+    "@earendil-works/pi-tui": "0.79.4",
+    "@types/bun": "latest",
+    "@typescript/native-preview": "latest"
+  }
+}
