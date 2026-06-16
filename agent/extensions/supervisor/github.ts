@@ -8,6 +8,7 @@ interface GhNotificationResponse {
 	id?: unknown;
 	reason?: unknown;
 	updated_at?: unknown;
+	unread?: unknown;
 	repository?: { full_name?: unknown };
 	subject?: {
 		title?: unknown;
@@ -20,8 +21,9 @@ interface GhNotificationResponse {
 export class GitHubClient {
 	constructor(private readonly exec: ExecFn) {}
 
-	async listNotifications(): Promise<GitHubNotificationItem[]> {
-		const result = await this.exec("gh", ["api", `notifications?per_page=${NOTIFICATION_LIMIT}`], {
+	async listNotifications(options: { all?: boolean } = {}): Promise<GitHubNotificationItem[]> {
+		const all = options.all ? "all=true&" : "";
+		const result = await this.exec("gh", ["api", `notifications?${all}per_page=${NOTIFICATION_LIMIT}`], {
 			timeout: LIST_TIMEOUT_MS,
 		});
 		assertOk(result, "gh api notifications failed");
@@ -101,11 +103,11 @@ export class GitHubClient {
 		}
 	}
 
-	async markRead(threadId: string): Promise<void> {
-		const result = await this.exec("gh", ["api", "-X", "PATCH", `notifications/threads/${threadId}`], {
+	async markDone(threadId: string): Promise<void> {
+		const result = await this.exec("gh", ["api", "-X", "DELETE", `notifications/threads/${threadId}`], {
 			timeout: ACTION_TIMEOUT_MS,
 		});
-		assertOk(result, "mark-read failed");
+		assertOk(result, "mark-done failed");
 	}
 
 	async resolveHtmlUrl(item: GitHubNotificationItem): Promise<string> {
@@ -130,6 +132,7 @@ function normalizeNotification(raw: GhNotificationResponse): GitHubNotificationI
 	const id = asString(raw.id);
 	const reason = asString(raw.reason);
 	const updatedAt = asString(raw.updated_at);
+	const unread = typeof raw.unread === "boolean" ? raw.unread : true;
 	const repository = asString(raw.repository?.full_name);
 	const title = asString(raw.subject?.title);
 	const type = asString(raw.subject?.type);
@@ -141,6 +144,7 @@ function normalizeNotification(raw: GhNotificationResponse): GitHubNotificationI
 		id,
 		reason,
 		updatedAt,
+		unread,
 		repository,
 		subject: {
 			title,

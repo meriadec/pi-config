@@ -20,8 +20,8 @@ export class SupervisorComponent implements Component {
 	private selected = 0;
 	private scroll = 0;
 	private busy = false;
-	private pendingMarkReads = 0;
-	private markReadQueue: Promise<void> = Promise.resolve();
+	private pendingDone = 0;
+	private doneQueue: Promise<void> = Promise.resolve();
 	private pendingOpens = 0;
 	private openQueue: Promise<void> = Promise.resolve();
 	private openingIds = new Set<string>();
@@ -30,6 +30,7 @@ export class SupervisorComponent implements Component {
 	private refreshedAt: Date | undefined;
 	private pollTimer: ReturnType<typeof setInterval> | undefined;
 	private hasLoadedNotifications = false;
+	private viewAll = false;
 
 	constructor(
 		private readonly tui: TUI,
@@ -92,12 +93,16 @@ export class SupervisorComponent implements Component {
 			void this.refresh("manual");
 			return;
 		}
+		if (data === "a") {
+			this.toggleViewAll();
+			return;
+		}
 		if (matchesKey(data, Key.enter) || data === "o") {
 			void this.openSelected();
 			return;
 		}
 		if (data === "d") {
-			void this.markSelectedRead();
+			this.markSelectedDone();
 			return;
 		}
 	}
@@ -114,7 +119,12 @@ export class SupervisorComponent implements Component {
 		lines.push(this.renderColumnHeader(width));
 
 		if (this.items.length === 0) {
-			lines.push(this.dim(truncateToWidth(this.refreshedAt ? "No unread notifications." : "Loading notifications…", width)));
+			const empty = this.busy
+				? this.status
+				: this.refreshedAt
+					? `No ${this.viewAll ? "notifications" : "unread notifications"}.`
+					: "Loading notifications…";
+			lines.push(this.dim(truncateToWidth(empty, width)));
 			while (lines.length < 2 + bodyRows) lines.push("");
 		} else {
 			for (let row = 0; row < bodyRows; row++) {
@@ -128,7 +138,7 @@ export class SupervisorComponent implements Component {
 		lines.push(
 			this.dim(
 				truncateToWidth(
-					"👀 review · ✅ merged/closed · 📝 draft · 🟢 open · 💬 other · j/k move · enter/o open · d read · r refresh · q close",
+					"👀 review · ✅ merged/closed · 📝 draft · 🟢 open · 💬 other · j/k move · enter/o open · d done · a all/unread · r refresh · q close",
 					width,
 				),
 			),
@@ -139,10 +149,12 @@ export class SupervisorComponent implements Component {
 
 	invalidate(): void {}
 
-	private async refresh(source: "loading" | "manual" | "poll"): Promise<void> {
-		await this.withBusy(source === "loading" ? "loading…" : "refreshing…", async () => {
+	private async refresh(source: "loading" | "manual" | "poll" | "switch"): Promise<void> {
+		const initialStatus =
+			source === "loading" ? "loading…" : source === "switch" ? `switching to ${this.viewAll ? "all" : "unread"}…` : "refreshing…";
+		await this.withBusy(initialStatus, async () => {
 			const previousIds = new Set(this.items.map((item) => item.id));
-			const notifications = await this.github.listNotifications();
+			const notifications = await this.github.listNotifications({ all: this.viewAll });
 			const newCount = this.hasLoadedNotifications ? notifications.filter((item) => !previousIds.has(item.id)).length : 0;
 			this.items = notifications;
 			this.hasLoadedNotifications = true;
@@ -151,9 +163,9 @@ export class SupervisorComponent implements Component {
 			this.ensureSelectedVisible(this.bodyRows());
 			if (newCount > 0) {
 				setUrgent(true);
-				this.setStatus(`${newCount} new · refreshed ${formatClock(this.refreshedAt)} · ${this.items.length} unread`, "success");
+				this.setStatus(`${newCount} new · refreshed ${formatClock(this.refreshedAt)} · ${this.formatCounts()}`, "success");
 			} else {
-				this.setStatus(`refreshed ${formatClock(this.refreshedAt)} · ${this.items.length} unread`, "success");
+				this.setStatus(`refreshed ${formatClock(this.refreshedAt)} · ${this.formatCounts()}`, "success");
 			}
 		});
 	}
@@ -164,7 +176,7 @@ export class SupervisorComponent implements Component {
 			this.setStatus("nothing to open", "muted");
 			return;
 		}
-		if (this.busy || this.pendingMarkReads > 0) {
+		if (this.busy || this.pendingDone > 0) {
 			this.setStatus("busy", "muted");
 			return;
 		}
@@ -191,10 +203,10 @@ export class SupervisorComponent implements Component {
 		}
 	}
 
-	private markSelectedRead(): void {
+	private markSelectedDone(): void {
 		const item = this.items[this.selected];
 		if (!item) {
-			this.setStatus("nothing to mark-read", "muted");
+			this.setStatus("nothing to mark done", "muted");
 			return;
 		}
 
@@ -205,27 +217,27 @@ export class SupervisorComponent implements Component {
 
 		const originalIndex = this.selected;
 		this.items.splice(originalIndex, 1);
-		this.pendingMarkReads++;
+		this.pendingDone++;
 		this.clampSelection();
 		this.ensureSelectedVisible(this.bodyRows());
-		this.setStatus(`queued mark-read: ${shortItem(item)} · ${this.pendingMarkReads} pending`, "muted");
+		this.setStatus(`queued done: ${shortItem(item)} · ${this.pendingDone} pending`, "muted");
 		this.requestRender();
 
-		this.markReadQueue = this.markReadQueue.then(() => this.commitMarkRead(item, originalIndex));
+		this.doneQueue = this.doneQueue.then(() => this.commitDone(item, originalIndex));
 	}
 
-	private async commitMarkRead(item: GitHubNotificationItem, originalIndex: number): Promise<void> {
-		this.setStatus(`marking read: ${shortItem(item)}… · ${this.pendingMarkReads} pending`, "muted");
+	private async commitDone(item: GitHubNotificationItem, originalIndex: number): Promise<void> {
+		this.setStatus(`marking done: ${shortItem(item)}… · ${this.pendingDone} pending`, "muted");
 		try {
-			await this.github.markRead(item.id);
-			this.setStatus(`marked read: ${shortItem(item)}`, "success");
+			await this.github.markDone(item.id);
+			this.setStatus(`marked done: ${shortItem(item)}`, "success");
 		} catch (error) {
 			this.items.splice(Math.min(originalIndex, this.items.length), 0, item);
 			this.selected = Math.min(originalIndex, this.items.length - 1);
 			this.ensureSelectedVisible(this.bodyRows());
 			this.setStatus(errorMessage(error), "error");
 		} finally {
-			this.pendingMarkReads = Math.max(0, this.pendingMarkReads - 1);
+			this.pendingDone = Math.max(0, this.pendingDone - 1);
 			this.requestRender();
 		}
 	}
@@ -249,7 +261,18 @@ export class SupervisorComponent implements Component {
 	}
 
 	private isBusy(): boolean {
-		return this.busy || this.pendingMarkReads > 0 || this.pendingOpens > 0;
+		return this.busy || this.pendingDone > 0 || this.pendingOpens > 0;
+	}
+
+	private toggleViewAll(): void {
+		if (this.isBusy()) {
+			this.setStatus("busy", "muted");
+			return;
+		}
+		this.viewAll = !this.viewAll;
+		this.hasLoadedNotifications = false;
+		this.setStatus(this.viewAll ? "switching to all…" : "switching to unread…", "muted");
+		void this.refresh("switch");
 	}
 
 	private suspend(): void {
@@ -315,10 +338,10 @@ export class SupervisorComponent implements Component {
 
 	private renderTitle(width: number): string {
 		const left = this.theme.fg("accent", this.theme.bold("Supervisor GitHub Inbox"));
-		const rightParts = [`${this.items.length} unread`];
+		const rightParts = [this.formatCounts()];
 		if (this.refreshedAt) rightParts.push(`refreshed ${formatClock(this.refreshedAt)}`);
 		if (this.busy) rightParts.push("busy");
-		if (this.pendingMarkReads > 0) rightParts.push(`marking ${this.pendingMarkReads}`);
+		if (this.pendingDone > 0) rightParts.push(`done ${this.pendingDone}`);
 		if (this.pendingOpens > 0) rightParts.push(`opening ${this.pendingOpens}`);
 		const right = rightParts.join(" · ");
 		const spaces = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
@@ -355,19 +378,25 @@ export class SupervisorComponent implements Component {
 			width,
 		);
 		const line = truncateToWidth(raw, width);
-		return selected ? this.theme.fg("accent", line) : line;
+		if (selected) return this.theme.fg("accent", line);
+		return item.unread ? line : this.dim(line);
 	}
 
 	private renderDetail(width: number): string {
 		const item = this.items[this.selected];
 		if (!item) return this.dim(truncateToWidth("No selection", width));
 		const signal = notificationSignal(item);
+		const readState = item.unread ? "unread" : "read";
 		return this.dim(
 			truncateToWidth(
-				`${signal.emoji} ${signal.label} · ${item.repository} · ${displaySubjectType(item.subject.type)}${item.author ? ` by ${item.author}` : ""} · ${item.reason} · updated ${formatDateTime(item.updatedAt)}`,
+				`${signal.emoji} ${signal.label} · ${readState} · ${item.repository} · ${displaySubjectType(item.subject.type)}${item.author ? ` by ${item.author}` : ""} · ${item.reason} · updated ${formatDateTime(item.updatedAt)}`,
 				width,
 			),
 		);
+	}
+
+	private formatCounts(): string {
+		return `${this.viewAll ? "all" : "unread"} · ${formatCounts(this.items)}`;
 	}
 
 	private renderStatus(width: number): string {
@@ -488,6 +517,11 @@ function cleanTitle(title: string): string {
 
 function shortItem(item: GitHubNotificationItem): string {
 	return `${item.repository} · ${cleanTitle(item.subject.title)}`;
+}
+
+function formatCounts(items: GitHubNotificationItem[]): string {
+	const unread = items.filter((item) => item.unread).length;
+	return `${items.length} shown · ${unread} unread`;
 }
 
 function formatAge(iso: string): string {

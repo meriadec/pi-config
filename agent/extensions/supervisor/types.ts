@@ -26,6 +26,7 @@ export interface GitHubNotificationItem {
 	id: string;
 	reason: string;
 	updatedAt: string;
+	unread: boolean;
 	repository: string;
 	author?: string;
 	pullRequest?: PullRequestInfo;
