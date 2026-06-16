@@ -1,10 +1,12 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { execFile } from "node:child_process";
 import { openUrl } from "./open-url";
 import type { GitHubClient } from "./github";
 import type { ExecFn, GitHubNotificationItem } from "./types";
 
-const POLL_MS = 5 * 60_000;
+const POLL_MS = 60_000;
 const MIN_BODY_ROWS = 1;
+const windowId = process.env.WINDOWID;
 
 type StatusLevel = "info" | "success" | "error" | "muted";
 
@@ -20,10 +22,14 @@ export class SupervisorComponent implements Component {
 	private busy = false;
 	private pendingMarkReads = 0;
 	private markReadQueue: Promise<void> = Promise.resolve();
+	private pendingOpens = 0;
+	private openQueue: Promise<void> = Promise.resolve();
+	private openingIds = new Set<string>();
 	private status = "loading…";
 	private statusLevel: StatusLevel = "muted";
 	private refreshedAt: Date | undefined;
 	private pollTimer: ReturnType<typeof setInterval> | undefined;
+	private hasLoadedNotifications = false;
 
 	constructor(
 		private readonly tui: TUI,
@@ -32,6 +38,7 @@ export class SupervisorComponent implements Component {
 		private readonly exec: ExecFn,
 		private readonly done: () => void,
 	) {
+		setUrgent(false);
 		void this.refresh("loading");
 		this.pollTimer = setInterval(() => {
 			if (this.isBusy()) {
@@ -50,6 +57,10 @@ export class SupervisorComponent implements Component {
 	handleInput(data: string): void {
 		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
 			this.done();
+			return;
+		}
+		if (matchesKey(data, Key.ctrl("z"))) {
+			this.suspend();
 			return;
 		}
 
@@ -130,27 +141,54 @@ export class SupervisorComponent implements Component {
 
 	private async refresh(source: "loading" | "manual" | "poll"): Promise<void> {
 		await this.withBusy(source === "loading" ? "loading…" : "refreshing…", async () => {
+			const previousIds = new Set(this.items.map((item) => item.id));
 			const notifications = await this.github.listNotifications();
+			const newCount = this.hasLoadedNotifications ? notifications.filter((item) => !previousIds.has(item.id)).length : 0;
 			this.items = notifications;
+			this.hasLoadedNotifications = true;
 			this.refreshedAt = new Date();
 			this.clampSelection();
 			this.ensureSelectedVisible(this.bodyRows());
-			this.setStatus(`refreshed ${formatClock(this.refreshedAt)} · ${this.items.length} unread`, "success");
+			if (newCount > 0) {
+				setUrgent(true);
+				this.setStatus(`${newCount} new · refreshed ${formatClock(this.refreshedAt)} · ${this.items.length} unread`, "success");
+			} else {
+				this.setStatus(`refreshed ${formatClock(this.refreshedAt)} · ${this.items.length} unread`, "success");
+			}
 		});
 	}
 
-	private async openSelected(): Promise<void> {
+	private openSelected(): void {
 		const item = this.items[this.selected];
 		if (!item) {
 			this.setStatus("nothing to open", "muted");
 			return;
 		}
+		if (this.busy || this.pendingMarkReads > 0) {
+			this.setStatus("busy", "muted");
+			return;
+		}
 
-		await this.withBusy(`opening: ${shortItem(item)}…`, async () => {
+		this.pendingOpens++;
+		this.openingIds.add(item.id);
+		this.setStatus(`queued open: ${shortItem(item)} · ${this.pendingOpens} pending`, "muted");
+		this.requestRender();
+		this.openQueue = this.openQueue.then(() => this.commitOpen(item));
+	}
+
+	private async commitOpen(item: GitHubNotificationItem): Promise<void> {
+		this.setStatus(`opening: ${shortItem(item)}… · ${this.pendingOpens} pending`, "muted");
+		try {
 			const htmlUrl = await this.github.resolveHtmlUrl(item);
 			const opener = await openUrl(this.exec, htmlUrl);
 			this.setStatus(`opened with ${opener}: ${shortItem(item)}`, "success");
-		});
+		} catch (error) {
+			this.setStatus(errorMessage(error), "error");
+		} finally {
+			this.pendingOpens = Math.max(0, this.pendingOpens - 1);
+			this.openingIds.delete(item.id);
+			this.requestRender();
+		}
 	}
 
 	private markSelectedRead(): void {
@@ -211,7 +249,33 @@ export class SupervisorComponent implements Component {
 	}
 
 	private isBusy(): boolean {
-		return this.busy || this.pendingMarkReads > 0;
+		return this.busy || this.pendingMarkReads > 0 || this.pendingOpens > 0;
+	}
+
+	private suspend(): void {
+		if (process.platform === "win32") {
+			this.setStatus("suspend unsupported on Windows", "error");
+			return;
+		}
+
+		const suspendKeepAlive = setInterval(() => {}, 2 ** 30);
+		const ignoreSigint = () => {};
+		process.on("SIGINT", ignoreSigint);
+		process.once("SIGCONT", () => {
+			clearInterval(suspendKeepAlive);
+			process.removeListener("SIGINT", ignoreSigint);
+			this.tui.start();
+			this.tui.requestRender(true);
+		});
+
+		try {
+			this.tui.stop();
+			process.kill(0, "SIGTSTP");
+		} catch (error) {
+			clearInterval(suspendKeepAlive);
+			process.removeListener("SIGINT", ignoreSigint);
+			this.setStatus(errorMessage(error), "error");
+		}
 	}
 
 	private move(delta: number): void {
@@ -255,6 +319,7 @@ export class SupervisorComponent implements Component {
 		if (this.refreshedAt) rightParts.push(`refreshed ${formatClock(this.refreshedAt)}`);
 		if (this.busy) rightParts.push("busy");
 		if (this.pendingMarkReads > 0) rightParts.push(`marking ${this.pendingMarkReads}`);
+		if (this.pendingOpens > 0) rightParts.push(`opening ${this.pendingOpens}`);
 		const right = rightParts.join(" · ");
 		const spaces = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
 		return truncateToWidth(left + " ".repeat(spaces) + this.dim(right), width);
@@ -284,7 +349,7 @@ export class SupervisorComponent implements Component {
 				type: displaySubjectType(item.subject.type),
 				repo: item.repository,
 				author: item.author ?? "",
-				title: cleanTitle(item.subject.title),
+				title: `${this.openingIds.has(item.id) ? "[opening] " : ""}${cleanTitle(item.subject.title)}`,
 			},
 			selected,
 			width,
@@ -450,6 +515,11 @@ function formatDateTime(iso: string): string {
 	const hours = String(date.getHours()).padStart(2, "0");
 	const minutes = String(date.getMinutes()).padStart(2, "0");
 	return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
+
+function setUrgent(urgent: boolean): void {
+	if (!windowId) return;
+	execFile("xdotool", ["set_window", "--urgency", urgent ? "1" : "0", windowId], () => {});
 }
 
 function errorMessage(error: unknown): string {

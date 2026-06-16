@@ -2,7 +2,7 @@ import type { ExecFn, GitHubNotificationItem } from "./types";
 
 const LIST_TIMEOUT_MS = 15_000;
 const ACTION_TIMEOUT_MS = 10_000;
-const NOTIFICATION_LIMIT = 100;
+const NOTIFICATION_LIMIT = 30;
 
 interface GhNotificationResponse {
 	id?: unknown;
