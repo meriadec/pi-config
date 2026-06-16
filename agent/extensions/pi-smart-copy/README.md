@@ -14,16 +14,15 @@ Pi extension for copying code blocks from the latest assistant answer.
 - If there is one code block, it copies it immediately.
 - If there are multiple code blocks, it opens a full-screen selector and includes a `Full answer` option.
 
-## Install locally
+## Installation
 
-This repo is intended to be symlinked into Pi's global extension directory:
+This extension is committed directly into the git-backed Pi agent config repo under:
 
-```bash
-mkdir -p ~/.pi/agent/extensions
-ln -s /home/meri/git/pi-smart-copy ~/.pi/agent/extensions/pi-smart-copy
+```text
+~/.pi/agent/extensions/pi-smart-copy
 ```
 
-Then run `/reload` inside Pi.
+After changing the extension code, run `/reload` inside Pi.
 
 ## Development
 
