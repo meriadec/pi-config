@@ -45,7 +45,7 @@ Continue without asking when a reasonable local convention or low-risk default i
 
 ### 3. Approval gate before implementation
 
-Before editing, ask for human approval with a concise plan. Include only the most important points:
+Before editing, ask for human approval with a concise plan. Emit this approval prompt exactly once; do not repeat or restate the same plan in the same response. Include only the most important points:
 
 ```md
 Plan:

@@ -1,5 +1,6 @@
 /agent/auth.json
 /agent/sessions/
+/agent/bin/
 /agent/trust.json
 
 # Defensive: never commit credentials or session data, even if moved/renamed
