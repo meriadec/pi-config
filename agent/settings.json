@@ -1,8 +1,11 @@
 {
-  "lastChangelogVersion": "0.79.9",
+  "lastChangelogVersion": "0.80.2",
   "defaultProvider": "github-copilot",
-  "defaultModel": "gpt-5.5",
+  "defaultModel": "claude-sonnet-4.6",
   "hideThinkingBlock": false,
   "theme": "pi-nord-aurora",
-  "defaultThinkingLevel": "medium"
+  "defaultThinkingLevel": "medium",
+  "packages": [
+    "npm:pi-mcp-adapter"
+  ]
 }

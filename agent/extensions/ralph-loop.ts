@@ -10,6 +10,7 @@ const DEFAULT_VERIFY_TIMEOUT_MS = 20 * 60_000;
 const TERMINAL_STATUSES = new Set(["done", "completed", "closed"]);
 const AUTO_VERIFY_SCRIPTS = ["format", "lint", "typecheck", "test:unit", "test"];
 const OUTCOME_VALUES = ["completed", "skipped", "needs_human", "blocked"] as const;
+const ISSUE_CONTEXT_MARKER_PREFIX = "Ralph Loop issue marker:";
 
 type RalphOutcome = (typeof OUTCOME_VALUES)[number];
 
@@ -584,6 +585,19 @@ function sendUserMessage(pi: ExtensionAPI, ctx: { isIdle?: () => boolean }, mess
 	else pi.sendUserMessage(message, { deliverAs: "followUp" });
 }
 
+function issueContextMarker(state: LoopState, issue: IssueRef): string {
+	return `${ISSUE_CONTEXT_MARKER_PREFIX} ${state.id}:${issue.relPath}:attempt-${state.currentAttempt}`;
+}
+
+function containsText(value: unknown, needle: string, seen = new WeakSet<object>()): boolean {
+	if (typeof value === "string") return value.includes(needle);
+	if (!value || typeof value !== "object") return false;
+	if (seen.has(value)) return false;
+	seen.add(value);
+	if (Array.isArray(value)) return value.some((item) => containsText(item, needle, seen));
+	return Object.values(value as Record<string, unknown>).some((item) => containsText(item, needle, seen));
+}
+
 function issuePrompt(state: LoopState, issue: IssueRef, retryContext?: string): string {
 	const verification = state.verifyCommands.length
 		? state.verifyCommands.map((command) => `- ${command}`).join("\n")
@@ -596,6 +610,7 @@ function issuePrompt(state: LoopState, issue: IssueRef, retryContext?: string): 
 		"",
 		`Repo root: ${state.repoRoot}`,
 		`Current issue file: ${issue.relPath}`,
+		issueContextMarker(state, issue),
 		`Issue title: ${issue.title}`,
 		`Attempt: ${state.currentAttempt}/${state.maxAttempts}`,
 		`Selected issue ${state.startedIssues}/${state.maxIssues}; remaining after this: ${state.queue.length}`,
@@ -876,6 +891,23 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
 				terminate: true,
 			};
 		},
+	});
+
+	pi.on("context", async (event) => {
+		const state = activeLoop;
+		if (!state?.current) return;
+
+		const markerNeedle = `${ISSUE_CONTEXT_MARKER_PREFIX} ${state.id}:${state.current.relPath}:`;
+		let startIndex = -1;
+		for (let i = event.messages.length - 1; i >= 0; i--) {
+			if (containsText(event.messages[i], markerNeedle)) {
+				startIndex = i;
+				break;
+			}
+		}
+
+		if (startIndex === -1) return;
+		return { messages: event.messages.slice(startIndex) };
 	});
 
 	pi.on("tool_call", async (event) => {

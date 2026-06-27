@@ -1,7 +1,10 @@
 /agent/auth.json
 /agent/sessions/
 /agent/bin/
+/agent/npm/
 /agent/trust.json
+/agent/mcp-cache.json
+/agent/mcp-onboarding.json
 
 # Defensive: never commit credentials or session data, even if moved/renamed
 auth.json
