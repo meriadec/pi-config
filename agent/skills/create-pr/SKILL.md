@@ -32,7 +32,8 @@ Create a GitHub pull request from the current context. Default: current branch i
 5. Refine with the user if requested:
    - Ask targeted questions, suggest tighter options, and continue until title/body/base/head are agreed.
 6. Ensure branch is available on remote:
-   - If not pushed: ask before pushing, then run `git push -u origin HEAD` after approval.
+   - If there are uncommitted changes that clearly belong in the PR, validate as appropriate, create a focused local signed commit, and include it in the PR branch.
+   - If not pushed: include the needed `git push -u origin HEAD` in the final confirmation, then run it after approval.
 7. Create the PR only after final agreement:
    - Ready-for-review PR: `gh pr create --base <base> --head <head> --title '<title>' --body-file /tmp/pr-body.md`
    - Draft PR: `gh pr create --draft --base <base> --head <head> --title '<title>' --body-file /tmp/pr-body.md`
@@ -82,7 +83,7 @@ Tone: sharp, precise, professional, unenthusiastic, and slightly bored. Add a ti
 - If the user wants changes, enter a refinement phase: identify unresolved parts, offer concrete alternatives, keep agreed wording, then summarize and ask for approval again.
 - If tests were explicitly skipped for a meaningful reason, say so plainly. If validation is routine CI-equivalent or otherwise not reviewer-useful, omit testing status rather than inventing a useless sentence.
 - If there is an existing PR for the branch, do not create a duplicate; offer to update title/body instead, with confirmation.
-- If there are uncommitted changes, stop and ask whether to include/commit them or create the PR from committed work only.
+- If there are uncommitted changes, inspect them. If they clearly belong in the requested PR, validate and create a focused local signed commit before pushing/creating the PR. If they are ambiguous or unrelated, stop and ask whether to include them or create the PR from committed work only.
 - If the branch is behind base, still create the PR unless the diff is confusing or conflicts are visible; mention notable risk in the body.
 - If `gh` is unauthenticated or repo remote is not GitHub, report the blocker and the exact next command the user should run.
 
@@ -92,7 +93,8 @@ Before creating:
 
 - [ ] Base/head/state are correct.
 - [ ] User has approved the final draft.
-- [ ] Branch is pushed or push command is approved/ready.
+- [ ] Any intended local changes are committed with a signed focused commit.
+- [ ] Branch is pushed or push command is included in the approved PR creation plan.
 - [ ] Title is conventional and <= ~80 chars.
 - [ ] Body explains why/what/how with reviewer-relevant bullets.
 - [ ] Testing status is omitted unless it is genuinely reviewer-useful beyond routine CI-equivalent checks.

@@ -517,7 +517,7 @@ async function commitCurrentIssue(pi: ExtensionAPI, state: LoopState, issue: Iss
 
 	const commit = await pi.exec(
 		"git",
-		gitArgs(state.repoRoot, ["-c", "commit.gpgsign=false", "-c", "tag.gpgSign=false", "commit", "--no-gpg-sign", "-m", commitMessage]),
+		gitArgs(state.repoRoot, ["commit", "-m", commitMessage]),
 		{ timeout: 120_000 },
 	) as CommandResult;
 	if (commit.code !== 0) throw new Error(commit.stderr.trim() || commit.stdout.trim() || "git commit failed");
@@ -624,7 +624,7 @@ function issuePrompt(state: LoopState, issue: IssueRef, retryContext?: string): 
 		"1. The issue file under .scratch/ is the source of truth for this task. Read it first.",
 		"2. Work autonomously. Do not ask for approval before implementation.",
 		"3. Stop instead of guessing if the issue needs product judgment, secrets, external access, destructive actions, or an important unresolved ambiguity.",
-		"4. Do not manually commit, amend, tag, push, or alter git history. The Ralph Loop extension owns verification and unsigned commits.",
+		"4. Local signed commits are allowed when needed, but do not amend, tag, push, or rewrite git history unless explicitly instructed. The Ralph Loop extension normally owns final verification and commit creation.",
 		"5. You may run targeted tests/checks while working, but the extension will run final verification after you call ralph_issue_result.",
 		"6. Do not move to another issue yourself. Do not loop manually.",
 		"7. When this issue reaches a terminal state, call ralph_issue_result as your final action. Do not provide a normal final answer instead.",
@@ -635,7 +635,7 @@ function issuePrompt(state: LoopState, issue: IssueRef, retryContext?: string): 
 		"- outcome=needs_human if meaningful human judgment/input is required.",
 		"- outcome=blocked if an unexpected/unfixable technical failure prevents progress.",
 		"",
-		"For completed, include a concise conventional-commit commitMessage. The extension will mark the issue Status as done, run verification, stage all changes, and commit with --no-gpg-sign.",
+		"For completed, include a concise conventional-commit commitMessage. The extension will mark the issue Status as done, run verification, stage all changes, and create a signed commit using the configured agent git identity.",
 		"",
 		"Extension verification commands:",
 		verification,
@@ -700,7 +700,7 @@ async function handleCompleted(pi: ExtensionAPI, params: { summary: string; comm
 	}
 
 	const message = safeCommitMessage(params.commitMessage, issue);
-	ctx.ui.notify?.(`Ralph Loop committing ${issue.relPath} without GPG signing`, "info");
+	ctx.ui.notify?.(`Ralph Loop committing ${issue.relPath}`, "info");
 	const commitOutput = await commitCurrentIssue(pi, state, issue, message);
 
 	state.completed.push(issue);
@@ -865,13 +865,13 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
 		description: "Report the terminal result for the current Ralph Loop .scratch issue. Use only when a Ralph Loop issue is completed, skipped, needs human input, or is blocked.",
 		promptSnippet: "Report the terminal result for the current Ralph Loop issue",
 		promptGuidelines: [
-			"Use ralph_issue_result as the final action for each Ralph Loop issue; do not commit manually or move to the next issue yourself.",
+			"Use ralph_issue_result as the final action for each Ralph Loop issue; do not move to the next issue yourself.",
 			"Use ralph_issue_result outcome=needs_human instead of guessing when a Ralph Loop issue needs meaningful human judgment.",
 		],
 		parameters: Type.Object({
 			outcome: StringEnum(OUTCOME_VALUES),
 			summary: Type.String({ description: "Concise summary of what happened and why this outcome is correct." }),
-			commitMessage: Type.Optional(Type.String({ description: "Required for completed: concise conventional-commit message for the extension-owned unsigned commit." })),
+			commitMessage: Type.Optional(Type.String({ description: "Required for completed: concise conventional-commit message for the signed commit." })),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (!activeLoop || !activeLoop.current) {
@@ -913,16 +913,6 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
 
 		if (startIndex === -1) return undefined;
 		return { messages: event.messages.slice(startIndex) };
-	});
-
-	pi.on("tool_call", async (event) => {
-		if (!activeLoop || event.toolName !== "bash") return undefined;
-		const input = event.input as { command?: string };
-		const command = input.command ?? "";
-		if (/\bgit\s+(?:[^;&|]*\s+)?commit\b/.test(command)) {
-			return { block: true, reason: "Ralph Loop owns commits and will commit unsigned after verification. Do not run git commit manually." };
-		}
-		return undefined;
 	});
 
 	pi.on("session_shutdown", async () => {

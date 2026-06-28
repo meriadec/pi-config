@@ -16,7 +16,7 @@ git rev-parse --show-toplevel
 git status --porcelain=v1 --untracked-files=all
 ```
 
-If status output is non-empty, stop immediately. Explain that review requires a clean worktree/index so findings correspond exactly to committed branch work. Do not stash, commit, reset, or modify files.
+If status output is non-empty, stop the review and explain that review requires a clean worktree/index so findings correspond exactly to committed branch work. If the dirty changes clearly belong to the branch and the user asked you to prepare/review current work end-to-end, you may validate and create a focused local signed commit first, then restart the review. Do not stash, reset, discard, or otherwise rewrite work without explicit approval.
 
 ## Establish review scope
 

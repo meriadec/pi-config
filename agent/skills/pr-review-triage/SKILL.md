@@ -1,6 +1,6 @@
 ---
 name: pr-review-triage
-description: Fetches active GitHub pull request review threads plus top-level PR discussion, analyzes feedback, prepares a user-reviewed action plan, applies approved code changes, and only after user commit/push posts replies or resolves threads. Use when the user asks to handle PR review comments, triage GitHub PR feedback, respond to reviewers, discard review feedback, or prepare responses to PR comments.
+description: Fetches active GitHub pull request review threads plus top-level PR discussion, analyzes feedback, prepares a user-reviewed action plan, applies approved code changes, creates local signed commits when appropriate, and posts/resolves approved replies after the fixes are pushed. Use when the user asks to handle PR review comments, triage GitHub PR feedback, respond to reviewers, discard review feedback, or prepare responses to PR comments.
 ---
 
 # PR Review Triage
@@ -12,8 +12,8 @@ description: Fetches active GitHub pull request review threads plus top-level PR
 3. Also fetch unresolved outdated review threads with GitHub CLI/GraphQL; include them unless they already have an adequate reply.
 4. Analyze each active review thread, unresolved outdated thread, top-level PR comment, and non-empty review summary.
 5. Produce a scannable report; discuss/revise until the user approves or cancels.
-6. Only after approval: apply planned code changes, run project checks, ask user to validate, and provide a 1-line conventional commit.
-7. Only after the user says they committed and pushed: post approved replies on every addressed review thread, then resolve/discard approved review threads.
+6. Only after approval: apply planned code changes, run project checks, and create focused local signed commits for coherent fixes.
+7. After the approved fixes are pushed (by you when push approval is included, or by the user), post approved replies on every addressed review thread, then resolve/discard approved review threads.
 
 ## Workflow
 
@@ -73,12 +73,13 @@ Only if the user approves the plan:
 - Implement approved code changes.
 - Run relevant checks (`bun run ci`, `bun run format`, `bun test`, `npm test`, `pnpm test`, or repo-specific commands).
 - If checks fail, fix or report clearly.
-- Ask the user to review/validate and provide a 1-line conventional commit.
-- Do not commit, push, or post PR replies.
+- Review `git diff`/`git status`, stage only intended changes, and create focused local signed commits with concise conventional-commit messages.
+- Ask the user to review/validate when the result involves judgment you cannot verify locally.
+- Do not push or post PR replies unless that phase has been approved.
 
 ### 5) Approved GitHub response phase
 
-Only after the user explicitly says they have committed and pushed:
+Only after the approved fixes are committed and pushed:
 - Re-fetch unresolved review threads, including outdated ones, before posting responses.
 - Post approved review-thread replies before resolving; resolve only threads approved for discard/resolve or fully addressed.
 - For every thread addressed by a committed fix, post a concise closure reply that references the fixing commit subject and link, then resolve. This applies to both still-active and outdated threads.
@@ -102,7 +103,8 @@ gh pr comment PR_NUMBER --body 'MESSAGE'
 
 ## Safety rules
 
-- Never post, resolve, discard, commit, or push without explicit user approval for that phase.
+- Local signed commits are allowed after the implementation plan is approved and checks have run.
+- Never post, resolve, discard, or push without explicit user approval for that phase.
 - Never silently resolve a review thread. Add a reply first, or verify an adequate reply already exists.
 - Preserve reviewer intent; do not hide valid feedback behind vague replies.
 - Prefer addressing legitimate correctness/security/test comments over arguing.

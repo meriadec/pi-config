@@ -1,14 +1,15 @@
 ---
 name: resolve-conflicts
-description: Analyze and resolve in-progress git conflicts (rebase, merge, cherry-pick, stash) by understanding both sides, applying trivial fixes automatically and asking for confirmation on non-trivial ones, then git add the resolved files WITHOUT committing or continuing. Use when the user is stuck on git merge/rebase conflicts or asks to resolve conflict markers.
+description: Analyze and resolve in-progress git conflicts (rebase, merge, cherry-pick, stash) by understanding both sides, applying trivial fixes automatically and asking for confirmation on non-trivial ones, then stage and, when appropriate, commit/continue the in-progress operation. Use when the user is stuck on git merge/rebase conflicts or asks to resolve conflict markers.
 ---
 
 # Resolve Conflicts
 
 Resolve git conflicts during an in-progress operation. Understand what each side
-intended, apply the best resolution, stage the result, and stop. **Never commit,
-never `git rebase --continue`, never `git merge --continue`, never `git cherry-pick
---continue`.** Staging + a summary is the final step.
+intended, apply the best resolution, stage the result, then complete the local git
+operation when it is safe and within the user's request. Local signed commits and
+`--continue` steps are allowed; destructive operations such as `--abort`, resets,
+or force pushes still require explicit user approval.
 
 ## 1. Understand the situation
 
@@ -64,7 +65,7 @@ combine / custom), and your recommendation. Wait for the answer before editing.
 Remove all conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) and ensure the file
 is coherent.
 
-## 4. Stage and stop
+## 4. Stage and complete
 
 After every conflict is resolved:
 
@@ -73,11 +74,16 @@ git add <each resolved file>
 git status        # confirm nothing remains unmerged
 ```
 
+Then finish the local operation when appropriate:
+
+- Rebase/cherry-pick: run the corresponding `git rebase --continue` or `git cherry-pick --continue` if all conflicts are resolved and the resolution does not require further human judgment.
+- Merge: create the merge commit if the user's request was to complete the merge; otherwise leave the resolved files staged and explain the next step.
+- Stash apply/pop or standalone conflict cleanup: create a focused signed commit only if the user's request includes committing the resolved result or the surrounding workflow normally expects a commit.
+
 Then report to the user:
 
 - Which files were resolved and how (trivial vs confirmed-with-you).
-- Confirm everything is staged.
-- Remind them: **nothing was committed and the rebase/merge was NOT continued** —
-  the next step (continue/commit/abort) is theirs to take.
+- What git operation was completed, including commit hash/message when a commit was created.
+- Any remaining manual next step if the operation was intentionally left staged.
 
-Do not run `git commit`, `--continue`, or `--abort` unless explicitly told to.
+Do not run `--abort`, reset, force push, or otherwise discard/rewrite work unless explicitly told to.

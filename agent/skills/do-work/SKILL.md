@@ -14,7 +14,8 @@ Use this workflow to carry out a technical instruction in the current repository
 - Ask the human only when a point requires particular attention: irreversible tradeoff, product ambiguity, data-loss/security risk, incompatible options, missing credential/environment, or high-cost path choice.
 - When asking, state the dilemma clearly, list viable options with tradeoffs, and give a recommendation.
 - Do not ask for confirmation after every step. Batch non-blocking assumptions into the plan.
-- Do not commit, amend, tag, push, or otherwise alter VCS history unless explicitly instructed.
+- After validation, create a focused local signed commit when the task produced coherent repo changes, unless the user asked not to commit or the repo/project guidance says commits are handled elsewhere.
+- Do not amend, tag, push, or otherwise rewrite/alter existing VCS history unless explicitly instructed.
 
 ## Workflow
 
@@ -88,13 +89,22 @@ After validation:
 3. Re-run any affected harness if polishing changes behavior or compiled output.
 4. Check `git status --short` and summarize changed files.
 
-### 7. Final handoff
+### 7. Commit
+
+If implementation produced coherent repo changes and validation is complete:
+
+1. Review `git diff` and `git status --short`.
+2. Stage only the intended changes.
+3. Create a local signed commit with a concise conventional-commit message.
+4. If committing is blocked by failing checks, unresolved ambiguity, missing signing setup, or explicit user/repo instructions, leave changes uncommitted and explain why.
+
+### 8. Final handoff
 
 Report concisely:
 
 - What changed
 - Validation commands and results
+- Commit hash and message, or why no commit was made
 - Any assumptions, follow-ups, or skipped checks
-- Explicitly state that no commit was made
 
 End by asking the human what they want next, especially if follow-up decisions remain.
