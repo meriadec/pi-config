@@ -50,3 +50,17 @@ Several skill entries are symlinks into `~/.agents/skills`. Preserve symlinks un
 After editing an auto-discovered extension, run the harness, then use `/reload` inside Pi to load the changed extension in an interactive session.
 
 No commits are made by default. Leave version-control decisions to the human unless explicitly instructed otherwise.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked as local markdown files under `.scratch/<feature>/`; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The canonical triage label strings are used unchanged. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo uses a single-context domain docs layout. See `docs/agents/domain.md`.
