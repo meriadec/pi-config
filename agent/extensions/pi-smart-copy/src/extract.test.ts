@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  buildFullAnswerCandidate,
-  countContentLines,
-  extractSimpleCodeBlocks,
-} from "./extract.ts";
+import { buildFullAnswerCandidate, countContentLines, extractSimpleCodeBlocks } from "./extract.ts";
 
 describe("extractSimpleCodeBlocks", () => {
   test("returns no blocks when none are present", () => {

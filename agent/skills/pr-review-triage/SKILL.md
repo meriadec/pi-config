@@ -28,7 +28,9 @@ description: Fetches active GitHub pull request review threads plus top-level PR
 - Keep IDs, URLs, authors, paths, and lines in the report for auditability.
 
 ### 2) Analyze every feedback item
+
 For each item, classify:
+
 - **Feedback type**: bug, correctness, security, performance, maintainability, API/design, UX, style/nit, question, docs/test gap, duplicate, unclear, not applicable.
 - **Severity**: blocker, important, minor, nit, informational.
 - **Legitimacy**: must fix, very legit, reasonable, debatable, bikeshedding, reviewer mistaken, stale/not applicable, stupid but harmless.
@@ -46,16 +48,20 @@ Make it scannable and mark anything needing user attention.
 # PR review triage report
 
 ## Summary
+
 - Active review threads: N; unresolved outdated threads needing reply/resolution: O; top-level comments: M; review summaries: K
 - Plan: X code changes, Y reply-only, Z discard/resolve, W clarify
 - High-risk items: ...
 
 ## Proposed actions
-| ID | Source | Type | Severity | Legitimacy | Plan | Needs user decision? |
-| -- | ------ | ---- | -------- | ---------- | ---- | -------------------- |
+
+| ID  | Source | Type | Severity | Legitimacy | Plan | Needs user decision? |
+| --- | ------ | ---- | -------- | ---------- | ---- | -------------------- |
 
 ## Details
+
 ### R1 — <source/path:line> — <short title>
+
 - URL/ID/author: ...
 - Reviewer said: ...
 - Analysis: ...
@@ -70,6 +76,7 @@ After the report, stop and ask the user to review, modify, approve, or cancel. D
 ### 4) Approved implementation phase
 
 Only if the user approves the plan:
+
 - Implement approved code changes.
 - Run relevant checks (`bun run ci`, `bun run format`, `bun test`, `npm test`, `pnpm test`, or repo-specific commands).
 - If checks fail, fix or report clearly.
@@ -80,6 +87,7 @@ Only if the user approves the plan:
 ### 5) Approved GitHub response phase
 
 Only after the approved fixes are committed and pushed:
+
 - Re-fetch unresolved review threads, including outdated ones, before posting responses.
 - Post approved review-thread replies before resolving; resolve only threads approved for discard/resolve or fully addressed.
 - For every thread addressed by a committed fix, post a concise closure reply that references the fixing commit subject and link, then resolve. This applies to both still-active and outdated threads.

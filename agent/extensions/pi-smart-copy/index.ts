@@ -1,4 +1,8 @@
-import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
@@ -35,7 +39,11 @@ async function runSmartCopy(_args: string, ctx: ExtensionCommandContext): Promis
   const blocks = extractSimpleCodeBlocks(text);
 
   if (blocks.length === 0) {
-    await copyCandidate(ctx, buildFullAnswerCandidate(text), "Copied full assistant answer to clipboard");
+    await copyCandidate(
+      ctx,
+      buildFullAnswerCandidate(text),
+      "Copied full assistant answer to clipboard",
+    );
     return;
   }
 
@@ -94,9 +102,15 @@ async function copyCandidate(
   }
 }
 
-async function selectCandidate(ctx: ExtensionCommandContext, candidates: CopyCandidate[]): Promise<number | null> {
+async function selectCandidate(
+  ctx: ExtensionCommandContext,
+  candidates: CopyCandidate[],
+): Promise<number | null> {
   if (ctx.mode !== "tui") {
-    ctx.ui.notify("Multiple code blocks found; copying the first one because the TUI selector is unavailable.", "warning");
+    ctx.ui.notify(
+      "Multiple code blocks found; copying the first one because the TUI selector is unavailable.",
+      "warning",
+    );
     return 0;
   }
 
@@ -124,7 +138,9 @@ async function selectCandidate(ctx: ExtensionCommandContext, candidates: CopyCan
         }
 
         lines.push("");
-        lines.push(truncateToWidth(theme.fg("dim", "↑↓ navigate • enter copy • esc cancel"), width));
+        lines.push(
+          truncateToWidth(theme.fg("dim", "↑↓ navigate • enter copy • esc cancel"), width),
+        );
         return lines;
       },
 

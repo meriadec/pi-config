@@ -78,9 +78,9 @@ End with this structure:
 
 ### Findings
 
-| ID | Severity | Area | Evidence | Why it matters | Suggested fix |
-| --- | --- | --- | --- | --- | --- |
-| R1 | High | Correctness | `path:line` | ... | ... |
+| ID  | Severity | Area        | Evidence    | Why it matters | Suggested fix |
+| --- | -------- | ----------- | ----------- | -------------- | ------------- |
+| R1  | High     | Correctness | `path:line` | ...            | ...           |
 
 If no material findings: "No material findings."
 

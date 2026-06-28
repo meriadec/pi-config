@@ -34,6 +34,7 @@ If exploration reveals a real dilemma, pause and ask in this format:
 Dilemma: <one-sentence decision to make>
 
 Options:
+
 1. <option> — <main benefit>; <main cost/risk>
 2. <option> — <main benefit>; <main cost/risk>
 
@@ -50,6 +51,7 @@ Before editing, ask for human approval with a concise plan. Emit this approval p
 
 ```md
 Plan:
+
 - <key change / affected area>
 - <key validation harnesses to run>
 - <important assumption or risk, if any>

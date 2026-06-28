@@ -26,12 +26,6 @@
     "skipLibCheck": true,
     "types": ["bun-types", "node"]
   },
-  "include": [
-    "agent/extensions/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "agent/npm",
-    "agent/sessions"
-  ]
+  "include": ["agent/extensions/**/*.ts"],
+  "exclude": ["node_modules", "agent/npm", "agent/sessions"]
 }
