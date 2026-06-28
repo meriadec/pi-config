@@ -11,7 +11,7 @@ const WIDGET_KEY = "grillade-question";
 
 export type GrilladeQuestionUiContext = Pick<ExtensionContext, "mode" | "hasUI" | "ui">;
 
-export type GrilladeQuestionUiOptions = Pick<GrilladeQuestionViewOptions, "docsMode">;
+export type GrilladeQuestionUiOptions = Pick<GrilladeQuestionViewOptions, "docsMode" | "mode">;
 
 export async function askGrilladeQuestionInUi(
   ctx: GrilladeQuestionUiContext,

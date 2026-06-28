@@ -22,6 +22,7 @@ export function createGrilladeQuestionView(
 ): Component {
   const screenOptions = {
     onRenderNeeded: () => tui.requestRender(),
+    getViewportHeight: () => tui.terminal.rows,
     ...(options.mode !== undefined ? { mode: options.mode } : {}),
     ...(options.docsMode !== undefined ? { docsMode: options.docsMode } : {}),
   };

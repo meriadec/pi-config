@@ -18,6 +18,9 @@ import type { ActiveGrilladeQuestion } from "../state.ts";
 import { getGrilladeUiStyle, type GrilladeUiStyle } from "./styles.ts";
 
 const FULLSCREEN_FILL_LINES = 200;
+const FALLBACK_FOCUSED_CHOICE_BODY_VIEWPORT_HEIGHT = 14;
+const MIN_FOCUSED_CHOICE_BODY_VIEWPORT_HEIGHT = 4;
+const FOCUSED_CHOICE_CARD_CHROME_HEIGHT = 8;
 const MIN_CONTENT_WIDTH = 32;
 const GUTTER_WIDTH = 2;
 const SAFE_RESET = "\x1b[0m";
@@ -31,6 +34,7 @@ export type GrilladeQuestionScreenOptions = {
   mode?: GrilladeQuestionScreenMode;
   docsMode?: boolean;
   onRenderNeeded?: () => void;
+  getViewportHeight?: () => number;
 };
 
 type FocusTarget = "choice" | "custom";
@@ -40,6 +44,7 @@ type OverlayState = { kind: "none" } | { kind: "confirm-cancel" };
 export class QuestionScreen implements Component, Focusable {
   private selectedIndex: number;
   private focusTarget: FocusTarget = "choice";
+  private choiceScrollTop = 0;
   private cachedWidth: number | undefined;
   private cachedLines: string[] | undefined;
   private overlay: OverlayState = { kind: "none" };
@@ -99,10 +104,18 @@ export class QuestionScreen implements Component, Focusable {
       return;
     }
 
-    if (matchesKey(data, Key.left) || matchesKey(data, Key.up)) {
+    if (matchesKey(data, Key.left)) {
       this.moveSelection(-1);
-    } else if (matchesKey(data, Key.right) || matchesKey(data, Key.down)) {
+    } else if (matchesKey(data, Key.right)) {
       this.moveSelection(1);
+    } else if (matchesKey(data, Key.up)) {
+      this.scrollFocusedChoice(-1);
+    } else if (matchesKey(data, Key.down)) {
+      this.scrollFocusedChoice(1);
+    } else if (matchesKey(data, Key.pageUp)) {
+      this.scrollFocusedChoice(-this.currentFocusedChoiceBodyViewportHeight());
+    } else if (matchesKey(data, Key.pageDown)) {
+      this.scrollFocusedChoice(this.currentFocusedChoiceBodyViewportHeight());
     } else if (matchesKey(data, Key.home)) {
       this.selectIndex(0);
     } else if (matchesKey(data, Key.end)) {
@@ -125,6 +138,7 @@ export class QuestionScreen implements Component, Focusable {
     const safeWidth = Math.max(1, width);
     const contentWidth = Math.max(MIN_CONTENT_WIDTH, safeWidth - GUTTER_WIDTH);
     const lines: string[] = [];
+    const footer = this.renderFooter(contentWidth);
     lines.push(...this.renderHeader(contentWidth));
     lines.push("");
     lines.push(...this.renderQuestion(contentWidth));
@@ -134,11 +148,20 @@ export class QuestionScreen implements Component, Focusable {
     if (this.focusTarget === "custom") {
       lines.push(...this.renderCustomAnswer(contentWidth));
     } else {
-      lines.push(...this.renderFocusedChoice(contentWidth));
+      const customAffordance = this.renderCustomAffordance(contentWidth);
+      lines.push(
+        ...this.renderFocusedChoice(
+          contentWidth,
+          this.calculateFocusedChoiceBodyViewportHeight({
+            renderedBeforeChoice: lines.length,
+            renderedAfterChoice: 1 + customAffordance.length + footer.length,
+          }),
+        ),
+      );
       lines.push("");
-      lines.push(...this.renderCustomAffordance(contentWidth));
+      lines.push(...customAffordance);
     }
-    lines.push(...this.renderFooter(contentWidth));
+    lines.push(...footer);
     lines.push(...this.renderScreenFill(lines.length));
 
     const fitted = lines.map((line) => truncateToWidth(line, safeWidth, "", false));
@@ -209,11 +232,11 @@ export class QuestionScreen implements Component, Focusable {
     return [fitLine(`${this.style.dim("Choices:")} ${parts.join(this.style.dim("  │  "))}`, width)];
   }
 
-  private renderFocusedChoice(width: number): string[] {
+  private renderFocusedChoice(width: number, bodyViewportHeight: number): string[] {
     const option = this.question.options[this.selectedIndex];
     if (!option) return [this.style.warning("No option is available for this question.")];
     const recommended = option.id === this.question.recommendedOptionId;
-    return renderFocusedChoiceCard({
+    const rendered = renderFocusedChoiceCard({
       index: this.selectedIndex,
       count: this.question.options.length,
       width,
@@ -223,7 +246,11 @@ export class QuestionScreen implements Component, Focusable {
       confidence: option.confidence,
       style: this.style,
       theme: this.theme,
+      scrollTop: this.choiceScrollTop,
+      bodyViewportHeight,
     });
+    this.choiceScrollTop = rendered.scrollTop;
+    return rendered.lines;
   }
 
   private renderCustomAffordance(width: number): string[] {
@@ -236,6 +263,27 @@ export class QuestionScreen implements Component, Focusable {
         width,
       ),
     ];
+  }
+
+  private calculateFocusedChoiceBodyViewportHeight(input: {
+    renderedBeforeChoice: number;
+    renderedAfterChoice: number;
+  }): number {
+    const viewportHeight = this.options.getViewportHeight?.();
+    if (!viewportHeight) return FALLBACK_FOCUSED_CHOICE_BODY_VIEWPORT_HEIGHT;
+    const availableCardHeight =
+      viewportHeight - input.renderedBeforeChoice - input.renderedAfterChoice;
+    return Math.max(
+      MIN_FOCUSED_CHOICE_BODY_VIEWPORT_HEIGHT,
+      availableCardHeight - FOCUSED_CHOICE_CARD_CHROME_HEIGHT,
+    );
+  }
+
+  private currentFocusedChoiceBodyViewportHeight(): number {
+    return Math.max(
+      MIN_FOCUSED_CHOICE_BODY_VIEWPORT_HEIGHT,
+      this.options.getViewportHeight?.() ?? FALLBACK_FOCUSED_CHOICE_BODY_VIEWPORT_HEIGHT,
+    );
   }
 
   private renderCustomAnswer(width: number): string[] {
@@ -252,7 +300,7 @@ export class QuestionScreen implements Component, Focusable {
       cardLine("", width, border),
       ...bodyLines.map((line) => cardLine(this.style.muted(line), width, border)),
       cardLine("", width, border),
-      cardLine(`${this.style.accent(">")} ${renderedInput}`, width, border),
+      cardLine(renderedInput, width, border),
       border(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
     ];
   }
@@ -269,7 +317,7 @@ export class QuestionScreen implements Component, Focusable {
       this.style.border("═".repeat(width)),
       fitLine(
         this.style.dim(
-          `←/→ navigate • 1–${this.question.options.length} jump • Enter choose${customHelp} • ${modeHelp}`,
+          `←/→ choices • ↑/↓ scroll • 1–${this.question.options.length} jump • Enter choose${customHelp} • ${modeHelp}`,
         ),
         width,
       ),
@@ -314,10 +362,20 @@ export class QuestionScreen implements Component, Focusable {
     this.selectIndex(this.selectedIndex + delta);
   }
 
+  private scrollFocusedChoice(delta: number): void {
+    this.choiceScrollTop = Math.max(0, this.choiceScrollTop + delta);
+    this.invalidateAndRender();
+  }
+
   private selectIndex(index: number): void {
+    if (this.canUseCustomAnswer() && index >= this.question.options.length) {
+      this.setFocusTarget("custom");
+      return;
+    }
     const next = Math.max(0, Math.min(this.question.options.length - 1, index));
     if (next === this.selectedIndex && this.focusTarget === "choice") return;
     this.selectedIndex = next;
+    this.choiceScrollTop = 0;
     this.setFocusTarget("choice");
   }
 
@@ -404,9 +462,16 @@ type FocusedChoiceCardInput = {
   confidence: "low" | "medium" | "high";
   style: GrilladeUiStyle;
   theme: Theme;
+  scrollTop: number;
+  bodyViewportHeight: number;
 };
 
-function renderFocusedChoiceCard(input: FocusedChoiceCardInput): string[] {
+type FocusedChoiceCardRender = {
+  lines: string[];
+  scrollTop: number;
+};
+
+function renderFocusedChoiceCard(input: FocusedChoiceCardInput): FocusedChoiceCardRender {
   const borderStyle = input.recommended ? input.style.recommended : input.style.accent;
   const contentWidth = Math.max(1, input.width - 4);
   const optionLabel = input.style.muted(`Option ${input.index + 1} of ${input.count}`);
@@ -417,11 +482,32 @@ function renderFocusedChoiceCard(input: FocusedChoiceCardInput): string[] {
   );
   const header = `${optionLabel}  ${input.theme.bold(input.title)}${recommended}`;
   const bodyLines = wrapTextWithAnsi(input.body, contentWidth);
+  const bodyViewportHeight = Math.max(1, input.bodyViewportHeight);
+  const maxScrollTop = Math.max(0, bodyLines.length - bodyViewportHeight);
+  const scrollTop = Math.max(0, Math.min(input.scrollTop, maxScrollTop));
+  const visibleBodyLines = bodyLines.slice(scrollTop, scrollTop + bodyViewportHeight);
+  const scrollStatus = formatScrollStatus({
+    scrollTop,
+    visibleCount: visibleBodyLines.length,
+    totalCount: bodyLines.length,
+    viewportHeight: bodyViewportHeight,
+    style: input.style,
+  });
   const meta = input.style.dim(confidenceText);
-  const rawLines = [header, "", ...bodyLines, "", meta];
+  const rawLines = [
+    header,
+    "",
+    ...(scrollStatus ? [scrollStatus, ""] : []),
+    ...visibleBodyLines,
+    "",
+    meta,
+  ];
   const top = borderStyle(`╭${"─".repeat(Math.max(0, input.width - 2))}╮`);
   const bottom = borderStyle(`╰${"─".repeat(Math.max(0, input.width - 2))}╯`);
-  return [top, ...rawLines.map((line) => cardLine(line, input.width, borderStyle)), bottom];
+  return {
+    lines: [top, ...rawLines.map((line) => cardLine(line, input.width, borderStyle)), bottom],
+    scrollTop,
+  };
 }
 
 function cardLine(
@@ -435,6 +521,23 @@ function cardLine(
   const padding = " ".repeat(Math.max(0, contentWidth - visibleWidth(fitted)));
   const content = bgStyle ? bgStyle(`${fitted}${padding}`) : `${fitted}${padding}`;
   return `${borderStyle("│")} ${content}${SAFE_RESET} ${borderStyle("│")}`;
+}
+
+function formatScrollStatus(input: {
+  scrollTop: number;
+  visibleCount: number;
+  totalCount: number;
+  viewportHeight: number;
+  style: GrilladeUiStyle;
+}): string {
+  if (input.totalCount <= input.viewportHeight) return "";
+  const start = input.scrollTop + 1;
+  const end = input.scrollTop + input.visibleCount;
+  const above = input.scrollTop > 0 ? "▲" : " ";
+  const below = end < input.totalCount ? "▼" : " ";
+  return input.style.dim(
+    `Body ${above}${below} lines ${start}–${end}/${input.totalCount} · ↑/↓ scroll`,
+  );
 }
 
 function confidenceLabel(confidence: "low" | "medium" | "high"): string {

@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildGrilladeSystemPromptAppendix } from "./prompts.ts";
 import { registerGrilladeCommand } from "./session.ts";
+import { registerGrilladeMockCommand } from "./ui/mock.ts";
 import { reconstructGrilladeState } from "./state.ts";
 import { registerGrilladeTools } from "./tools.ts";
 
@@ -12,6 +13,7 @@ export * from "./tools.ts";
 
 export default function grilladeExtension(pi: ExtensionAPI): void {
   registerGrilladeCommand(pi);
+  registerGrilladeMockCommand(pi);
   registerGrilladeTools(pi);
   pi.on("before_agent_start", (event, ctx) => {
     const state = reconstructGrilladeState(ctx.sessionManager);
