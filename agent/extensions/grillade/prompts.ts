@@ -9,41 +9,26 @@ export type GrilladeKickoffPromptOptions = {
 };
 
 const CORE_INTERVIEW_RULES = [
-  "Run Grillade as a structured design interview, not as normal freeform chat.",
-  "For every user-facing interview turn, call the `grillade_ask_question` tool instead of writing the question in markdown.",
-  "Ask exactly one focused question at a time, then wait for the tool result before continuing.",
-  "Each Grillade Question must provide 2–5 options.",
-  "Exactly one option must be marked recommended.",
-  "Every option must include a short title, a body/rationale, and a confidence level.",
-  "Always allow a custom answer and steering; treat steering as binding unless it conflicts with safety or the user's explicit goal.",
-  "Honor process steering such as `max 10 questions`, `wrap up if no major unknowns`, `explore this more`, or similar constraints.",
-  "When major design branches and dependencies are resolved, finish by calling `grillade_finish`; do not write a final Grillade summary as freeform prose.",
-  "Use `grillade_finish` as the only structured final UI path. Include summary, decisions, open questions/risks, recommended next action, and all standard final actions.",
-  "If the question tool returns `paused` or `cancelled`, stop immediately; do not continue the interview in prose.",
+  "Use `grillade_ask_question` for every user-facing interview turn; ask exactly one question, wait for the result, then continue.",
+  "Each question has 2–3 authored options, exactly one recommended option, and custom answer enabled unless explicitly disabled.",
+  "Honor steering such as max question counts, wrap-up requests, and requests to explore more.",
+  "When the major branches are resolved, call `grillade_finish` with summary, decisions, risks/open questions, recommended next action, and standard final actions.",
+  "If a Grillade tool returns paused/cancelled, stop immediately and do not continue in prose.",
 ];
 
 const DOCS_MODE_RULES = [
-  "Docs mode is enabled: apply domain-modeling discipline by default.",
-  "Read and respect loaded repository context/domain docs where appropriate; if the interview depends on durable vocabulary or existing conventions, consult files such as CONTEXT.md or docs/ before deciding.",
-  "Name important domain concepts precisely, challenge fuzzy or conflicting terminology, and prefer the repository's established ubiquitous language unless the user intentionally changes it.",
-  "Identify glossary, CONTEXT.md, ADR, or other documentation opportunities when they materially affect the design or preserve an important decision.",
-  "Do not over-index on docs: ask design questions first, and introduce docs/domain-modeling implications when they help the user decide.",
-  "Do not silently write glossary, ADR, CONTEXT.md, or other docs files from inside the Grillade question UI; docs-aware interviewing is not direct file mutation.",
-  "Until inline docs proposal UI exists, preserve docs opportunities in `docsProposalSummaries` and prefer an explicit final handoff through the `create_update_docs` action.",
+  "Docs mode: use domain-modeling discipline where useful; consult repo context/docs when they affect decisions.",
+  "Challenge fuzzy or conflicting domain terms, but do not write docs directly inside Grillade.",
+  "Preserve meaningful glossary/ADR/docs opportunities in `docsProposalSummaries` and prefer `create_update_docs` for handoff.",
 ];
 
 const NO_DOCS_MODE_RULES = [
-  "Docs mode is disabled with --no-docs.",
-  "Do not perform docs/domain-modeling-specific behavior, read docs solely for domain-modeling, challenge terminology as a docs exercise, or propose glossary/ADR work unless the user explicitly asks for it later.",
-  "Keep questions focused on the requested design or implementation decision.",
+  "Docs mode is disabled: avoid docs/domain-modeling work unless explicitly requested.",
 ];
 
 export function buildKickoffPrompt(options: GrilladeKickoffPromptOptions): string {
   return [
-    "Start a Grillade interview for the following prompt.",
-    "",
-    formatManagedInstructions(options.docsMode, "kickoff"),
-    "",
+    `Start a Grillade interview (${options.docsMode ? "docs" : "no-docs"} mode).`,
     "User prompt:",
     options.prompt,
   ].join("\n");
@@ -54,21 +39,14 @@ export function buildResumePrompt(
   answer?: GrilladeAnsweredResult,
 ): string {
   const lines = [
-    "Resume this Grillade interview from the persisted Semantic Grillade State.",
-    "",
-    formatManagedInstructions(state.metadata.docsMode, "resume"),
-    "",
+    "Resume the active Grillade interview using the Active Grillade protocol.",
     `Original prompt: ${state.metadata.prompt}`,
-    `Current phase: ${state.currentPhase}`,
-    `Submitted answers so far: ${state.answerHistory.length}`,
+    `Phase: ${state.currentPhase}`,
+    `Answers: ${state.answerHistory.length}`,
   ];
 
   if (answer) {
-    lines.push(
-      "",
-      "The user just answered the reopened active question:",
-      JSON.stringify(answer, null, 2),
-    );
+    lines.push("", "User answered reopened question:", JSON.stringify(answer));
   } else if (state.activeQuestion) {
     lines.push(
       "",
@@ -86,18 +64,12 @@ export function buildContinuationPrompt(
   answer: GrilladeAnsweredResult,
 ): string {
   return [
-    "Continue this Grillade interview after the user's submitted answer.",
-    "",
-    formatManagedInstructions(state.metadata.docsMode, "continuation"),
-    "",
+    "Continue this Grillade interview using the Active Grillade protocol.",
     `Original prompt: ${state.metadata.prompt}`,
-    `Current phase: ${state.currentPhase}`,
-    `Submitted answers before this answer: ${state.answerHistory.length}`,
-    "",
+    `Phase: ${state.currentPhase}`,
+    `Answers before this: ${state.answerHistory.length}`,
     "Submitted answer:",
-    JSON.stringify(answer, null, 2),
-    "",
-    "Use the answer and any steering text to decide whether to ask the next Grillade Question or wrap up when there are no major unknowns.",
+    JSON.stringify(answer),
   ].join("\n");
 }
 

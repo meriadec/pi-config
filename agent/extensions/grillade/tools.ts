@@ -25,6 +25,24 @@ import { askGrilladeQuestionInUi } from "./ui/question.ts";
 export const GRILLADE_ASK_QUESTION_TOOL_NAME = "grillade_ask_question";
 export const GRILLADE_FINISH_TOOL_NAME = "grillade_finish";
 
+export function setGrilladeToolsActive(
+  pi: Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">,
+  active: boolean,
+): void {
+  const tools = new Set(pi.getActiveTools());
+  const before = tools.size;
+  if (active) {
+    tools.add(GRILLADE_ASK_QUESTION_TOOL_NAME);
+    tools.add(GRILLADE_FINISH_TOOL_NAME);
+  } else {
+    tools.delete(GRILLADE_ASK_QUESTION_TOOL_NAME);
+    tools.delete(GRILLADE_FINISH_TOOL_NAME);
+  }
+  if (tools.size !== before || active !== tools.has(GRILLADE_ASK_QUESTION_TOOL_NAME)) {
+    pi.setActiveTools([...tools]);
+  }
+}
+
 export function registerGrilladeTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: GRILLADE_ASK_QUESTION_TOOL_NAME,
@@ -33,12 +51,8 @@ export function registerGrilladeTools(pi: ExtensionAPI): void {
       "Ask one structured Grillade interview question and block until the user submits an answer or closes/cancels the question UI.",
     promptSnippet: "Ask a structured Grillade interview question with 2–3 options",
     promptGuidelines: [
-      "Use grillade_ask_question for every user-facing Grillade interview turn; do not ask Grillade questions as freeform markdown.",
-      "Ask one question at a time and wait for the tool result before continuing.",
-      "Provide 2–3 authored, mutually comparable options; do not force stock archetypes such as conservative/recommended/aggressive.",
-      "Mark exactly one authored option as recommended, and provide a title, body/rationale, and confidence for every option.",
-      "Always allow custom answer and steering; honor steering such as max question counts, wrap-up requests, and requests to explore more.",
-      "If grillade_ask_question returns paused or cancelled, stop immediately and do not continue the interview in prose.",
+      "In active Grillade sessions, ask through grillade_ask_question: one question, 2–3 authored options, exactly one recommended, custom answer allowed.",
+      "Wait for each tool result, honor steering, and stop if the result is paused/cancelled.",
     ],
     parameters: GrilladeAskQuestionInputSchema,
     executionMode: "sequential",
@@ -88,13 +102,8 @@ export function registerGrilladeTools(pi: ExtensionAPI): void {
       "Finish a Grillade interview with structured final state and show the action-oriented completion screen.",
     promptSnippet: "Finish Grillade with a structured summary and final action menu",
     promptGuidelines: [
-      "When major design branches and dependencies are resolved, call grillade_finish instead of ending the Grillade interview in prose.",
-      "Use grillade_finish as the only final UI path for Grillade completion.",
-      "Provide a concise summary, decisions made, open questions/risks, a recommended next action, and all available final actions.",
-      "Include the standard final actions: implement_now, create_epic_issues, create_update_docs, continue_grilling, export_summary, and close; label create_update_docs as Create/update docs in Pi.",
-      "If docs/glossary/ADR opportunities came up, include them in docsProposalSummaries for explicit handoff instead of applying file changes inside Grillade.",
-      "If grillade_finish returns continue_grilling, continue the interview by asking the next best Grillade Question.",
-      "If grillade_finish returns a normal Pi handoff action, stop after the tool result; the extension queues the normal Pi handoff message outside the Grillade UI.",
+      "Finish active Grillade sessions through grillade_finish with summary, decisions, open questions/risks, recommended next action, and standard final actions.",
+      "Put docs/glossary/ADR opportunities in docsProposalSummaries; if the selected action hands off to normal Pi, stop after the tool result.",
     ],
     parameters: GrilladeFinishInputSchema,
     executionMode: "sequential",
@@ -214,14 +223,8 @@ function summarizeDocsProposalTitle(summary: string, index: number): string {
 function formatQuestionToolResult(result: GrilladeQuestionResult, terminate: boolean) {
   const text =
     result.status === "answered"
-      ? [
-          "Grillade question answered. Continue the interview using the submitted answer and steering.",
-          JSON.stringify(result, null, 2),
-        ].join("\n")
-      : [
-          `Grillade question ${result.status}. Stop now; do not continue the interview until the user resumes Grillade.`,
-          JSON.stringify(result, null, 2),
-        ].join("\n");
+      ? `Grillade question answered; continue from this result: ${JSON.stringify(result)}`
+      : `Grillade question ${result.status}; stop until the user resumes Grillade: ${JSON.stringify(result)}`;
   return {
     content: [{ type: "text" as const, text }],
     details: result,
@@ -233,16 +236,8 @@ function formatFinishToolResult(result: Record<string, unknown>, terminate: bool
   const actionId = result["actionId"];
   const text =
     result["status"] === "selected" && actionId === "continue_grilling"
-      ? [
-          "Grillade final screen selected Continue grilling. Reopen the interview loop and ask the next best Grillade Question using any steering below.",
-          JSON.stringify(result, null, 2),
-        ].join("\n")
-      : [
-          isQueuedHandoffAction(actionId)
-            ? "Grillade finished. Final action selection is persisted and a normal Pi handoff message has been queued; stop now."
-            : "Grillade finished. Final action selection is persisted; stop now.",
-          JSON.stringify(result, null, 2),
-        ].join("\n");
+      ? `Grillade final screen selected Continue grilling; ask the next Grillade Question using this result: ${JSON.stringify(result)}`
+      : `${isQueuedHandoffAction(actionId) ? "Grillade finished; normal Pi handoff queued; stop now" : "Grillade finished; stop now"}: ${JSON.stringify(result)}`;
   return {
     content: [{ type: "text" as const, text }],
     details: result,
