@@ -23,11 +23,11 @@ type CopilotStatus = {
 
 type TrackJob = {
 	cancelled: boolean;
-	pollTimer?: NodeJS.Timeout;
-	spinnerTimer?: NodeJS.Timeout;
+	pollTimer?: NodeJS.Timeout | undefined;
+	spinnerTimer?: NodeJS.Timeout | undefined;
 	spinnerFrame: number;
 	statusText: string;
-	wake?: () => void;
+	wake?: (() => void) | undefined;
 };
 
 let activeJob: TrackJob | undefined;
@@ -62,6 +62,7 @@ function parsePrUrl(text: string): PullRequestRef | undefined {
 	if (!match) return undefined;
 
 	const [, owner, repo, number] = match;
+	if (!owner || !repo || !number) return undefined;
 	return {
 		owner,
 		repo,
@@ -140,14 +141,16 @@ function collectCopilotEvents(node: unknown, events: Array<{ kind: string; login
 	const login = author?.login;
 	if (!isCopilotLogin(login)) return;
 
+	const when = "submittedAt" in node && typeof node.submittedAt === "string"
+		? node.submittedAt
+		: "createdAt" in node && typeof node.createdAt === "string"
+			? node.createdAt
+			: undefined;
+
 	events.push({
 		kind,
 		login: login ?? "copilot",
-		when: "submittedAt" in node && typeof node.submittedAt === "string"
-			? node.submittedAt
-			: "createdAt" in node && typeof node.createdAt === "string"
-				? node.createdAt
-				: undefined,
+		...(when === undefined ? {} : { when }),
 	});
 }
 

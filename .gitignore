@@ -5,6 +5,8 @@
 /agent/trust.json
 /agent/mcp-cache.json
 /agent/mcp-onboarding.json
+/node_modules/
+/coverage/
 
 # Defensive: never commit credentials or session data, even if moved/renamed
 auth.json

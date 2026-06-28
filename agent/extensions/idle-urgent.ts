@@ -1,7 +1,7 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 
-const windowId = process.env.WINDOWID;
+const windowId = process.env["WINDOWID"];
 
 function setUrgent(urgent: boolean) {
 	if (!windowId) return;

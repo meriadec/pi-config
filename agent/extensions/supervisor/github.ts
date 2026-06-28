@@ -1,4 +1,4 @@
-import type { ExecFn, GitHubNotificationItem } from "./types";
+import type { ExecFn, ExecResult, GitHubNotificationItem } from "./types.ts";
 
 const LIST_TIMEOUT_MS = 15_000;
 const ACTION_TIMEOUT_MS = 10_000;
@@ -19,7 +19,11 @@ interface GhNotificationResponse {
 }
 
 export class GitHubClient {
-	constructor(private readonly exec: ExecFn) {}
+	private readonly exec: ExecFn;
+
+	constructor(exec: ExecFn) {
+		this.exec = exec;
+	}
 
 	async listNotifications(options: { all?: boolean } = {}): Promise<GitHubNotificationItem[]> {
 		const all = options.all ? "all=true&" : "";
@@ -173,10 +177,12 @@ interface PullRequestRef {
 function parsePullRequestApiUrl(url: string): PullRequestRef | undefined {
 	const match = url.match(/^https:\/\/api\.github\.com\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/);
 	if (!match) return undefined;
-	return { owner: match[1], repo: match[2], number: Number(match[3]) };
+	const [, owner, repo, number] = match;
+	if (!owner || !repo || !number) return undefined;
+	return { owner, repo, number: Number(number) };
 }
 
-function assertOk(result: { code: number; stdout: string; stderr: string; killed?: boolean }, message: string): void {
+function assertOk(result: ExecResult, message: string): void {
 	if (result.code === 0 && !result.killed) return;
 
 	const details = (result.stderr || result.stdout || (result.killed ? "command timed out" : "unknown error")).trim();

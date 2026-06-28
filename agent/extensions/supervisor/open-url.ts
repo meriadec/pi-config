@@ -1,4 +1,4 @@
-import type { ExecFn } from "./types";
+import type { ExecFn } from "./types.ts";
 
 const OPEN_TIMEOUT_MS = 5_000;
 

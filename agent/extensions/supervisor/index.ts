@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { GitHubClient } from "./github";
-import { SupervisorComponent } from "./ui";
+import { GitHubClient } from "./github.ts";
+import { SupervisorComponent } from "./ui.ts";
 
 export default function supervisorExtension(pi: ExtensionAPI) {
 	pi.registerCommand("supervisor", {

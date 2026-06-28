@@ -37,20 +37,20 @@ function getClipboardMethods(): ClipboardMethod[] {
     return methods;
   }
 
-  if (process.env.TERMUX_VERSION) {
+  if (process.env["TERMUX_VERSION"]) {
     methods.push(syncCommandMethod("termux-clipboard-set", "termux-clipboard-set", []));
   }
 
-  if (process.env.WAYLAND_DISPLAY) {
+  if (process.env["WAYLAND_DISPLAY"]) {
     methods.push(detachedPipeMethod("wl-copy", "wl-copy", []));
   }
 
-  if (process.env.DISPLAY) {
+  if (process.env["DISPLAY"]) {
     methods.push(detachedPipeMethod("xclip", "xclip", ["-selection", "clipboard"]));
     methods.push(detachedPipeMethod("xsel", "xsel", ["--clipboard", "--input"]));
   }
 
-  if (process.env.KITTY_WINDOW_ID) {
+  if (process.env["KITTY_WINDOW_ID"]) {
     methods.push(syncCommandMethod("kitty clipboard", "kitty", ["+kitten", "clipboard"]));
   }
 

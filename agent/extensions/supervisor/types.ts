@@ -1,3 +1,5 @@
+import type { ExecOptions, ExecResult } from "@earendil-works/pi-coding-agent";
+
 export type NotificationSubjectType =
 	| "PullRequest"
 	| "Issue"
@@ -12,14 +14,14 @@ export interface GitHubNotificationSubject {
 	title: string;
 	type: NotificationSubjectType;
 	url: string;
-	latestCommentUrl?: string | null;
+	latestCommentUrl?: string | null | undefined;
 }
 
 export interface PullRequestInfo {
-	state?: string;
-	merged?: boolean;
-	isDraft?: boolean;
-	reviewDecision?: string | null;
+	state?: string | undefined;
+	merged?: boolean | undefined;
+	isDraft?: boolean | undefined;
+	reviewDecision?: string | null | undefined;
 }
 
 export interface GitHubNotificationItem {
@@ -28,21 +30,12 @@ export interface GitHubNotificationItem {
 	updatedAt: string;
 	unread: boolean;
 	repository: string;
-	author?: string;
-	pullRequest?: PullRequestInfo;
+	author?: string | undefined;
+	pullRequest?: PullRequestInfo | undefined;
 	subject: GitHubNotificationSubject;
-	htmlUrl?: string;
+	htmlUrl?: string | undefined;
 }
 
-export interface ExecResult {
-	stdout: string;
-	stderr: string;
-	code: number;
-	killed?: boolean;
-}
+export type { ExecResult };
 
-export type ExecFn = (
-	command: string,
-	args: string[],
-	options?: { timeout?: number; signal?: AbortSignal },
-) => Promise<ExecResult>;
+export type ExecFn = (command: string, args: string[], options?: ExecOptions) => Promise<ExecResult>;

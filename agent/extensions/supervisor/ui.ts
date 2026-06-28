@@ -1,12 +1,12 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
-import { openUrl } from "./open-url";
-import type { GitHubClient } from "./github";
-import type { ExecFn, GitHubNotificationItem } from "./types";
+import { openUrl } from "./open-url.ts";
+import type { GitHubClient } from "./github.ts";
+import type { ExecFn, GitHubNotificationItem } from "./types.ts";
 
 const POLL_MS = 60_000;
 const MIN_BODY_ROWS = 1;
-const windowId = process.env.WINDOWID;
+const windowId = process.env["WINDOWID"];
 
 type StatusLevel = "info" | "success" | "error" | "muted";
 
@@ -32,13 +32,18 @@ export class SupervisorComponent implements Component {
 	private hasLoadedNotifications = false;
 	private viewAll = false;
 
-	constructor(
-		private readonly tui: TUI,
-		private readonly theme: PiTheme,
-		private readonly github: GitHubClient,
-		private readonly exec: ExecFn,
-		private readonly done: () => void,
-	) {
+	private readonly tui: TUI;
+	private readonly theme: PiTheme;
+	private readonly github: GitHubClient;
+	private readonly exec: ExecFn;
+	private readonly done: () => void;
+
+	constructor(tui: TUI, theme: PiTheme, github: GitHubClient, exec: ExecFn, done: () => void) {
+		this.tui = tui;
+		this.theme = theme;
+		this.github = github;
+		this.exec = exec;
+		this.done = done;
 		setUrgent(false);
 		void this.refresh("loading");
 		this.pollTimer = setInterval(() => {

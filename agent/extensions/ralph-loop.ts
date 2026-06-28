@@ -18,8 +18,8 @@ type IssueRef = {
 	path: string;
 	relPath: string;
 	title: string;
-	status?: string;
-	number?: number;
+	status?: string | undefined;
+	number?: number | undefined;
 };
 
 type VerifyMode = "auto" | "none" | "commands";
@@ -31,7 +31,7 @@ type LoopState = {
 	scratchDir: string;
 	issues: IssueRef[];
 	queue: IssueRef[];
-	current?: IssueRef;
+	current?: IssueRef | undefined;
 	currentAttempt: number;
 	startedIssues: number;
 	completed: IssueRef[];
@@ -459,6 +459,10 @@ function truncateText(text: string, maxChars = 8000): string {
 }
 
 async function runVerification(pi: ExtensionAPI, state: LoopState, signal?: AbortSignal) {
+	const execOptions = signal
+		? { timeout: state.verifyTimeoutMs, signal }
+		: { timeout: state.verifyTimeoutMs };
+
 	if (state.verifyMode === "none") {
 		return { ok: true, output: "Verification disabled by --verify none." };
 	}
@@ -470,7 +474,7 @@ async function runVerification(pi: ExtensionAPI, state: LoopState, signal?: Abor
 	const chunks: string[] = [];
 	for (const command of state.verifyCommands) {
 		chunks.push(`$ ${command}`);
-		const result = await pi.exec("bash", ["-lc", `cd ${shellQuote(state.repoRoot)} && ${command}`], { timeout: state.verifyTimeoutMs, signal }) as CommandResult;
+		const result = await pi.exec("bash", ["-lc", `cd ${shellQuote(state.repoRoot)} && ${command}`], execOptions) as CommandResult;
 		const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
 		if (output) chunks.push(truncateText(output));
 		chunks.push(`exit code: ${result.code}${result.killed ? " (killed/timeout)" : ""}`);
@@ -657,7 +661,7 @@ function startNextIssue(pi: ExtensionAPI, ctx: { ui: { setStatus: (key: string, 
 	sendUserMessage(pi, ctx, issuePrompt(state, issue));
 }
 
-async function handleCompleted(pi: ExtensionAPI, params: { summary: string; commitMessage?: string }, ctx: { ui: { setStatus: (key: string, value: string | undefined) => void; notify?: (message: string, level: "info" | "warning" | "error") => void }; isIdle?: () => boolean; signal?: AbortSignal }) {
+async function handleCompleted(pi: ExtensionAPI, params: { summary: string; commitMessage?: string }, ctx: { ui: { setStatus: (key: string, value: string | undefined) => void; notify?: (message: string, level: "info" | "warning" | "error") => void }; isIdle?: () => boolean; signal?: AbortSignal | undefined }) {
 	const state = activeLoop;
 	const issue = state?.current;
 	if (!state || !issue) throw new Error("No active Ralph Loop issue.");
@@ -873,6 +877,7 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
 			if (!activeLoop || !activeLoop.current) {
 				return {
 					content: [{ type: "text", text: "No active Ralph Loop issue. Do not call ralph_issue_result outside /ralph-loop." }],
+					details: {},
 					terminate: true,
 				};
 			}
@@ -895,7 +900,7 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
 
 	pi.on("context", async (event) => {
 		const state = activeLoop;
-		if (!state?.current) return;
+		if (!state?.current) return undefined;
 
 		const markerNeedle = `${ISSUE_CONTEXT_MARKER_PREFIX} ${state.id}:${state.current.relPath}:`;
 		let startIndex = -1;
@@ -906,17 +911,18 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
 			}
 		}
 
-		if (startIndex === -1) return;
+		if (startIndex === -1) return undefined;
 		return { messages: event.messages.slice(startIndex) };
 	});
 
 	pi.on("tool_call", async (event) => {
-		if (!activeLoop || event.toolName !== "bash") return;
+		if (!activeLoop || event.toolName !== "bash") return undefined;
 		const input = event.input as { command?: string };
 		const command = input.command ?? "";
 		if (/\bgit\s+(?:[^;&|]*\s+)?commit\b/.test(command)) {
 			return { block: true, reason: "Ralph Loop owns commits and will commit unsigned after verification. Do not run git commit manually." };
 		}
+		return undefined;
 	});
 
 	pi.on("session_shutdown", async () => {
