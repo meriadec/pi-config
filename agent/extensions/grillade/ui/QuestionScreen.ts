@@ -183,10 +183,10 @@ export class QuestionScreen implements Component, Focusable {
     const phase = this.question.phase ?? "questioning";
     const progress = this.formatProgress();
     const docs = this.formatDocsMode();
-    const title = this.style.accent(this.theme.bold("Grillade"));
+    const title = this.theme.bold("Grillade");
     const statusParts = [phase, ...(progress ? [progress] : []), ...(docs ? [docs] : [])];
-    const status = this.style.muted(statusParts.join(" • "));
-    return [fitLine(`${title} ${status}`, width), this.style.border("═".repeat(width))];
+    const label = `${title} ${statusParts.join(" • ")}`;
+    return [this.style.selected(padLine(` ${label} `, width))];
   }
 
   private renderQuestion(width: number): string[] {
@@ -314,10 +314,9 @@ export class QuestionScreen implements Component, Focusable {
     const modeHelp = this.mode === "active-work" ? "Esc confirm cancel" : "Esc pause";
     const customHelp = this.canUseCustomAnswer() ? " • C custom" : "";
     return [
-      this.style.border("═".repeat(width)),
-      fitLine(
+      fillLine(
         this.style.dim(
-          `←/→ choices • ↑/↓ scroll • 1–${this.question.options.length} jump • Enter choose${customHelp} • ${modeHelp}`,
+          ` ←/→ choices • ↑/↓ scroll • 1–${this.question.options.length} jump • Enter choose${customHelp} • ${modeHelp} `,
         ),
         width,
       ),
@@ -568,6 +567,15 @@ function wrapIndented(
 
 function fitLine(line: string, width: number): string {
   return truncateToWidth(line, width, "", false);
+}
+
+function fillLine(line: string, width: number): string {
+  const fitted = fitLine(line, width);
+  return padLine(fitted, width);
+}
+
+function padLine(line: string, width: number): string {
+  return `${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`;
 }
 
 function centerLine(line: string, width: number): string {

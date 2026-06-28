@@ -4,10 +4,13 @@ import {
   visibleWidth,
   type Component,
   type OverlayHandle,
+  type TUI,
 } from "@earendil-works/pi-tui";
 
-const FULLSCREEN_FILL_LINES = 200;
+const FALLBACK_VIEWPORT_HEIGHT = 24;
 const MIN_CONTENT_WIDTH = 32;
+const CARD_MAX_WIDTH = 68;
+const CARD_MIN_WIDTH = 34;
 
 export const GRILLADE_FULLSCREEN_OVERLAY_OPTIONS = {
   anchor: "top-left",
@@ -24,7 +27,7 @@ export type GrilladePreparingUiContext = {
   ui: {
     custom<T>(
       factory: (
-        tui: unknown,
+        tui: TUI,
         theme: Theme,
         keybindings: unknown,
         done: (result: T) => void,
@@ -55,10 +58,10 @@ export function showGrilladePreparingScreen(
   let state: PreparingOverlayState | undefined;
   void ctx.ui
     .custom<null>(
-      (_tui, theme, _keybindings, done) => {
+      (tui, theme, _keybindings, done) => {
         state = { done };
         activePreparingOverlay = state;
-        return new PreparingScreen(theme, message);
+        return new PreparingScreen(theme, message, () => tui.terminal.rows);
       },
       {
         overlay: true,
@@ -82,50 +85,95 @@ export function closeGrilladePreparingScreen(): void {
 
 class PreparingScreen implements Component {
   private cachedWidth: number | undefined;
+  private cachedHeight: number | undefined;
   private cachedLines: string[] | undefined;
   private readonly theme: Theme;
   private readonly message: string;
+  private readonly getViewportHeight: () => number;
 
-  constructor(theme: Theme, message: string) {
+  constructor(theme: Theme, message: string, getViewportHeight: () => number) {
     this.theme = theme;
     this.message = message;
+    this.getViewportHeight = getViewportHeight;
   }
 
   render(width: number): string[] {
-    if (this.cachedWidth === width && this.cachedLines) return this.cachedLines;
+    const viewportHeight = Math.max(1, this.getViewportHeight() || FALLBACK_VIEWPORT_HEIGHT);
+    if (this.cachedWidth === width && this.cachedHeight === viewportHeight && this.cachedLines) {
+      return this.cachedLines;
+    }
 
     const safeWidth = Math.max(MIN_CONTENT_WIDTH, width);
     const blank = " ".repeat(safeWidth);
-    const lines = Array.from({ length: FULLSCREEN_FILL_LINES }, () => blank);
-    const accent = (text: string) => this.theme.fg("accent", text);
-    const muted = (text: string) => this.theme.fg("muted", text);
-    const dim = (text: string) => this.theme.fg("dim", text);
-
-    lines[1] = paintLine(
-      `${accent(this.theme.bold("Grillade"))} ${muted("interview mode")}`,
-      safeWidth,
-    );
-    lines[2] = this.theme.fg("border", "═".repeat(safeWidth));
-    lines[5] = paintLine(accent("●") + " " + this.theme.bold(this.message), safeWidth);
-    lines[7] = paintLine(
-      dim(
-        "The question UI will replace this screen as soon as the first structured question is ready.",
-      ),
-      safeWidth,
-    );
+    const lines = Array.from({ length: viewportHeight }, () => blank);
+    const card = this.renderCenteredCard(safeWidth);
+    const startRow = Math.max(0, Math.floor((viewportHeight - card.length) / 2));
+    for (const [index, line] of card.entries()) {
+      lines[startRow + index] = centerLine(line, safeWidth);
+    }
 
     this.cachedWidth = width;
+    this.cachedHeight = viewportHeight;
     this.cachedLines = lines.map((line) => truncateToWidth(line, width, "", false));
     return this.cachedLines;
   }
 
+  private renderCenteredCard(width: number): string[] {
+    const cardWidth = Math.min(CARD_MAX_WIDTH, Math.max(CARD_MIN_WIDTH, width - 8));
+    const innerWidth = Math.max(1, cardWidth - 4);
+    const accent = (text: string) => this.theme.fg("accent", text);
+    const muted = (text: string) => this.theme.fg("muted", text);
+    const dim = (text: string) => this.theme.fg("dim", text);
+    const border = (text: string) => this.theme.fg("border", text);
+    const title = accent(this.theme.bold("Grillade"));
+    const subtitle = muted("interview mode");
+    const message = accent("●") + " " + this.theme.bold(this.message);
+    const hint = dim("The first structured question will appear here automatically.");
+
+    return [
+      border(`╭${"─".repeat(Math.max(0, cardWidth - 2))}╮`),
+      cardLine(`${title} ${subtitle}`, cardWidth),
+      cardLine("", cardWidth),
+      cardLine(message, cardWidth),
+      cardLine("", cardWidth),
+      ...wrapPlain(hint, innerWidth).map((line) => cardLine(line, cardWidth)),
+      border(`╰${"─".repeat(Math.max(0, cardWidth - 2))}╯`),
+    ];
+  }
+
   invalidate(): void {
     this.cachedWidth = undefined;
+    this.cachedHeight = undefined;
     this.cachedLines = undefined;
   }
 }
 
-function paintLine(content: string, width: number): string {
+function cardLine(content: string, width: number): string {
+  const innerWidth = Math.max(0, width - 4);
+  const fitted = truncateToWidth(content, innerWidth, "", false);
+  const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(fitted)));
+  return `│ ${fitted}${padding} │`;
+}
+
+function centerLine(content: string, width: number): string {
   const fitted = truncateToWidth(content, width, "", false);
-  return `${fitted}${" ".repeat(Math.max(0, width - visibleWidth(fitted)))}`;
+  const left = Math.max(0, Math.floor((width - visibleWidth(fitted)) / 2));
+  return `${" ".repeat(left)}${fitted}${" ".repeat(Math.max(0, width - left - visibleWidth(fitted)))}`;
+}
+
+function wrapPlain(text: string, width: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (visibleWidth(next) <= width) {
+      current = next;
+      continue;
+    }
+    if (current) lines.push(current);
+    current = word;
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [""];
 }
