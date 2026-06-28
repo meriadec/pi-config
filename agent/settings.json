@@ -1,7 +1,7 @@
 {
   "lastChangelogVersion": "0.80.2",
-  "defaultProvider": "ollama",
-  "defaultModel": "deepseek-r1:1.5b",
+  "defaultProvider": "github-copilot",
+  "defaultModel": "gpt-5.5",
   "hideThinkingBlock": false,
   "theme": "pi-nord-aurora",
   "defaultThinkingLevel": "medium",
