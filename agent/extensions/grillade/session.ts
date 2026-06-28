@@ -18,6 +18,7 @@ import {
   type GrilladeStateEntry,
   type SemanticGrilladeState,
 } from "./state.ts";
+import { closeGrilladePreparingScreen, showGrilladePreparingScreen } from "./ui/PreparingScreen.ts";
 import { askGrilladeQuestionInUi } from "./ui/question.ts";
 
 const DEFAULT_DOCS_MODE = true;
@@ -38,6 +39,9 @@ type GrilladeResumeCandidate = {
 export function registerGrilladeCommand(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => {
     restoreGrilladeUiForSession(ctx);
+  });
+  pi.on("session_shutdown", () => {
+    closeGrilladePreparingScreen();
   });
 
   pi.registerCommand("grillade", {
@@ -100,6 +104,7 @@ async function startNewGrillade(
   args: Extract<GrilladeCommandArgs, { kind: "start" }>,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
+  showGrilladePreparingScreen(ctx, "Creating Grillade session…");
   await ctx.waitForIdle();
 
   const grilladeId = randomUUID();
@@ -139,20 +144,41 @@ async function startNewGrillade(
   const result = await ctx.newSession(newSessionOptions);
 
   if (result.cancelled) {
+    closeGrilladePreparingScreen();
     notify(ctx, "Grillade start was cancelled by a session switch hook.", "warning");
   }
 }
 
 async function openStartedGrillade(
-  ctx: Pick<ExtensionCommandContext, "ui"> & { sendUserMessage(content: string): Promise<void> },
+  ctx: Pick<ExtensionCommandContext, "ui" | "mode" | "hasUI"> & {
+    sendMessage(
+      message: {
+        customType: string;
+        content: string;
+        display: boolean;
+        details?: Record<string, unknown>;
+      },
+      options: { triggerTurn: boolean },
+    ): Promise<void>;
+  },
   kickoff: string,
   sessionName: string,
   docsMode: boolean,
 ): Promise<void> {
   ctx.ui.setTitle(sessionName);
   ctx.ui.setStatus("grillade", docsMode ? "Grillade • docs" : "Grillade • no docs");
-  notify(ctx, `Started ${sessionName}.`, "info");
-  await ctx.sendUserMessage(kickoff);
+  showGrilladePreparingScreen(ctx);
+  ctx.ui.setWorkingMessage(ctx.ui.theme.fg("accent", "Preparing first Grillade question…"));
+  ctx.ui.setWorkingIndicator({ frames: [ctx.ui.theme.fg("accent", "●")] });
+  await ctx.sendMessage(
+    {
+      customType: "grillade-kickoff",
+      content: kickoff,
+      display: false,
+      details: { docsMode, sessionName },
+    },
+    { triggerTurn: true },
+  );
 }
 
 async function resumeGrillade(ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {

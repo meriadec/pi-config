@@ -31,11 +31,12 @@ export function registerGrilladeTools(pi: ExtensionAPI): void {
     label: "Grillade Question",
     description:
       "Ask one structured Grillade interview question and block until the user submits an answer or closes/cancels the question UI.",
-    promptSnippet: "Ask a structured Grillade interview question with 2–5 options",
+    promptSnippet: "Ask a structured Grillade interview question with 2–3 options",
     promptGuidelines: [
       "Use grillade_ask_question for every user-facing Grillade interview turn; do not ask Grillade questions as freeform markdown.",
       "Ask one question at a time and wait for the tool result before continuing.",
-      "Provide 2–5 options, exactly one recommended option, and a title, body/rationale, and confidence for every option.",
+      "Provide 2–3 authored, mutually comparable options; do not force stock archetypes such as conservative/recommended/aggressive.",
+      "Mark exactly one authored option as recommended, and provide a title, body/rationale, and confidence for every option.",
       "Always allow custom answer and steering; honor steering such as max question counts, wrap-up requests, and requests to explore more.",
       "If grillade_ask_question returns paused or cancelled, stop immediately and do not continue the interview in prose.",
     ],

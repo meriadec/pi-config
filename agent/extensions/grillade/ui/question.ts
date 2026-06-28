@@ -2,6 +2,10 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ActiveGrilladeQuestion } from "../state.ts";
 import type { GrilladeQuestionResult, NormalizedGrilladeQuestion } from "../protocol.ts";
 import { createGrilladeQuestionView, type GrilladeQuestionViewOptions } from "./GrilladeView.ts";
+import {
+  closeGrilladePreparingScreen,
+  GRILLADE_FULLSCREEN_OVERLAY_OPTIONS,
+} from "./PreparingScreen.ts";
 
 const WIDGET_KEY = "grillade-question";
 
@@ -27,6 +31,9 @@ export async function askGrilladeQuestionInUi(
 
   ctx.ui.setStatus("grillade", formatStatus(question, options.docsMode));
   ctx.ui.setWidget(WIDGET_KEY, undefined);
+  ctx.ui.setWorkingMessage(undefined);
+  ctx.ui.setWorkingIndicator();
+  closeGrilladePreparingScreen();
 
   return await new Promise<GrilladeQuestionResult>((resolve) => {
     let settled = false;
@@ -58,17 +65,20 @@ export async function askGrilladeQuestionInUi(
     }
 
     void ctx.ui
-      .custom<GrilladeQuestionResult>((tui, theme, keybindings, done) => {
-        closeCustomUi = done;
-        return createGrilladeQuestionView(
-          tui,
-          theme,
-          keybindings,
-          closeAndFinish,
-          question,
-          options,
-        );
-      })
+      .custom<GrilladeQuestionResult>(
+        (tui, theme, keybindings, done) => {
+          closeCustomUi = done;
+          return createGrilladeQuestionView(
+            tui,
+            theme,
+            keybindings,
+            closeAndFinish,
+            question,
+            options,
+          );
+        },
+        { overlay: true, overlayOptions: GRILLADE_FULLSCREEN_OVERLAY_OPTIONS },
+      )
       .then(finish, () => finish(paused(question.questionId, "Question UI closed unexpectedly.")));
   });
 }

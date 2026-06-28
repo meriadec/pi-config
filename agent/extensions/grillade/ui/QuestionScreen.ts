@@ -17,8 +17,8 @@ import type {
 import type { ActiveGrilladeQuestion } from "../state.ts";
 import { getGrilladeUiStyle, type GrilladeUiStyle } from "./styles.ts";
 
-const OPTION_VIEWPORT_HEIGHT = 18;
-const MIN_CARD_WIDTH = 24;
+const FULLSCREEN_FILL_LINES = 200;
+const MIN_CONTENT_WIDTH = 32;
 const GUTTER_WIDTH = 2;
 const SAFE_RESET = "\x1b[0m";
 
@@ -33,16 +33,13 @@ export type GrilladeQuestionScreenOptions = {
   onRenderNeeded?: () => void;
 };
 
-type FocusTarget = "options" | "input";
-
-type SubmitSource = "selected-option" | "custom-answer";
+type FocusTarget = "choice" | "custom";
 
 type OverlayState = { kind: "none" } | { kind: "confirm-cancel" };
 
 export class QuestionScreen implements Component, Focusable {
   private selectedIndex: number;
-  private focusTarget: FocusTarget = "options";
-  private scrollTop = 0;
+  private focusTarget: FocusTarget = "choice";
   private cachedWidth: number | undefined;
   private cachedLines: string[] | undefined;
   private overlay: OverlayState = { kind: "none" };
@@ -73,9 +70,8 @@ export class QuestionScreen implements Component, Focusable {
       0,
       question.options.findIndex((option) => option.id === question.recommendedOptionId),
     );
-    this.input.onSubmit = () =>
-      this.submit(this.focusTarget === "input" ? "custom-answer" : "selected-option");
-    this.input.onEscape = () => this.closeOrConfirm();
+    this.input.onSubmit = () => this.submitCustomAnswer();
+    this.input.onEscape = () => this.setFocusTarget("choice");
   }
 
   get focused(): boolean {
@@ -93,9 +89,9 @@ export class QuestionScreen implements Component, Focusable {
       return;
     }
 
-    if (this.focusTarget === "input") {
+    if (this.focusTarget === "custom") {
       if (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab"))) {
-        this.setFocusTarget("options");
+        this.setFocusTarget("choice");
         return;
       }
       this.input.handleInput(data);
@@ -103,18 +99,18 @@ export class QuestionScreen implements Component, Focusable {
       return;
     }
 
-    if (matchesKey(data, Key.up)) {
+    if (matchesKey(data, Key.left) || matchesKey(data, Key.up)) {
       this.moveSelection(-1);
-    } else if (matchesKey(data, Key.down)) {
+    } else if (matchesKey(data, Key.right) || matchesKey(data, Key.down)) {
       this.moveSelection(1);
     } else if (matchesKey(data, Key.home)) {
       this.selectIndex(0);
     } else if (matchesKey(data, Key.end)) {
       this.selectIndex(this.question.options.length - 1);
-    } else if (matchesKey(data, Key.tab) || data === "a" || data === "c" || data === "i") {
-      this.setFocusTarget("input");
+    } else if (this.canUseCustomAnswer() && (matchesKey(data, Key.tab) || isCustomShortcut(data))) {
+      this.setFocusTarget("custom");
     } else if (matchesKey(data, Key.enter)) {
-      this.submit("selected-option");
+      this.submitSelectedOption();
     } else if (matchesKey(data, Key.escape)) {
       this.closeOrConfirm();
     } else {
@@ -127,16 +123,23 @@ export class QuestionScreen implements Component, Focusable {
     if (this.cachedWidth === width && this.cachedLines) return this.cachedLines;
 
     const safeWidth = Math.max(1, width);
-    const contentWidth = Math.max(MIN_CARD_WIDTH, safeWidth - GUTTER_WIDTH);
+    const contentWidth = Math.max(MIN_CONTENT_WIDTH, safeWidth - GUTTER_WIDTH);
     const lines: string[] = [];
     lines.push(...this.renderHeader(contentWidth));
     lines.push("");
     lines.push(...this.renderQuestion(contentWidth));
     lines.push("");
-    lines.push(...this.renderOptionViewport(contentWidth));
+    lines.push(...this.renderChoiceStrip(contentWidth));
     lines.push("");
-    lines.push(...this.renderInput(contentWidth));
+    if (this.focusTarget === "custom") {
+      lines.push(...this.renderCustomAnswer(contentWidth));
+    } else {
+      lines.push(...this.renderFocusedChoice(contentWidth));
+      lines.push("");
+      lines.push(...this.renderCustomAffordance(contentWidth));
+    }
     lines.push(...this.renderFooter(contentWidth));
+    lines.push(...this.renderScreenFill(lines.length));
 
     const fitted = lines.map((line) => truncateToWidth(line, safeWidth, "", false));
     if (this.overlay.kind === "confirm-cancel") {
@@ -160,13 +163,14 @@ export class QuestionScreen implements Component, Focusable {
     const title = this.style.accent(this.theme.bold("Grillade"));
     const statusParts = [phase, ...(progress ? [progress] : []), ...(docs ? [docs] : [])];
     const status = this.style.muted(statusParts.join(" • "));
-    return [fitLine(`${title} ${status}`, width), this.style.border("─".repeat(width))];
+    return [fitLine(`${title} ${status}`, width), this.style.border("═".repeat(width))];
   }
 
   private renderQuestion(width: number): string[] {
     const lines: string[] = [];
     lines.push(...wrapIndented(this.style.strong(this.question.question), width, "? ", "  "));
     if (this.question.context) {
+      lines.push("");
       lines.push(
         ...wrapIndented(
           `${this.style.muted("Context:")} ${this.question.context}`,
@@ -177,7 +181,8 @@ export class QuestionScreen implements Component, Focusable {
       );
     }
     if (this.question.constraints?.length) {
-      lines.push(this.style.muted("  Constraints:"));
+      lines.push("");
+      lines.push(this.style.muted("  Constraints"));
       for (const constraint of this.question.constraints) {
         lines.push(...wrapIndented(constraint, width, "  • ", "    "));
       }
@@ -185,93 +190,86 @@ export class QuestionScreen implements Component, Focusable {
     return lines.map((line) => fitLine(line, width));
   }
 
-  private renderOptionViewport(width: number): string[] {
-    const optionLines = this.renderAllOptionCards(width);
-    const selectedRange = this.findSelectedCardRange(optionLines);
-    this.scrollTop = clampScrollToSelected(
-      this.scrollTop,
-      selectedRange,
-      OPTION_VIEWPORT_HEIGHT,
-      optionLines.length,
-    );
-    const view = optionLines
-      .slice(this.scrollTop, this.scrollTop + OPTION_VIEWPORT_HEIGHT)
-      .map((line) => line.text);
-    const hiddenAbove = this.scrollTop > 0;
-    const hiddenBelow = this.scrollTop + OPTION_VIEWPORT_HEIGHT < optionLines.length;
-    const title =
-      hiddenAbove || hiddenBelow
-        ? `Options ${hiddenAbove ? "▲" : " "}${hiddenBelow ? "▼" : " "}`
-        : "Options";
-    return [this.style.muted(title), ...view];
-  }
-
-  private renderAllOptionCards(width: number): Array<{ text: string; optionIndex?: number }> {
-    const lines: Array<{ text: string; optionIndex?: number }> = [];
-    for (const [index, option] of this.question.options.entries()) {
-      if (index > 0) lines.push({ text: "" });
-      const selected = index === this.selectedIndex;
+  private renderChoiceStrip(width: number): string[] {
+    const parts = this.question.options.map((option, index) => {
+      const selected = this.focusTarget === "choice" && index === this.selectedIndex;
       const recommended = option.id === this.question.recommendedOptionId;
-      for (const text of renderOptionCard({
-        index,
-        width,
-        selected,
-        recommended,
-        title: option.title,
-        body: option.body,
-        confidence: option.confidence,
-        style: this.style,
-        theme: this.theme,
-      })) {
-        lines.push({ text, optionIndex: index });
-      }
+      const label = `${index + 1} ${truncatePlain(option.title, 22)}${recommended ? " ★" : ""}`;
+      if (selected) return this.style.selected(` ${label} `);
+      if (recommended) return this.style.recommended(label);
+      return this.style.muted(label);
+    });
+    if (this.canUseCustomAnswer()) {
+      const custom =
+        this.focusTarget === "custom"
+          ? this.style.selected(" C Custom ")
+          : this.style.muted("C Custom");
+      parts.push(custom);
     }
-    return lines;
+    return [fitLine(`${this.style.dim("Choices:")} ${parts.join(this.style.dim("  │  "))}`, width)];
   }
 
-  private findSelectedCardRange(lines: Array<{ optionIndex?: number }>): {
-    start: number;
-    end: number;
-  } {
-    const start = lines.findIndex((line) => line.optionIndex === this.selectedIndex);
-    if (start < 0) return { start: 0, end: 0 };
-    let end = start;
-    while (end + 1 < lines.length && lines[end + 1]?.optionIndex === this.selectedIndex) end++;
-    return { start, end };
+  private renderFocusedChoice(width: number): string[] {
+    const option = this.question.options[this.selectedIndex];
+    if (!option) return [this.style.warning("No option is available for this question.")];
+    const recommended = option.id === this.question.recommendedOptionId;
+    return renderFocusedChoiceCard({
+      index: this.selectedIndex,
+      count: this.question.options.length,
+      width,
+      recommended,
+      title: option.title,
+      body: option.body,
+      confidence: option.confidence,
+      style: this.style,
+      theme: this.theme,
+    });
   }
 
-  private renderInput(width: number): string[] {
-    const label =
-      this.focusTarget === "input"
-        ? this.style.accent("Custom answer / steering")
-        : this.style.muted("Custom answer / steering");
-    const hint =
-      this.focusTarget === "input"
-        ? this.style.dim(
-            "Enter here submits this text as a custom answer; Tab returns to option cards.",
-          )
-        : this.style.dim(
-            "Tab/a/c focuses this field; from option cards, entered text is sent as steering.",
-          );
-    const inputWidth = Math.max(1, width - 2);
-    const renderedInput = this.input.render(inputWidth)[0] ?? "";
+  private renderCustomAffordance(width: number): string[] {
+    if (!this.canUseCustomAnswer()) return [];
     return [
-      fitLine(label, width),
       fitLine(
-        `${this.focusTarget === "input" ? this.style.accent(">") : this.style.dim(">")} ${renderedInput}`,
+        this.style.dim(
+          "Custom answer is available with C. It can override the framing or add steering.",
+        ),
         width,
       ),
-      fitLine(hint, width),
     ];
+  }
+
+  private renderCustomAnswer(width: number): string[] {
+    const title = this.style.accent(this.theme.bold("Custom answer / steering"));
+    const body =
+      "Type your own direction, correction, constraint, or wrap-up request. Enter submits this text; Esc or Tab returns to the suggested choices.";
+    const inputWidth = Math.max(1, width - 4);
+    const renderedInput = this.input.render(inputWidth)[0] ?? "";
+    const bodyLines = wrapTextWithAnsi(body, Math.max(1, width - 4));
+    const border = this.style.accent;
+    return [
+      border(`╭${"─".repeat(Math.max(0, width - 2))}╮`),
+      cardLine(title, width, border),
+      cardLine("", width, border),
+      ...bodyLines.map((line) => cardLine(this.style.muted(line), width, border)),
+      cardLine("", width, border),
+      cardLine(`${this.style.accent(">")} ${renderedInput}`, width, border),
+      border(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
+    ];
+  }
+
+  private renderScreenFill(currentLineCount: number): string[] {
+    const missing = FULLSCREEN_FILL_LINES - currentLineCount;
+    return Array.from({ length: Math.max(1, missing) }, () => "");
   }
 
   private renderFooter(width: number): string[] {
     const modeHelp = this.mode === "active-work" ? "Esc confirm cancel" : "Esc pause";
+    const customHelp = this.canUseCustomAnswer() ? " • C custom" : "";
     return [
-      this.style.border("─".repeat(width)),
+      this.style.border("═".repeat(width)),
       fitLine(
         this.style.dim(
-          `↑↓ navigate • 1–${this.question.options.length} jump • Enter submit • Tab/a/c custom/steering • ${modeHelp}`,
+          `←/→ navigate • 1–${this.question.options.length} jump • Enter choose${customHelp} • ${modeHelp}`,
         ),
         width,
       ),
@@ -318,36 +316,45 @@ export class QuestionScreen implements Component, Focusable {
 
   private selectIndex(index: number): void {
     const next = Math.max(0, Math.min(this.question.options.length - 1, index));
-    if (next === this.selectedIndex && this.focusTarget === "options") return;
+    if (next === this.selectedIndex && this.focusTarget === "choice") return;
     this.selectedIndex = next;
-    this.setFocusTarget("options");
-    this.invalidateAndRender();
+    this.setFocusTarget("choice");
   }
 
   private setFocusTarget(target: FocusTarget): void {
+    if (target === "custom" && !this.canUseCustomAnswer()) return;
     this.focusTarget = target;
     this.syncInputFocus();
     this.invalidateAndRender();
   }
 
   private syncInputFocus(): void {
-    this.input.focused = this._focused && this.focusTarget === "input";
+    this.input.focused = this._focused && this.focusTarget === "custom";
   }
 
-  private submit(source: SubmitSource): void {
+  private canUseCustomAnswer(): boolean {
+    return this.question.allowCustomAnswer !== false;
+  }
+
+  private submitSelectedOption(): void {
+    const option = this.question.options[this.selectedIndex];
+    if (!option) return;
+    this.done({
+      status: "answered",
+      questionId: this.question.questionId,
+      selectedOptionId: option.id,
+      submittedAt: new Date().toISOString(),
+    });
+  }
+
+  private submitCustomAnswer(): void {
+    if (!this.canUseCustomAnswer()) return;
     const text = this.input.getValue().trim();
+    if (!text) return;
     const result: Omit<GrilladeAnsweredResult, "status" | "submittedAt"> = {
       questionId: this.question.questionId,
+      customAnswer: text,
     };
-    if (source === "custom-answer") {
-      if (!text) return;
-      result.customAnswer = text;
-    } else {
-      const option = this.question.options[this.selectedIndex];
-      if (!option) return;
-      result.selectedOptionId = option.id;
-      if (text) result.steering = text;
-    }
     this.done({ status: "answered", ...result, submittedAt: new Date().toISOString() });
   }
 
@@ -387,10 +394,10 @@ export class QuestionScreen implements Component, Focusable {
   }
 }
 
-type OptionCardInput = {
+type FocusedChoiceCardInput = {
   index: number;
+  count: number;
   width: number;
-  selected: boolean;
   recommended: boolean;
   title: string;
   body: string;
@@ -399,33 +406,22 @@ type OptionCardInput = {
   theme: Theme;
 };
 
-function renderOptionCard(input: OptionCardInput): string[] {
-  const borderStyle = input.selected
-    ? input.style.accent
-    : input.recommended
-      ? input.style.recommended
-      : input.style.border;
+function renderFocusedChoiceCard(input: FocusedChoiceCardInput): string[] {
+  const borderStyle = input.recommended ? input.style.recommended : input.style.accent;
   const contentWidth = Math.max(1, input.width - 4);
-  const number = `${input.index + 1}.`;
-  const selection = input.selected ? "▶" : " ";
+  const optionLabel = input.style.muted(`Option ${input.index + 1} of ${input.count}`);
   const recommended = input.recommended ? input.style.recommended(" ★ recommended") : "";
   const confidenceText = input.style.confidence(
     input.confidence,
     `${confidenceLabel(input.confidence)} confidence`,
   );
-  const header = `${selection} ${number} ${input.theme.bold(input.title)}${recommended} — ${confidenceText}`;
+  const header = `${optionLabel}  ${input.theme.bold(input.title)}${recommended}`;
   const bodyLines = wrapTextWithAnsi(input.body, contentWidth);
-  const headerLines = wrapTextWithAnsi(header, contentWidth);
-  const rawLines = [...headerLines, "", ...bodyLines];
+  const meta = input.style.dim(confidenceText);
+  const rawLines = [header, "", ...bodyLines, "", meta];
   const top = borderStyle(`╭${"─".repeat(Math.max(0, input.width - 2))}╮`);
   const bottom = borderStyle(`╰${"─".repeat(Math.max(0, input.width - 2))}╯`);
-  return [
-    top,
-    ...rawLines.map((line) =>
-      cardLine(line, input.width, borderStyle, input.selected ? input.style.selected : undefined),
-    ),
-    bottom,
-  ];
+  return [top, ...rawLines.map((line) => cardLine(line, input.width, borderStyle)), bottom];
 }
 
 function cardLine(
@@ -482,14 +478,12 @@ function optionNumberIndex(data: string, optionCount: number): number | undefine
   return index >= 0 && index < optionCount ? index : undefined;
 }
 
-function clampScrollToSelected(
-  scrollTop: number,
-  selectedRange: { start: number; end: number },
-  viewportHeight: number,
-  totalLines: number,
-): number {
-  let next = scrollTop;
-  if (selectedRange.start < next) next = selectedRange.start;
-  if (selectedRange.end >= next + viewportHeight) next = selectedRange.end - viewportHeight + 1;
-  return Math.max(0, Math.min(Math.max(0, totalLines - viewportHeight), next));
+function isCustomShortcut(data: string): boolean {
+  return data === "c" || data === "C";
+}
+
+function truncatePlain(text: string, maxLength: number): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= maxLength) return oneLine;
+  return `${oneLine.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }

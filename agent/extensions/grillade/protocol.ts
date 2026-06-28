@@ -34,8 +34,8 @@ export const GrilladeQuestionOptionSchema = Type.Object({
 
 export const GrilladeQuestionOptionsSchema = Type.Array(GrilladeQuestionOptionSchema, {
   minItems: 2,
-  maxItems: 5,
-  description: "Two to five mutually comparable options. Exactly one must be recommended.",
+  maxItems: 3,
+  description: "Two or three mutually comparable options. Exactly one must be recommended.",
 });
 
 export const GrilladeQuestionProgressSchema = Type.Object({
@@ -136,15 +136,7 @@ export type GrilladeFinalActionId = (typeof GRILLADE_FINAL_ACTION_IDS)[number];
 export type GrilladeQuestionOption = Static<typeof GrilladeQuestionOptionSchema>;
 export type GrilladeQuestionOptions =
   | [GrilladeQuestionOption, GrilladeQuestionOption]
-  | [GrilladeQuestionOption, GrilladeQuestionOption, GrilladeQuestionOption]
-  | [GrilladeQuestionOption, GrilladeQuestionOption, GrilladeQuestionOption, GrilladeQuestionOption]
-  | [
-      GrilladeQuestionOption,
-      GrilladeQuestionOption,
-      GrilladeQuestionOption,
-      GrilladeQuestionOption,
-      GrilladeQuestionOption,
-    ];
+  | [GrilladeQuestionOption, GrilladeQuestionOption, GrilladeQuestionOption];
 export type GrilladeQuestionProgress = Static<typeof GrilladeQuestionProgressSchema>;
 export type GrilladeAskQuestionInput = Omit<
   Static<typeof GrilladeAskQuestionInputSchema>,
@@ -185,8 +177,8 @@ export function normalizeGrilladeQuestion(
 export function assertValidGrilladeQuestion(
   question: Pick<GrilladeAskQuestionInput, "options">,
 ): asserts question is Pick<GrilladeAskQuestionInput, "options"> {
-  if (question.options.length < 2 || question.options.length > 5) {
-    throw new Error("Grillade questions must have between 2 and 5 options.");
+  if (question.options.length < 2 || question.options.length > 3) {
+    throw new Error("Grillade questions must have between 2 and 3 options.");
   }
 
   const optionIds = new Set<string>();
