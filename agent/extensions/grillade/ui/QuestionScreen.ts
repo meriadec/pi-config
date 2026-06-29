@@ -1,7 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
-  Input,
+  CURSOR_MARKER,
   Key,
+  decodeKittyPrintable,
   matchesKey,
   truncateToWidth,
   visibleWidth,
@@ -41,6 +42,10 @@ type FocusTarget = "choice" | "custom";
 
 type OverlayState = { kind: "none" } | { kind: "confirm-cancel" };
 
+type SubmittedState = {
+  label: string;
+};
+
 export class QuestionScreen implements Component, Focusable {
   private selectedIndex: number;
   private focusTarget: FocusTarget = "choice";
@@ -48,7 +53,8 @@ export class QuestionScreen implements Component, Focusable {
   private cachedWidth: number | undefined;
   private cachedLines: string[] | undefined;
   private overlay: OverlayState = { kind: "none" };
-  private readonly input = new Input();
+  private submitted: SubmittedState | undefined;
+  private readonly input = new MultilineCustomAnswerInput();
   private readonly mode: GrilladeQuestionScreenMode;
   private readonly docsMode: boolean | undefined;
   private readonly style: GrilladeUiStyle;
@@ -93,6 +99,8 @@ export class QuestionScreen implements Component, Focusable {
       this.handleConfirmOverlayInput(data);
       return;
     }
+
+    if (this.submitted) return;
 
     if (this.focusTarget === "custom") {
       if (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab"))) {
@@ -141,6 +149,15 @@ export class QuestionScreen implements Component, Focusable {
     const footer = this.renderFooter(contentWidth);
     lines.push(...this.renderHeader(contentWidth));
     lines.push("");
+    if (this.submitted) {
+      lines.push(...this.renderSubmitted(contentWidth));
+      lines.push(...footer);
+      lines.push(...this.renderScreenFill(lines.length));
+      const fitted = lines.map((line) => truncateToWidth(line, safeWidth, "", false));
+      this.cachedWidth = width;
+      this.cachedLines = fitted;
+      return fitted;
+    }
     lines.push(...this.renderQuestion(contentWidth));
     lines.push("");
     lines.push(...this.renderChoiceStrip(contentWidth));
@@ -187,6 +204,28 @@ export class QuestionScreen implements Component, Focusable {
     const statusParts = [phase, ...(progress ? [progress] : []), ...(docs ? [docs] : [])];
     const label = `${title} ${statusParts.join(" • ")}`;
     return [this.style.selected(padLine(` ${label} `, width))];
+  }
+
+  private renderSubmitted(width: number): string[] {
+    if (!this.submitted) return [];
+    const border = this.style.accent;
+    const title = `${this.style.recommended("● Answer submitted")} ${this.style.muted("waiting for next Grillade question…")}`;
+    const detail = `Submitted: ${this.submitted.label}`;
+    const guidance =
+      "Keep this screen open; Pi is thinking. The next question or the final Grillade screen will replace this in place.";
+    return [
+      border(`╭${"─".repeat(Math.max(0, width - 2))}╮`),
+      cardLine(title, width, border),
+      cardLine("", width, border),
+      ...wrapTextWithAnsi(detail, Math.max(1, width - 4)).map((line) =>
+        cardLine(this.style.strong(line), width, border),
+      ),
+      cardLine("", width, border),
+      ...wrapTextWithAnsi(guidance, Math.max(1, width - 4)).map((line) =>
+        cardLine(this.style.muted(line), width, border),
+      ),
+      border(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
+    ];
   }
 
   private renderQuestion(width: number): string[] {
@@ -289,9 +328,9 @@ export class QuestionScreen implements Component, Focusable {
   private renderCustomAnswer(width: number): string[] {
     const title = this.style.accent(this.theme.bold("Custom answer / steering"));
     const body =
-      "Type your own direction, correction, constraint, or wrap-up request. Enter submits this text; Esc or Tab returns to the suggested choices.";
+      "Type your own direction, correction, constraint, or wrap-up request. Shift+Enter inserts a newline; Enter submits this text; pasted line breaks are preserved; Esc or Tab returns to the suggested choices.";
     const inputWidth = Math.max(1, width - 4);
-    const renderedInput = this.input.render(inputWidth)[0] ?? "";
+    const renderedInput = this.input.render(inputWidth);
     const bodyLines = wrapTextWithAnsi(body, Math.max(1, width - 4));
     const border = this.style.accent;
     return [
@@ -300,7 +339,7 @@ export class QuestionScreen implements Component, Focusable {
       cardLine("", width, border),
       ...bodyLines.map((line) => cardLine(this.style.muted(line), width, border)),
       cardLine("", width, border),
-      cardLine(renderedInput, width, border),
+      ...renderedInput.map((line) => cardLine(line, width, border)),
       border(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
     ];
   }
@@ -311,6 +350,11 @@ export class QuestionScreen implements Component, Focusable {
   }
 
   private renderFooter(width: number): string[] {
+    if (this.submitted) {
+      return [
+        fillLine(this.style.dim(" Waiting for Pi — next Grillade UI will appear here "), width),
+      ];
+    }
     const modeHelp = this.mode === "active-work" ? "Esc confirm cancel" : "Esc pause";
     const customHelp = this.canUseCustomAnswer() ? " • C custom" : "";
     return [
@@ -394,25 +438,39 @@ export class QuestionScreen implements Component, Focusable {
   }
 
   private submitSelectedOption(): void {
+    if (this.submitted) return;
     const option = this.question.options[this.selectedIndex];
     if (!option) return;
-    this.done({
-      status: "answered",
-      questionId: this.question.questionId,
-      selectedOptionId: option.id,
-      submittedAt: new Date().toISOString(),
-    });
+    this.submitAnswer(
+      {
+        status: "answered",
+        questionId: this.question.questionId,
+        selectedOptionId: option.id,
+        submittedAt: new Date().toISOString(),
+      },
+      option.title,
+    );
   }
 
   private submitCustomAnswer(): void {
-    if (!this.canUseCustomAnswer()) return;
+    if (this.submitted || !this.canUseCustomAnswer()) return;
     const text = this.input.getValue().trim();
     if (!text) return;
     const result: Omit<GrilladeAnsweredResult, "status" | "submittedAt"> = {
       questionId: this.question.questionId,
       customAnswer: text,
     };
-    this.done({ status: "answered", ...result, submittedAt: new Date().toISOString() });
+    this.submitAnswer(
+      { status: "answered", ...result, submittedAt: new Date().toISOString() },
+      text,
+    );
+  }
+
+  private submitAnswer(result: GrilladeAnsweredResult, label: string): void {
+    this.submitted = { label };
+    this.setFocusTarget("choice");
+    this.invalidateAndRender();
+    this.done(result);
   }
 
   private closeOrConfirm(): void {
@@ -448,6 +506,192 @@ export class QuestionScreen implements Component, Focusable {
   private invalidateAndRender(): void {
     this.invalidate();
     this.options.onRenderNeeded?.();
+  }
+}
+
+class MultilineCustomAnswerInput implements Component, Focusable {
+  private static readonly maxVisibleLines = 8;
+
+  private value = "";
+  private cursor = 0;
+  private isInPaste = false;
+  private pasteBuffer = "";
+  focused = false;
+  onSubmit?: (value: string) => void;
+  onEscape?: () => void;
+
+  getValue(): string {
+    return this.value;
+  }
+
+  handleInput(data: string): void {
+    if (data.includes("\x1b[200~")) {
+      this.isInPaste = true;
+      this.pasteBuffer = "";
+      data = data.replace("\x1b[200~", "");
+    }
+
+    if (this.isInPaste) {
+      this.pasteBuffer += data;
+      const endIndex = this.pasteBuffer.indexOf("\x1b[201~");
+      if (endIndex !== -1) {
+        const pastedText = this.pasteBuffer.slice(0, endIndex);
+        this.insertText(pastedText);
+        this.isInPaste = false;
+        const remaining = this.pasteBuffer.slice(endIndex + "\x1b[201~".length);
+        this.pasteBuffer = "";
+        if (remaining) this.handleInput(remaining);
+      }
+      return;
+    }
+
+    if (matchesKey(data, Key.escape)) {
+      this.onEscape?.();
+      return;
+    }
+    if (isNewlineInput(data)) {
+      this.insertText("\n");
+      return;
+    }
+    if (matchesKey(data, Key.enter)) {
+      this.onSubmit?.(this.value);
+      return;
+    }
+    if (matchesKey(data, Key.backspace)) {
+      this.deleteBeforeCursor();
+      return;
+    }
+    if (matchesKey(data, Key.delete)) {
+      this.deleteAfterCursor();
+      return;
+    }
+    if (matchesKey(data, Key.left)) {
+      this.moveCursor(-1);
+      return;
+    }
+    if (matchesKey(data, Key.right)) {
+      this.moveCursor(1);
+      return;
+    }
+    if (matchesKey(data, Key.home)) {
+      this.moveToLineStart();
+      return;
+    }
+    if (matchesKey(data, Key.end)) {
+      this.moveToLineEnd();
+      return;
+    }
+
+    const kittyPrintable = decodeKittyPrintable(data);
+    if (kittyPrintable !== undefined) {
+      this.insertText(kittyPrintable);
+      return;
+    }
+    if (isInsertableText(data)) {
+      this.insertText(data);
+    }
+  }
+
+  invalidate(): void {
+    // No cached state.
+  }
+
+  render(width: number): string[] {
+    const safeWidth = Math.max(1, width);
+    const logicalLines = this.value.split("\n");
+    const cursorPosition = this.cursorLineAndColumn();
+    const maxVisibleLines = MultilineCustomAnswerInput.maxVisibleLines;
+    const maxStart = Math.max(0, logicalLines.length - maxVisibleLines);
+    const startLine = Math.max(
+      0,
+      Math.min(cursorPosition.lineIndex - Math.floor(maxVisibleLines / 2), maxStart),
+    );
+    const visibleLines = logicalLines.slice(startLine, startLine + maxVisibleLines);
+    const rendered: string[] = [];
+
+    if (startLine > 0) rendered.push(`… ${startLine} line${startLine === 1 ? "" : "s"} above`);
+    for (let offset = 0; offset < visibleLines.length; offset += 1) {
+      const lineIndex = startLine + offset;
+      rendered.push(this.renderLogicalLine(logicalLines[lineIndex] ?? "", lineIndex, safeWidth));
+    }
+    const hiddenBelow = logicalLines.length - (startLine + visibleLines.length);
+    if (hiddenBelow > 0) {
+      rendered.push(`… ${hiddenBelow} line${hiddenBelow === 1 ? "" : "s"} below`);
+    }
+
+    return rendered;
+  }
+
+  private renderLogicalLine(line: string, lineIndex: number, width: number): string {
+    const prompt = lineIndex === 0 ? "> " : "  ";
+    const availableWidth = Math.max(1, width - visibleWidth(prompt));
+    const cursorPosition = this.cursorLineAndColumn();
+    if (lineIndex !== cursorPosition.lineIndex) {
+      return `${prompt}${truncateToWidth(line, availableWidth, "…", false)}`;
+    }
+
+    const beforeCursor = line.slice(0, cursorPosition.column);
+    const atCursor = line.slice(cursorPosition.column, cursorPosition.column + 1) || " ";
+    const afterCursor = line.slice(cursorPosition.column + atCursor.length);
+    const marker = this.focused ? CURSOR_MARKER : "";
+    const cursor = `\x1b[7m${atCursor}\x1b[27m`;
+    return `${prompt}${truncateToWidth(`${beforeCursor}${marker}${cursor}${afterCursor}`, availableWidth, "", false)}`;
+  }
+
+  private insertText(text: string): void {
+    const normalized = normalizeMultilineInputText(text);
+    if (!normalized) return;
+    this.value = `${this.value.slice(0, this.cursor)}${normalized}${this.value.slice(this.cursor)}`;
+    this.cursor += normalized.length;
+  }
+
+  private deleteBeforeCursor(): void {
+    if (this.cursor <= 0) return;
+    const before = this.value.slice(0, this.cursor);
+    const beforeGraphemes = Array.from(before);
+    beforeGraphemes.pop();
+    const nextBefore = beforeGraphemes.join("");
+    this.value = `${nextBefore}${this.value.slice(this.cursor)}`;
+    this.cursor = nextBefore.length;
+  }
+
+  private deleteAfterCursor(): void {
+    if (this.cursor >= this.value.length) return;
+    const after = this.value.slice(this.cursor);
+    const afterGraphemes = Array.from(after);
+    afterGraphemes.shift();
+    this.value = `${this.value.slice(0, this.cursor)}${afterGraphemes.join("")}`;
+  }
+
+  private moveCursor(delta: -1 | 1): void {
+    if (delta < 0) {
+      if (this.cursor <= 0) return;
+      const beforeGraphemes = Array.from(this.value.slice(0, this.cursor));
+      const previous = beforeGraphemes.at(-1);
+      this.cursor -= previous?.length ?? 1;
+      return;
+    }
+    if (this.cursor >= this.value.length) return;
+    const next = Array.from(this.value.slice(this.cursor)).at(0);
+    this.cursor += next?.length ?? 1;
+  }
+
+  private moveToLineStart(): void {
+    this.cursor = this.value.lastIndexOf("\n", Math.max(0, this.cursor - 1)) + 1;
+  }
+
+  private moveToLineEnd(): void {
+    const nextLineBreak = this.value.indexOf("\n", this.cursor);
+    this.cursor = nextLineBreak === -1 ? this.value.length : nextLineBreak;
+  }
+
+  private cursorLineAndColumn(): { lineIndex: number; column: number } {
+    const beforeCursor = this.value.slice(0, this.cursor);
+    const lines = beforeCursor.split("\n");
+    return {
+      lineIndex: lines.length - 1,
+      column: lines.at(-1)?.length ?? 0,
+    };
   }
 }
 
@@ -591,6 +835,32 @@ function optionNumberIndex(data: string, optionCount: number): number | undefine
 
 function isCustomShortcut(data: string): boolean {
   return data === "c" || data === "C";
+}
+
+function isNewlineInput(data: string): boolean {
+  return (
+    matchesKey(data, Key.shift("enter")) ||
+    data === "\n" ||
+    data === "\x1b\r" ||
+    data === "\x1b[13;2~"
+  );
+}
+
+function isInsertableText(data: string): boolean {
+  if (!data) return false;
+  return [...data].every((character) => {
+    const code = character.charCodeAt(0);
+    return (
+      character === "\n" ||
+      character === "\r" ||
+      character === "\t" ||
+      (code >= 32 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f))
+    );
+  });
+}
+
+function normalizeMultilineInputText(text: string): string {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\t/g, "    ");
 }
 
 function truncatePlain(text: string, maxLength: number): string {

@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { GrilladeFinishInput } from "../protocol.ts";
 import { FinalScreen, type GrilladeFinalScreenResult } from "./FinalScreen.ts";
+import { closeGrilladeQuestionUi } from "./question.ts";
 
 const WIDGET_KEY = "grillade-question";
 
@@ -23,6 +24,7 @@ export async function showGrilladeFinalScreenInUi(
 
   if (ctx.mode !== "tui" || !ctx.hasUI) return fallback();
 
+  closeGrilladeQuestionUi();
   ctx.ui.setStatus("grillade", formatFinalStatus(options.docsMode));
   ctx.ui.setWidget(WIDGET_KEY, undefined);
 

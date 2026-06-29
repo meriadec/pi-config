@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { setDesktopUrgent } from "../../lib/desktopUrgency.ts";
 import type { ActiveGrilladeQuestion } from "../state.ts";
 import type { GrilladeQuestionResult, NormalizedGrilladeQuestion } from "../protocol.ts";
 import { createGrilladeQuestionView, type GrilladeQuestionViewOptions } from "./GrilladeView.ts";
@@ -8,6 +9,14 @@ import {
 } from "./PreparingScreen.ts";
 
 const WIDGET_KEY = "grillade-question";
+
+let closeActiveQuestionUi: (() => void) | undefined;
+
+export function closeGrilladeQuestionUi(): void {
+  const close = closeActiveQuestionUi;
+  closeActiveQuestionUi = undefined;
+  close?.();
+}
 
 export type GrilladeQuestionUiContext = Pick<ExtensionContext, "mode" | "hasUI" | "ui">;
 
@@ -29,6 +38,8 @@ export async function askGrilladeQuestionInUi(
     };
   }
 
+  closeGrilladeQuestionUi();
+  setDesktopUrgent(true);
   ctx.ui.setStatus("grillade", formatStatus(question, options.docsMode));
   ctx.ui.setWidget(WIDGET_KEY, undefined);
   ctx.ui.setWorkingMessage(undefined);
@@ -39,16 +50,24 @@ export async function askGrilladeQuestionInUi(
     let settled = false;
     let disposeAbort: (() => void) | undefined;
     let closeCustomUi: ((result: GrilladeQuestionResult) => void) | undefined;
+    let closeThisQuestionUi: (() => void) | undefined;
     const finish = (result: GrilladeQuestionResult): void => {
       if (settled) return;
       settled = true;
       disposeAbort?.();
       resolve(result);
     };
-    const closeAndFinish = (result: GrilladeQuestionResult): void => {
-      if (settled) return;
+    const closeUi = (result: GrilladeQuestionResult): void => {
       if (closeCustomUi) closeCustomUi(result);
       else finish(result);
+    };
+    const closeAndFinish = (result: GrilladeQuestionResult): void => {
+      if (settled) return;
+      closeUi(result);
+    };
+    const handleQuestionResult = (result: GrilladeQuestionResult): void => {
+      if (result.status === "answered") finish(result);
+      else closeAndFinish(result);
     };
 
     if (signal) {
@@ -68,18 +87,33 @@ export async function askGrilladeQuestionInUi(
       .custom<GrilladeQuestionResult>(
         (tui, theme, keybindings, done) => {
           closeCustomUi = done;
+          closeThisQuestionUi = (): void => {
+            closeUi(
+              paused(question.questionId, "Question UI replaced by the next Grillade screen."),
+            );
+          };
+          closeActiveQuestionUi = closeThisQuestionUi;
           return createGrilladeQuestionView(
             tui,
             theme,
             keybindings,
-            closeAndFinish,
+            handleQuestionResult,
             question,
             options,
           );
         },
         { overlay: true, overlayOptions: GRILLADE_FULLSCREEN_OVERLAY_OPTIONS },
       )
-      .then(finish, () => finish(paused(question.questionId, "Question UI closed unexpectedly.")));
+      .then(
+        (result) => {
+          if (closeActiveQuestionUi === closeThisQuestionUi) closeActiveQuestionUi = undefined;
+          finish(result);
+        },
+        () => {
+          if (closeActiveQuestionUi === closeThisQuestionUi) closeActiveQuestionUi = undefined;
+          finish(paused(question.questionId, "Question UI closed unexpectedly."));
+        },
+      );
   });
 }
 

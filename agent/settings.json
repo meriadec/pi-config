@@ -4,6 +4,5 @@
   "defaultModel": "gpt-5.5",
   "hideThinkingBlock": false,
   "theme": "pi-nord-aurora",
-  "defaultThinkingLevel": "medium",
-  "packages": ["npm:pi-mcp-adapter"]
+  "defaultThinkingLevel": "medium"
 }

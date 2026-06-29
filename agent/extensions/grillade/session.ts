@@ -19,7 +19,7 @@ import {
   type SemanticGrilladeState,
 } from "./state.ts";
 import { closeGrilladePreparingScreen, showGrilladePreparingScreen } from "./ui/PreparingScreen.ts";
-import { askGrilladeQuestionInUi } from "./ui/question.ts";
+import { askGrilladeQuestionInUi, closeGrilladeQuestionUi } from "./ui/question.ts";
 
 const DEFAULT_DOCS_MODE = true;
 const MAX_SESSION_NAME_PROMPT_LENGTH = 60;
@@ -41,6 +41,7 @@ export function registerGrilladeCommand(pi: ExtensionAPI): void {
     restoreGrilladeUiForSession(ctx);
   });
   pi.on("session_shutdown", () => {
+    closeGrilladeQuestionUi();
     closeGrilladePreparingScreen();
   });
 
