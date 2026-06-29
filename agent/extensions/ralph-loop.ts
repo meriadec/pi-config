@@ -3,6 +3,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { access, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { agentGitConfigGlobal } from "./lib/agent-git-config.ts";
 
 const STATUS_KEY = "ralph-loop";
 const DEFAULT_MAX_ATTEMPTS = 2;
@@ -565,7 +566,12 @@ async function commitCurrentIssue(
   })) as CommandResult;
   if (add.code !== 0) throw new Error(add.stderr.trim() || "git add failed");
 
-  const commit = (await pi.exec("git", gitArgs(state.repoRoot, ["commit", "-m", commitMessage]), {
+  const agentGitConfig = agentGitConfigGlobal();
+  const commitScript = [
+    `export GIT_CONFIG_GLOBAL=${shellQuote(agentGitConfig)}`,
+    `git -C ${shellQuote(state.repoRoot)} commit -m ${shellQuote(commitMessage)}`,
+  ].join("\n");
+  const commit = (await pi.exec("bash", ["-lc", commitScript], {
     timeout: 120_000,
   })) as CommandResult;
   if (commit.code !== 0)

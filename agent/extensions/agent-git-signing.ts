@@ -1,11 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBashTool } from "@earendil-works/pi-coding-agent";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { agentGitConfigGlobal } from "./lib/agent-git-config.ts";
 
 export default function (pi: ExtensionAPI) {
-  const agentGitConfig =
-    process.env["PI_AGENT_GIT_CONFIG_GLOBAL"] ?? join(homedir(), ".gitconfig-agent");
+  const agentGitConfig = agentGitConfigGlobal();
 
   const bashTool = createBashTool(process.cwd(), {
     spawnHook: ({ command, cwd, env }) => ({
