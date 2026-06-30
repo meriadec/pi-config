@@ -11,9 +11,10 @@ description: Fetches active GitHub pull request review threads plus top-level PR
 2. Fetch active feedback: `scripts/active-pr-review-threads.sh <pr-number> > /tmp/pr-review-feedback.json`.
 3. Also fetch unresolved outdated review threads with GitHub CLI/GraphQL; include them unless they already have an adequate reply.
 4. Analyze each active review thread, unresolved outdated thread, top-level PR comment, and non-empty review summary.
-5. Produce a scannable report; discuss/revise until the user approves or cancels.
-6. Only after approval: apply planned code changes, run project checks, and create focused local signed commits for coherent fixes.
-7. After the approved fixes are pushed (by you when push approval is included, or by the user), post approved replies on every addressed review thread, then resolve/discard approved review threads.
+5. Produce a scannable report; discuss/revise until the user approves the implementation plan + local commit, or cancels.
+6. Only after implementation approval: apply planned code changes, run project checks, and create focused local signed commits for coherent fixes.
+7. Stop after the local commit and ask for the second approval gate: push + approved replies/resolutions.
+8. Only after push/response approval: push the committed fixes, post approved replies on every addressed review thread, then resolve/discard approved review threads.
 
 ## Workflow
 
@@ -71,22 +72,25 @@ Make it scannable and mark anything needing user attention.
 - Important caveats/user decision: ...
 ```
 
-After the report, stop and ask the user to review, modify, approve, or cancel. Do not edit files or post GitHub comments yet.
+After the report, stop and ask the user to review, modify, approve implementation + local commit, or cancel. Make clear this first approval does not authorize push, GitHub replies, or thread resolution; those require the second approval gate after the local commit exists.
 
 ### 4) Approved implementation phase
 
-Only if the user approves the plan:
+Only if the user approves the implementation plan + local commit:
 
 - Implement approved code changes.
 - Run relevant checks (`bun run ci`, `bun run format`, `bun test`, `npm test`, `pnpm test`, or repo-specific commands).
 - If checks fail, fix or report clearly.
 - Review `git diff`/`git status`, stage only intended changes, and create focused local signed commits with concise conventional-commit messages.
 - Ask the user to review/validate when the result involves judgment you cannot verify locally.
-- Do not push or post PR replies unless that phase has been approved.
+- Stop after the local commit. Report the commit, verification, and exact push/reply/resolve actions you propose next.
+- Do not push, post PR replies, or resolve/discard review threads during this phase.
 
-### 5) Approved GitHub response phase
+### 5) Approved push + GitHub response phase
 
-Only after the approved fixes are committed and pushed:
+Only if the user approves the second gate (push + replies/resolutions) after the local commit exists:
+
+- Push the approved local commit(s).
 
 - Re-fetch unresolved review threads, including outdated ones, before posting responses.
 - Post approved review-thread replies before resolving; resolve only threads approved for discard/resolve or fully addressed.
@@ -111,8 +115,10 @@ gh pr comment PR_NUMBER --body 'MESSAGE'
 
 ## Safety rules
 
-- Local signed commits are allowed after the implementation plan is approved and checks have run.
-- Never post, resolve, discard, or push without explicit user approval for that phase.
+- Local signed commits are allowed after the implementation plan + local commit gate is approved and checks have run.
+- Pushes, PR replies, and review-thread resolutions/discards share a separate second approval gate after the local commit exists.
+- Never treat implementation approval as push/reply/resolve approval.
+- Never post, resolve, discard, or push without explicit user approval for the second gate.
 - Never silently resolve a review thread. Add a reply first, or verify an adequate reply already exists.
 - Preserve reviewer intent; do not hide valid feedback behind vague replies.
 - Prefer addressing legitimate correctness/security/test comments over arguing.
