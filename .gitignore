@@ -14,3 +14,7 @@ auth.json
 sessions/
 **/sessions/
 *.session
+
+# Delegation job mailboxes are transient sub-agent runtime state
+.pi/sub/
+**/.pi/sub/
