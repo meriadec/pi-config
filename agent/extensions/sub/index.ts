@@ -41,7 +41,7 @@ interface LaunchDelegationJobOptions {
   prompt: string;
   displayPrompt: string;
   initialPrompt: string;
-  handoffMode: "isolated" | "fork";
+  handoffMode: "fresh" | "fork";
   skillName?: string;
   forkSessionFile?: string;
 }
@@ -57,49 +57,46 @@ export default function subExtension(pi: ExtensionAPI): void {
 
   pi.registerCommand("sub", {
     description:
-      "Open an interactive kitty Pi sub-agent and return its compact result to this session",
+      "Open an interactive kitty Pi sub-agent; use --skill for skills and --fresh for minimal context",
+    getArgumentCompletions: (prefix) => getSubCompletions(pi, prefix),
     handler: async (args, ctx) => {
-      const prompt = await getDelegationPrompt(args, ctx);
-      if (!prompt) return;
+      if (getChildJobFromEnv()) {
+        ctx.ui.notify("Recursive sub-agents are disabled inside /sub child sessions", "error");
+        return;
+      }
 
-      await launchDelegationJob(pi, state, ctx, {
-        prompt,
-        displayPrompt: prompt,
-        initialPrompt: buildInitialChildPrompt("{jobId}", prompt, "{jobDir}"),
-        handoffMode: "isolated",
-      });
-    },
-  });
-
-  pi.registerCommand("subskill", {
-    description:
-      "Open a kitty Pi sub-agent running a skill; use --fork to include this conversation",
-    getArgumentCompletions: (prefix) => getSubskillCompletions(pi, prefix),
-    handler: async (args, ctx) => {
-      const parsed = parseSubskillArgs(args);
+      const parsed = parseSubArgs(args);
       if (!parsed) {
-        ctx.ui.notify("Usage: /subskill [--fork] <skill-name> [prompt]", "error");
+        ctx.ui.notify("Usage: /sub [--fresh] [--skill <skill-name>] [prompt]", "error");
         return;
       }
 
-      const forkSessionFile = parsed.fork ? ctx.sessionManager.getSessionFile() : undefined;
-      if (parsed.fork && !forkSessionFile) {
-        ctx.ui.notify(
-          "Cannot use /subskill --fork from an unsaved/ephemeral parent session",
-          "error",
-        );
-        return;
+      let prompt = parsed.prompt;
+      if (!parsed.skillName && !prompt) {
+        const edited = await getDelegationPrompt("", ctx);
+        if (!edited) return;
+        prompt = edited;
       }
 
-      const skillPrompt = parsed.prompt
-        ? `/skill:${parsed.skillName} ${parsed.prompt}`
-        : `/skill:${parsed.skillName}`;
+      const canForkParent = hasForkableConversation(ctx.sessionManager.getBranch());
+      const forkSessionFile =
+        !parsed.fresh && canForkParent ? ctx.sessionManager.getSessionFile() : undefined;
+      const handoffMode = forkSessionFile ? "fork" : "fresh";
+
+      const childPrompt = parsed.skillName
+        ? prompt
+          ? `/skill:${parsed.skillName} ${prompt}`
+          : `/skill:${parsed.skillName}`
+        : prompt;
+
       await launchDelegationJob(pi, state, ctx, {
-        prompt: skillPrompt,
-        displayPrompt: parsed.prompt,
-        initialPrompt: skillPrompt,
-        handoffMode: parsed.fork ? "fork" : "isolated",
-        skillName: parsed.skillName,
+        prompt: childPrompt,
+        displayPrompt: prompt,
+        initialPrompt: parsed.skillName
+          ? childPrompt
+          : buildInitialChildPrompt("{jobId}", childPrompt, "{jobDir}"),
+        handoffMode,
+        ...(parsed.skillName ? { skillName: parsed.skillName } : {}),
         ...(forkSessionFile ? { forkSessionFile } : {}),
       });
     },
@@ -158,6 +155,10 @@ export default function subExtension(pi: ExtensionAPI): void {
     configureSubDoneTool(pi);
     reconstructRuntimeState(pi, state, ctx.sessionManager.getBranch());
   });
+
+  pi.on("context", (event) => ({
+    messages: removeAnsweredDelegationResults(event.messages),
+  }));
 
   pi.on("session_shutdown", () => {
     for (const timer of state.watchers.values()) clearInterval(timer);
@@ -292,65 +293,115 @@ async function launchDelegationJob(
   }
 }
 
-interface ParsedSubskillArgs {
-  fork: boolean;
-  skillName: string;
+interface ParsedSubArgs {
+  fresh: boolean;
+  skillName?: string;
   prompt: string;
 }
 
-function parseSubskillArgs(args: string): ParsedSubskillArgs | undefined {
-  const trimmed = args.trim();
-  if (!trimmed) return undefined;
+function parseSubArgs(args: string): ParsedSubArgs | undefined {
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  let rest = args.trim();
+  let fresh = false;
+  let skillName: string | undefined;
 
-  const parts = trimmed.split(/\s+/);
-  let fork = false;
-  if (parts[0] === "--fork") {
-    fork = true;
-    parts.shift();
+  while (tokens.length > 0) {
+    const token = tokens[0];
+    if (token === "--fresh") {
+      fresh = true;
+      rest = removeLeadingToken(rest, token);
+      tokens.shift();
+      continue;
+    }
+    if (token === "--skill") {
+      rest = removeLeadingToken(rest, token);
+      tokens.shift();
+      const skillToken = tokens.shift();
+      if (!skillToken) return undefined;
+      skillName = normalizeSkillName(skillToken);
+      rest = removeLeadingToken(rest, skillToken);
+      continue;
+    }
+    break;
   }
 
-  const skillToken = parts.shift();
-  if (!skillToken) return undefined;
-
-  const skillName = normalizeSkillName(skillToken);
-  const prompt = trimmed.slice(trimmed.indexOf(skillToken) + skillToken.length).trim();
-
-  return { fork, skillName, prompt };
+  return { fresh, ...(skillName ? { skillName } : {}), prompt: rest.trim() };
 }
 
-function getSubskillCompletions(pi: ExtensionAPI, prefix: string): AutocompleteItem[] | null {
-  const leadingFork = prefix.trimStart().startsWith("--fork");
-  const afterFork = leadingFork ? prefix.trimStart().replace(/^--fork\s*/, "") : prefix.trimStart();
-  if (afterFork.includes(" ")) return null;
+function removeLeadingToken(input: string, token: string): string {
+  return input.trimStart().slice(token.length).trimStart();
+}
 
-  const skills = pi
-    .getCommands()
-    .filter((command) => command.source === "skill")
-    .map((command) => ({ ...command, skillName: normalizeSkillName(command.name) }))
-    .filter((command) => command.skillName.startsWith(afterFork));
+function getSubCompletions(pi: ExtensionAPI, prefix: string): AutocompleteItem[] | null {
+  const trimmed = prefix.trimStart();
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  const lastToken = tokens.at(-1) ?? "";
+  const skillFlagIndex = trimmed.lastIndexOf("--skill");
 
-  const completions: AutocompleteItem[] = skills.map((command) => {
-    const item: AutocompleteItem = {
-      value: `${leadingFork ? "--fork " : ""}${command.skillName}`,
-      label: command.skillName,
-    };
-    if (command.description) item.description = command.description;
-    return item;
-  });
+  if (skillFlagIndex >= 0) {
+    const afterSkill = trimmed.slice(skillFlagIndex + "--skill".length).trimStart();
+    if (!afterSkill.includes(" ")) {
+      const valuePrefix = `${trimmed.slice(0, skillFlagIndex + "--skill".length)} `;
+      return getSkillCompletions(pi, afterSkill, valuePrefix);
+    }
+    return null;
+  }
 
-  if (!leadingFork && "--fork".startsWith(prefix.trimStart())) {
-    completions.unshift({
-      value: "--fork",
-      label: "--fork",
-      description: "Fork the parent conversation into the skill sub-agent",
+  if (tokens.length > 0 && !lastToken.startsWith("--")) return null;
+
+  const completions: AutocompleteItem[] = [];
+  if (!tokens.includes("--fresh") && "--fresh".startsWith(lastToken)) {
+    completions.push({
+      value: "--fresh",
+      label: "--fresh",
+      description: "Start with minimal sub-agent context instead of forking this conversation",
+    });
+  }
+  if (!tokens.includes("--skill") && "--skill".startsWith(lastToken)) {
+    completions.push({
+      value: "--skill",
+      label: "--skill",
+      description: "Run a Pi skill inside the sub-agent",
     });
   }
 
   return completions.length > 0 ? completions : null;
 }
 
+function getSkillCompletions(
+  pi: ExtensionAPI,
+  skillPrefix: string,
+  valuePrefix?: string,
+): AutocompleteItem[] | null {
+  const skills = pi
+    .getCommands()
+    .filter((command) => command.source === "skill")
+    .map((command) => ({ ...command, skillName: normalizeSkillName(command.name) }))
+    .filter((command) => command.skillName.startsWith(skillPrefix));
+
+  const completions: AutocompleteItem[] = skills.map((command) => {
+    const item: AutocompleteItem = {
+      value: `${valuePrefix ?? ""}${command.skillName}`,
+      label: command.skillName,
+    };
+    if (command.description) item.description = command.description;
+    return item;
+  });
+
+  return completions.length > 0 ? completions : null;
+}
+
 function normalizeSkillName(name: string): string {
   return name.replace(/^\/?skill:/, "");
+}
+
+function hasForkableConversation(entries: unknown[]): boolean {
+  return entries.some((entry) => {
+    if (!isObject(entry)) return false;
+    if (entry["type"] !== "message") return false;
+    const message = entry["message"];
+    return isObject(message) && message["role"] !== "custom";
+  });
 }
 
 function buildContextPacket(
@@ -486,6 +537,35 @@ function getChildJobFromEnv(): { jobId: string; jobDir: string } | undefined {
   const jobDir = process.env["PI_SUB_JOB_DIR"];
   if (!jobId || !jobDir) return undefined;
   return { jobId, jobDir };
+}
+
+function removeAnsweredDelegationResults<T extends { role?: string; content?: unknown }>(
+  messages: T[],
+): T[] {
+  return messages.filter((message, index) => {
+    if (!isDelegationResultFollowUp(message)) return true;
+    return !messages.slice(index + 1).some((later) => later.role === "assistant");
+  });
+}
+
+function isDelegationResultFollowUp(message: { role?: string; content?: unknown }): boolean {
+  if (message.role !== "user") return false;
+  const text = getTextContent(message.content);
+  return (
+    text.startsWith("Sub-agent Delegation Job ") && text.includes("\n\nDelegation Result:\n\n")
+  );
+}
+
+function getTextContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) =>
+      isObject(part) && part["type"] === "text" && typeof part["text"] === "string"
+        ? part["text"]
+        : "",
+    )
+    .join("\n");
 }
 
 function truncateResultForContext(result: string): string {

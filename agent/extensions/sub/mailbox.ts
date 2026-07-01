@@ -24,7 +24,7 @@ export interface ContextPacket {
   jobId: string;
   createdAt: string;
   cwd: string;
-  handoffMode: "isolated" | "fork";
+  handoffMode: "fresh" | "fork";
   skillName?: string;
   sessionFile?: string;
   sessionName?: string;
