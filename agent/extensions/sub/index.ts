@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
+import { truncateToWidth, type AutocompleteItem, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { launchKittyChildPi } from "./launcher.ts";
 import {
@@ -46,7 +46,7 @@ interface LaunchDelegationJobOptions {
   forkSessionFile?: string;
 }
 
-class SubAgentFinishedComponent implements Component {
+export class SubAgentFinishedComponent implements Component {
   private readonly theme: {
     bg(color: string, text: string): string;
     fg(color: string, text: string): string;
@@ -70,7 +70,7 @@ class SubAgentFinishedComponent implements Component {
     const bar = centerText(" sub-agent finished ", Math.max(1, width));
     const lines = [this.theme.bg("toolSuccessBg", this.theme.fg("success", this.theme.bold(bar)))];
     const detail = this.detail?.trim();
-    if (detail) lines.push(this.theme.fg("dim", firstLine(detail)));
+    if (detail) lines.push(truncateToWidth(this.theme.fg("dim", firstLine(detail)), width));
     return lines;
   }
 

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { SUB_CUSTOM_RESULT } from "./mailbox.ts";
-import { removeAnsweredDelegationResults, truncateResultForContext } from "./index.ts";
+import {
+  removeAnsweredDelegationResults,
+  SubAgentFinishedComponent,
+  truncateResultForContext,
+} from "./index.ts";
 import { buildParentFollowUp } from "./prompts.ts";
 
 type TestMessage = {
@@ -36,6 +41,25 @@ describe("sub delegation result truncation", () => {
     expect(truncated).toContain(":TAIL");
     expect(truncated).toContain("Delegation Result truncated for parent context");
     expect(truncated).toContain("Full result: /tmp/sub/job/result.md");
+  });
+});
+
+describe("sub-agent finished renderer", () => {
+  test("truncates long detail lines to the render width", () => {
+    const theme = {
+      bg: (_color: string, text: string) => text,
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    };
+    const component = new SubAgentFinishedComponent(
+      theme,
+      "Delegation Result written for 20260702T110556Z-fzuylh. Stop now; do not add a separate summary in this child session.",
+    );
+
+    const lines = component.render(43);
+
+    expect(lines.length).toBe(2);
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(43);
   });
 });
 
