@@ -502,7 +502,15 @@ function watchJobResult(pi: ExtensionAPI, state: RuntimeState, job: DelegationJo
     state.importedJobs.add(job.jobId);
     stopWatching(state, job.jobId);
     pi.appendEntry(SUB_CUSTOM_RESULT, record);
-    pi.sendUserMessage(buildParentFollowUp(job.jobId, result), { deliverAs: "followUp" });
+    pi.sendMessage(
+      {
+        customType: SUB_CUSTOM_RESULT,
+        content: buildParentFollowUp(job.jobId, result),
+        display: false,
+        details: record,
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
   };
 
   const timer = setInterval(() => {
@@ -540,17 +548,22 @@ function getChildJobFromEnv(): { jobId: string; jobDir: string } | undefined {
   return { jobId, jobDir };
 }
 
-function removeAnsweredDelegationResults<T extends { role?: string; content?: unknown }>(
-  messages: T[],
-): T[] {
+export function removeAnsweredDelegationResults<
+  T extends { role?: string; customType?: string; content?: unknown },
+>(messages: T[]): T[] {
   return messages.filter((message, index) => {
     if (!isDelegationResultFollowUp(message)) return true;
     return !messages.slice(index + 1).some((later) => later.role === "assistant");
   });
 }
 
-function isDelegationResultFollowUp(message: { role?: string; content?: unknown }): boolean {
-  if (message.role !== "user") return false;
+function isDelegationResultFollowUp(message: {
+  role?: string;
+  customType?: string;
+  content?: unknown;
+}): boolean {
+  if (message.role === "custom" && message.customType !== SUB_CUSTOM_RESULT) return false;
+  if (message.role !== "user" && message.role !== "custom") return false;
   const text = getTextContent(message.content);
   return (
     text.startsWith("Sub-agent Delegation Job ") && text.includes("\n\nDelegation Result:\n\n")
