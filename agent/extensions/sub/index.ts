@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { launchKittyChildPi } from "./launcher.ts";
 import {
@@ -30,7 +30,7 @@ import {
 } from "./prompts.ts";
 
 const WATCH_INTERVAL_MS = 2_000;
-const RESULT_CONTEXT_CAP_BYTES = 50 * 1024;
+const RESULT_CONTEXT_CAP_BYTES = 200 * 1024;
 
 interface RuntimeState {
   watchers: Map<string, ReturnType<typeof setInterval>>;
@@ -46,6 +46,37 @@ interface LaunchDelegationJobOptions {
   forkSessionFile?: string;
 }
 
+class SubAgentFinishedComponent implements Component {
+  private readonly theme: {
+    bg(color: string, text: string): string;
+    fg(color: string, text: string): string;
+    bold(text: string): string;
+  };
+  private readonly detail: string | undefined;
+
+  constructor(
+    theme: {
+      bg(color: string, text: string): string;
+      fg(color: string, text: string): string;
+      bold(text: string): string;
+    },
+    detail?: string,
+  ) {
+    this.theme = theme;
+    this.detail = detail;
+  }
+
+  render(width: number): string[] {
+    const bar = centerText(" sub-agent finished ", Math.max(1, width));
+    const lines = [this.theme.bg("toolSuccessBg", this.theme.fg("success", this.theme.bold(bar)))];
+    const detail = this.detail?.trim();
+    if (detail) lines.push(this.theme.fg("dim", firstLine(detail)));
+    return lines;
+  }
+
+  invalidate(): void {}
+}
+
 const SubDoneParams = Type.Object({
   result: Type.String({
     description: "Compact Markdown Delegation Result to send back to the parent Pi session",
@@ -54,6 +85,12 @@ const SubDoneParams = Type.Object({
 
 export default function subExtension(pi: ExtensionAPI): void {
   const state: RuntimeState = { watchers: new Map(), importedJobs: new Set() };
+
+  pi.registerMessageRenderer(
+    SUB_CUSTOM_RESULT,
+    (message, _options, theme) =>
+      new SubAgentFinishedComponent(theme, getTextContent(message.content)),
+  );
 
   pi.registerCommand("sub", {
     description:
@@ -139,6 +176,9 @@ export default function subExtension(pi: ExtensionAPI): void {
       "Calling sub_done is your final action; do not write a separate final answer, recap, or summary afterward.",
     ],
     parameters: SubDoneParams,
+    renderResult(result, _options, theme) {
+      return new SubAgentFinishedComponent(theme, getTextContent(result.content));
+    },
     async execute(_toolCallId, params) {
       const job = getChildJobFromEnv();
       if (!job) throw new Error("sub_done is only available inside a /sub child Pi session");
@@ -333,6 +373,17 @@ function removeLeadingToken(input: string, token: string): string {
   return input.trimStart().slice(token.length).trimStart();
 }
 
+function centerText(text: string, width: number): string {
+  if (text.length >= width) return text.slice(0, width);
+  const left = Math.floor((width - text.length) / 2);
+  const right = width - text.length - left;
+  return `${" ".repeat(left)}${text}${" ".repeat(right)}`;
+}
+
+function firstLine(text: string): string {
+  return text.split(/\r?\n/, 1)[0] ?? "";
+}
+
 function getSubCompletions(pi: ExtensionAPI, prefix: string): AutocompleteItem[] | null {
   const trimmed = prefix.trimStart();
   const tokens = trimmed.split(/\s+/).filter(Boolean);
@@ -490,7 +541,7 @@ function watchJobResult(pi: ExtensionAPI, state: RuntimeState, job: DelegationJo
     const rawResult = (await readTextFile(filePath)).trim();
     if (!rawResult) return;
 
-    const result = truncateResultForContext(rawResult);
+    const result = truncateResultForContext(rawResult, filePath);
     const importedAt = new Date().toISOString();
     const record: DelegationResultRecord = {
       jobId: job.jobId,
@@ -582,15 +633,65 @@ function getTextContent(content: unknown): string {
     .join("\n");
 }
 
-function truncateResultForContext(result: string): string {
-  const bytes = Buffer.byteLength(result, "utf8");
-  if (bytes <= RESULT_CONTEXT_CAP_BYTES) return result;
+export function truncateResultForContext(result: string, fullResultPath: string): string {
+  const totalBytes = Buffer.byteLength(result, "utf8");
+  if (totalBytes <= RESULT_CONTEXT_CAP_BYTES) return result;
 
-  let truncated = result.slice(0, RESULT_CONTEXT_CAP_BYTES);
-  while (Buffer.byteLength(truncated, "utf8") > RESULT_CONTEXT_CAP_BYTES) {
-    truncated = truncated.slice(0, -1);
+  let marker = "";
+  let head = "";
+  let tail = "";
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const markerBytes = Buffer.byteLength(marker, "utf8");
+    const payloadBudget = Math.max(0, RESULT_CONTEXT_CAP_BYTES - markerBytes);
+    const headBudget = Math.ceil(payloadBudget / 2);
+    const tailBudget = Math.floor(payloadBudget / 2);
+
+    head = utf8PrefixByBytes(result, headBudget);
+    tail = utf8SuffixByBytes(result, tailBudget);
+    const omittedBytes = Math.max(
+      0,
+      totalBytes - Buffer.byteLength(head, "utf8") - Buffer.byteLength(tail, "utf8"),
+    );
+    const nextMarker = `\n\n[Delegation Result truncated for parent context: original ${formatBytes(totalBytes)}, cap ${formatBytes(RESULT_CONTEXT_CAP_BYTES)}, omitted ${formatBytes(omittedBytes)}. Full result: ${fullResultPath}]\n\n`;
+    if (nextMarker === marker) break;
+    marker = nextMarker;
   }
-  return `${truncated}\n\n[Delegation Result truncated: ${bytes - Buffer.byteLength(truncated, "utf8")} bytes omitted.]`;
+
+  return `${head}${marker}${tail}`;
+}
+
+function utf8PrefixByBytes(input: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  let bytes = 0;
+  let output = "";
+  for (const char of input) {
+    const charBytes = Buffer.byteLength(char, "utf8");
+    if (bytes + charBytes > maxBytes) break;
+    output += char;
+    bytes += charBytes;
+  }
+  return output;
+}
+
+function utf8SuffixByBytes(input: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  let bytes = 0;
+  const chars: string[] = [];
+  for (const char of Array.from(input).reverse()) {
+    const charBytes = Buffer.byteLength(char, "utf8");
+    if (bytes + charBytes > maxBytes) break;
+    chars.push(char);
+    bytes += charBytes;
+  }
+  return chars.reverse().join("");
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${Math.round(kib)} KiB`;
+  return `${(kib / 1024).toFixed(1)} MiB`;
 }
 
 function isDelegationJobRecord(value: unknown): value is DelegationJobRecord {
