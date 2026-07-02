@@ -8,7 +8,12 @@ description: Fetches active GitHub pull request review threads plus top-level PR
 ## Quick start
 
 1. Confirm the PR number or infer it with `gh pr view --json number,url`.
-2. Fetch active feedback: `scripts/active-pr-review-threads.sh <pr-number> > /tmp/pr-review-feedback.json`.
+2. Fetch active feedback using the helper script bundled with this skill. Resolve `scripts/active-pr-review-threads.sh` relative to this skill file's directory, not the target repository cwd:
+
+   ```bash
+   <skill-dir>/scripts/active-pr-review-threads.sh <pr-number> > /tmp/pr-review-feedback.json
+   ```
+
 3. Also fetch unresolved outdated review threads with GitHub CLI/GraphQL; include them unless they already have an adequate reply.
 4. Analyze each active review thread, unresolved outdated thread, top-level PR comment, and non-empty review summary.
 5. Produce a scannable report; discuss/revise until the user approves the implementation plan + local commit, or cancels.
