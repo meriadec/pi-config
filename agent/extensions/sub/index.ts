@@ -219,7 +219,7 @@ async function launchDelegationJob(
   options: LaunchDelegationJobOptions,
 ): Promise<void> {
   const jobId = buildJobId();
-  const jobDir = getJobDir(ctx.cwd, jobId);
+  const jobDir = getJobDir(jobId);
   const createdAt = new Date().toISOString();
   const contextPacket = buildContextPacket(jobId, createdAt, ctx, pi, options);
   const childSystemPrompt = buildChildSystemPrompt(jobId, jobDir);
@@ -227,7 +227,7 @@ async function launchDelegationJob(
     .replaceAll("{jobId}", jobId)
     .replaceAll("{jobDir}", jobDir);
 
-  await ensureSubRootIgnored(ctx.cwd);
+  await ensureSubRootIgnored();
   await atomicWriteFile(requestPath(jobDir), `${options.prompt.trim()}\n`);
   await writeJsonFile(contextPath(jobDir), contextPacket);
   await atomicWriteFile(childPromptPath(jobDir), childSystemPrompt);

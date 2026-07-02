@@ -16,5 +16,6 @@ sessions/
 *.session
 
 # Delegation job mailboxes are transient sub-agent runtime state
+/sub/
 .pi/sub/
 **/.pi/sub/

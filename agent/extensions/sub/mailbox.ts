@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 
@@ -44,16 +45,16 @@ export function buildJobId(now = new Date()): string {
   return `${stamp}-${suffix}`;
 }
 
-export function getSubRoot(cwd: string): string {
-  return path.join(cwd, CONFIG_DIR_NAME, "sub");
+export function getSubRoot(): string {
+  return path.join(os.homedir(), CONFIG_DIR_NAME, "sub");
 }
 
-export function getJobDir(cwd: string, jobId: string): string {
-  return path.join(getSubRoot(cwd), "jobs", jobId);
+export function getJobDir(jobId: string): string {
+  return path.join(getSubRoot(), "jobs", jobId);
 }
 
-export async function ensureSubRootIgnored(cwd: string): Promise<void> {
-  await atomicWriteFile(path.join(getSubRoot(cwd), ".gitignore"), "*\n");
+export async function ensureSubRootIgnored(): Promise<void> {
+  await atomicWriteFile(path.join(getSubRoot(), ".gitignore"), "*\n");
 }
 
 export async function atomicWriteFile(filePath: string, content: string): Promise<void> {

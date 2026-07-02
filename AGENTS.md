@@ -49,7 +49,7 @@ Several skill entries are symlinks into `~/.agents/skills`. Preserve symlinks un
 
 After editing an auto-discovered extension, run the harness, then use `/reload` inside Pi to load the changed extension in an interactive session.
 
-No commits are made by default. Leave version-control decisions to the human unless explicitly instructed otherwise.
+For coherent, validated repo changes, prefer creating a focused local signed commit before final handoff. Do not commit credentials, trust decisions, package installs, sessions, failing work, or unrelated changes; leave version-control decisions to the human when the requested change is ambiguous or the human explicitly asks not to commit.
 
 ## Agent skills
 
