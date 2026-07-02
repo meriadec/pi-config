@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { SUB_CUSTOM_RESULT } from "./mailbox.ts";
 import {
+  isSubChildSessionEnv,
   removeAnsweredDelegationResults,
   SubAgentFinishedComponent,
   truncateResultForContext,
@@ -60,6 +61,17 @@ describe("sub-agent finished renderer", () => {
 
     expect(lines.length).toBe(2);
     for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(43);
+  });
+});
+
+describe("sub child session detection", () => {
+  test("requires both job id and job dir", () => {
+    expect(isSubChildSessionEnv({})).toBe(false);
+    expect(isSubChildSessionEnv({ PI_SUB_JOB_ID: "job-123" })).toBe(false);
+    expect(isSubChildSessionEnv({ PI_SUB_JOB_DIR: "/tmp/sub/job-123" })).toBe(false);
+    expect(
+      isSubChildSessionEnv({ PI_SUB_JOB_ID: "job-123", PI_SUB_JOB_DIR: "/tmp/sub/job-123" }),
+    ).toBe(true);
   });
 });
 

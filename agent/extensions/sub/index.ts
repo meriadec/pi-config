@@ -194,6 +194,7 @@ export default function subExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => {
     configureSubDoneTool(pi);
+    if (getChildJobFromEnv()) return;
     reconstructRuntimeState(pi, state, ctx.sessionManager.getBranch());
   });
 
@@ -527,6 +528,7 @@ function reconstructRuntimeState(pi: ExtensionAPI, state: RuntimeState, entries:
 }
 
 function watchJobResult(pi: ExtensionAPI, state: RuntimeState, job: DelegationJobRecord): void {
+  if (getChildJobFromEnv()) return;
   if (state.watchers.has(job.jobId) || state.importedJobs.has(job.jobId)) return;
 
   const check = async () => {
@@ -592,11 +594,16 @@ async function completeChildJob(jobId: string, jobDir: string, result: string): 
   });
 }
 
+export function isSubChildSessionEnv(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return Boolean(env["PI_SUB_JOB_ID"] && env["PI_SUB_JOB_DIR"]);
+}
+
 function getChildJobFromEnv(): { jobId: string; jobDir: string } | undefined {
-  const jobId = process.env["PI_SUB_JOB_ID"];
-  const jobDir = process.env["PI_SUB_JOB_DIR"];
-  if (!jobId || !jobDir) return undefined;
-  return { jobId, jobDir };
+  const env = process.env;
+  if (!isSubChildSessionEnv(env)) return undefined;
+  return { jobId: env["PI_SUB_JOB_ID"]!, jobDir: env["PI_SUB_JOB_DIR"]! };
 }
 
 export function removeAnsweredDelegationResults<
