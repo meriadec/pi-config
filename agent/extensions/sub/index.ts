@@ -136,6 +136,7 @@ export default function subExtension(pi: ExtensionAPI): void {
       "Use sub_done only inside a /sub child session, when the delegated task has reached a terminal outcome for the parent session.",
       "Do not use sub_done for intermediate human-in-the-loop states; ask for confirmation or clarification inside the child session and wait there instead.",
       "The sub_done result should summarize conclusions and handoff data, not raw command logs or the full child transcript.",
+      "Calling sub_done is your final action; do not write a separate final answer, recap, or summary afterward.",
     ],
     parameters: SubDoneParams,
     async execute(_toolCallId, params) {
