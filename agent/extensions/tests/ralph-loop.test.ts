@@ -104,4 +104,72 @@ describe("ralph-loop git commits", () => {
 
     await rm(repoRoot, { recursive: true, force: true });
   });
+
+  test("prefers the repo check script for automatic verification", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "ralph-loop-test-"));
+    const issueDir = join(repoRoot, ".scratch", "feature", "issues");
+    await mkdir(issueDir, { recursive: true });
+    await writeFile(join(issueDir, "01-test.md"), "# Test issue\n\nStatus: todo\n", "utf8");
+    await writeFile(
+      join(repoRoot, "package.json"),
+      JSON.stringify({
+        packageManager: "pnpm@10.0.0",
+        scripts: {
+          check: "pnpm run typecheck && pnpm run test",
+          lint: "eslint .",
+          test: "vitest",
+          typecheck: "tsc --noEmit",
+        },
+      }),
+      "utf8",
+    );
+
+    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+    const sentMessages: string[] = [];
+    const pi = {
+      registerCommand(
+        name: string,
+        command: { handler: (args: string, ctx: unknown) => Promise<void> },
+      ) {
+        commands.set(name, command);
+      },
+      registerTool() {},
+      async exec(command: string, args: string[]) {
+        if (command === "git" && args.join(" ") === "rev-parse --show-toplevel") {
+          return { stdout: repoRoot, stderr: "", code: 0, killed: false };
+        }
+        if (command === "git" && args.includes("status")) {
+          return { stdout: "", stderr: "", code: 0, killed: false };
+        }
+        throw new Error(`Unexpected exec: ${command} ${args.join(" ")}`);
+      },
+      appendEntry() {},
+      sendUserMessage(message: string) {
+        sentMessages.push(message);
+      },
+      on() {},
+    };
+
+    const ctx = {
+      cwd: repoRoot,
+      ui: {
+        setStatus() {},
+        notify() {},
+      },
+      isIdle: () => true,
+    };
+
+    try {
+      ralphLoopExtension(pi as unknown as ExtensionAPI);
+      await commands.get("ralph-loop")!.handler("start .scratch/feature/issues:1", ctx);
+
+      expect(sentMessages).toHaveLength(1);
+      expect(sentMessages[0]).toContain("- pnpm run check");
+      expect(sentMessages[0]).not.toContain("- pnpm run test");
+      expect(sentMessages[0]).not.toContain("- pnpm run typecheck");
+    } finally {
+      await commands.get("ralph-loop")?.handler("stop", ctx);
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
 });

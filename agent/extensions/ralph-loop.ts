@@ -9,7 +9,8 @@ const STATUS_KEY = "ralph-loop";
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_VERIFY_TIMEOUT_MS = 20 * 60_000;
 const TERMINAL_STATUSES = new Set(["done", "completed", "closed"]);
-const AUTO_VERIFY_SCRIPTS = ["format", "lint", "typecheck", "test:unit", "test"];
+const PREFERRED_AUTO_VERIFY_SCRIPTS = ["check", "validate", "ci", "verify"];
+const FALLBACK_AUTO_VERIFY_SCRIPTS = ["typecheck", "lint", "format:check", "test:unit", "test"];
 const OUTCOME_VALUES = ["completed", "skipped", "needs_human", "blocked"] as const;
 const ISSUE_CONTEXT_MARKER_PREFIX = "Ralph Loop issue marker:";
 
@@ -468,9 +469,18 @@ async function discoverAutoVerifyCommands(repoRootPath: string): Promise<string[
   };
   const scripts = packageJson.scripts ?? {};
   const manager = await detectPackageManager(repoRootPath, packageJson.packageManager);
-  return AUTO_VERIFY_SCRIPTS.filter((script) =>
+  const preferredScript = PREFERRED_AUTO_VERIFY_SCRIPTS.find((script) =>
     Object.prototype.hasOwnProperty.call(scripts, script),
-  ).map((script) => (manager === "yarn" ? `yarn ${script}` : `${manager} run ${script}`));
+  );
+  const selectedScripts = preferredScript
+    ? [preferredScript]
+    : FALLBACK_AUTO_VERIFY_SCRIPTS.filter((script) =>
+        Object.prototype.hasOwnProperty.call(scripts, script),
+      );
+
+  return selectedScripts.map((script) =>
+    manager === "yarn" ? `yarn ${script}` : `${manager} run ${script}`,
+  );
 }
 
 async function detectPackageManager(
