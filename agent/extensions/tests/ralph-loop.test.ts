@@ -105,6 +105,85 @@ describe("ralph-loop git commits", () => {
     await rm(repoRoot, { recursive: true, force: true });
   });
 
+  test("renders a readable pill-based status line", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "ralph-loop-test-"));
+    const issueDir = join(repoRoot, ".scratch", "feature", "issues");
+    await mkdir(issueDir, { recursive: true });
+    await writeFile(join(issueDir, "01-test.md"), "# Test issue\n\nStatus: todo\n", "utf8");
+
+    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+    const statuses: Array<string | undefined> = [];
+    const pi = {
+      registerCommand(
+        name: string,
+        command: { handler: (args: string, ctx: unknown) => Promise<void> },
+      ) {
+        commands.set(name, command);
+      },
+      registerTool() {},
+      async exec(command: string, args: string[]) {
+        if (command === "git" && args.join(" ") === "rev-parse --show-toplevel") {
+          return { stdout: repoRoot, stderr: "", code: 0, killed: false };
+        }
+        if (command === "git" && args.includes("status")) {
+          return { stdout: "", stderr: "", code: 0, killed: false };
+        }
+        throw new Error(`Unexpected exec: ${command} ${args.join(" ")}`);
+      },
+      appendEntry() {},
+      sendUserMessage() {},
+      on() {},
+    };
+
+    const ctx = {
+      cwd: repoRoot,
+      ui: {
+        theme: {
+          fg(color: string, text: string) {
+            return `<fg:${color}>${text}</fg>`;
+          },
+          bg(color: string, text: string) {
+            return `<bg:${color}>${text}</bg>`;
+          },
+        },
+        setStatus(_key: string, value: string | undefined) {
+          statuses.push(value);
+        },
+        notify() {},
+      },
+      isIdle: () => true,
+    };
+
+    try {
+      ralphLoopExtension(pi as unknown as ExtensionAPI);
+      await commands
+        .get("ralph-loop")!
+        .handler("start --verify none .scratch/feature/issues:1", ctx);
+
+      const currentStatus = statuses.at(-1)!;
+      expect(currentStatus).toContain(
+        "<bg:toolPendingBg><fg:accent> ralph </fg></bg> <fg:accent>running</fg>",
+      );
+      expect(currentStatus).toContain(
+        "<bg:customMessageBg><fg:accent> issue </fg></bg> <fg:text>1</fg>",
+      );
+      expect(currentStatus).toContain("<bg:selectedBg><fg:muted> try </fg></bg> <fg:text>1/2</fg>");
+      expect(currentStatus).toContain(
+        "<bg:toolSuccessBg><fg:success> done </fg></bg> <fg:success>0</fg>",
+      );
+      expect(currentStatus).toContain(
+        "<bg:toolPendingBg><fg:warning> skip </fg></bg> <fg:warning>0</fg>",
+      );
+      expect(currentStatus).toContain("<bg:selectedBg><fg:muted> left </fg></bg> <fg:text>0</fg>");
+      expect(currentStatus).toContain(
+        "<bg:customMessageBg><fg:muted> verify </fg></bg> <fg:dim>none</fg>",
+      );
+    } finally {
+      await commands.get("ralph-loop")?.handler("stop", ctx);
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   test("prefers the repo check script for automatic verification", async () => {
     const repoRoot = await mkdtemp(join(tmpdir(), "ralph-loop-test-"));
     const issueDir = join(repoRoot, ".scratch", "feature", "issues");

@@ -1,4 +1,9 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  Theme,
+  ThemeColor,
+} from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { access, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -613,27 +618,131 @@ function formatLoopStatus(state: LoopState): string {
     .join("\n");
 }
 
-function updateStatus(
-  ctx: { ui: { setStatus: (key: string, value: string | undefined) => void } },
-  state?: LoopState,
-) {
+type StatusTheme = Pick<Theme, "fg" | "bg">;
+type StatusBg =
+  | "selectedBg"
+  | "customMessageBg"
+  | "toolPendingBg"
+  | "toolSuccessBg"
+  | "toolErrorBg";
+
+type StatusContext = {
+  ui: {
+    setStatus: (key: string, value: string | undefined) => void;
+    theme?: StatusTheme | undefined;
+  };
+};
+
+type StatusPill = {
+  label: string;
+  value: string;
+  labelColor: ThemeColor;
+  valueColor?: ThemeColor | undefined;
+  bg: StatusBg;
+};
+
+function statusLabel(theme: StatusTheme | undefined, pill: StatusPill): string {
+  const label = ` ${pill.label} `;
+  if (!theme) return `[${pill.label}]`;
+  return theme.bg(pill.bg, theme.fg(pill.labelColor, label));
+}
+
+function statusValue(theme: StatusTheme | undefined, pill: StatusPill): string {
+  if (!theme || !pill.valueColor) return pill.value;
+  return theme.fg(pill.valueColor, pill.value);
+}
+
+function formatStatusPill(theme: StatusTheme | undefined, pill: StatusPill): string {
+  return `${statusLabel(theme, pill)} ${statusValue(theme, pill)}`;
+}
+
+function verificationStatusValue(state: LoopState): string {
+  if (state.verifyMode === "commands") return `${state.verifyCommands.length} cmd`;
+  if (state.verifyCommands.length > 0) return "auto";
+  return state.verifyMode;
+}
+
+function currentStatusValue(state: LoopState): string {
+  if (!state.current) return "starting";
+  return `${state.current.number ?? basename(state.current.path, ".md")}`;
+}
+
+function formatStatusLine(state: LoopState, theme: StatusTheme | undefined): string {
+  const stateValue = state.stoppedReason ? "stopped" : "running";
+  const stateColor: ThemeColor = state.stoppedReason ? "warning" : "accent";
+  const pills: StatusPill[] = [
+    {
+      label: "ralph",
+      value: stateValue,
+      labelColor: stateColor,
+      valueColor: stateColor,
+      bg: state.stoppedReason ? "toolErrorBg" : "toolPendingBg",
+    },
+    {
+      label: "issue",
+      value: currentStatusValue(state),
+      labelColor: "accent",
+      valueColor: state.current ? "text" : "dim",
+      bg: "customMessageBg",
+    },
+    {
+      label: "try",
+      value: `${state.currentAttempt}/${state.maxAttempts}`,
+      labelColor: "muted",
+      valueColor: "text",
+      bg: "selectedBg",
+    },
+    {
+      label: "done",
+      value: `${state.completed.length}`,
+      labelColor: "success",
+      valueColor: "success",
+      bg: "toolSuccessBg",
+    },
+    {
+      label: "skip",
+      value: `${state.skipped.length}`,
+      labelColor: "warning",
+      valueColor: "warning",
+      bg: "toolPendingBg",
+    },
+    {
+      label: "left",
+      value: `${state.queue.length}`,
+      labelColor: "muted",
+      valueColor: "text",
+      bg: "selectedBg",
+    },
+    {
+      label: "verify",
+      value: verificationStatusValue(state),
+      labelColor: "muted",
+      valueColor: "dim",
+      bg: "customMessageBg",
+    },
+  ];
+
+  if (state.stoppedReason) {
+    pills.splice(1, 0, {
+      label: "reason",
+      value: state.stoppedReason.slice(0, 40),
+      labelColor: "warning",
+      valueColor: "warning",
+      bg: "toolErrorBg",
+    });
+  }
+
+  const separator = theme ? theme.fg("dim", "   ") : "     ";
+  return pills.map((pill) => formatStatusPill(theme, pill)).join(separator);
+}
+
+function updateStatus(ctx: StatusContext, state?: LoopState) {
   if (!state) {
     ctx.ui.setStatus(STATUS_KEY, undefined);
     return;
   }
 
-  if (state.stoppedReason) {
-    ctx.ui.setStatus(STATUS_KEY, `stopped: ${state.stoppedReason.slice(0, 40)}`);
-    return;
-  }
-
-  const current = state.current
-    ? `${state.current.number ?? basename(state.current.path, ".md")} ${state.currentAttempt}/${state.maxAttempts}`
-    : "starting";
-  ctx.ui.setStatus(
-    STATUS_KEY,
-    `ralph ${state.completed.length}✓ ${state.skipped.length}↷ ${state.queue.length}… ${current}`,
-  );
+  ctx.ui.setStatus(STATUS_KEY, formatStatusLine(state, ctx.ui.theme));
 }
 
 function appendState(pi: ExtensionAPI, event: string, data: Record<string, unknown> = {}) {
