@@ -1,7 +1,7 @@
 {
-  "lastChangelogVersion": "0.80.7",
+  "lastChangelogVersion": "0.83.0",
   "defaultProvider": "github-copilot",
-  "defaultModel": "gpt-5.5",
+  "defaultModel": "gpt-5.6-sol",
   "hideThinkingBlock": false,
   "theme": "pi-nord-aurora",
   "defaultThinkingLevel": "medium"
