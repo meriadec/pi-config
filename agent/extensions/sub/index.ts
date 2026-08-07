@@ -94,7 +94,7 @@ export default function subExtension(pi: ExtensionAPI): void {
 
   pi.registerCommand("sub", {
     description:
-      "Open an interactive kitty Pi sub-agent; use --skill for skills and --fresh for minimal context",
+      "Open an interactive kitty Pi sub-agent; use --skill for skills and --with-fresh-context for minimal context",
     getArgumentCompletions: (prefix) => getSubCompletions(pi, prefix),
     handler: async (args, ctx) => {
       if (getChildJobFromEnv()) {
@@ -104,7 +104,10 @@ export default function subExtension(pi: ExtensionAPI): void {
 
       const parsed = parseSubArgs(args);
       if (!parsed) {
-        ctx.ui.notify("Usage: /sub [--fresh] [--skill <skill-name>] [prompt]", "error");
+        ctx.ui.notify(
+          "Usage: /sub [--skill <skill-name>] [--with-fresh-context] [prompt]",
+          "error",
+        );
         return;
       }
 
@@ -349,7 +352,7 @@ function parseSubArgs(args: string): ParsedSubArgs | undefined {
 
   while (tokens.length > 0) {
     const token = tokens[0];
-    if (token === "--fresh") {
+    if (token === "--with-fresh-context") {
       fresh = true;
       rest = removeLeadingToken(rest, token);
       tokens.shift();
@@ -403,18 +406,18 @@ function getSubCompletions(pi: ExtensionAPI, prefix: string): AutocompleteItem[]
   if (tokens.length > 0 && !lastToken.startsWith("--")) return null;
 
   const completions: AutocompleteItem[] = [];
-  if (!tokens.includes("--fresh") && "--fresh".startsWith(lastToken)) {
-    completions.push({
-      value: "--fresh",
-      label: "--fresh",
-      description: "Start with minimal sub-agent context instead of forking this conversation",
-    });
-  }
   if (!tokens.includes("--skill") && "--skill".startsWith(lastToken)) {
     completions.push({
       value: "--skill",
       label: "--skill",
       description: "Run a Pi skill inside the sub-agent",
+    });
+  }
+  if (!tokens.includes("--with-fresh-context") && "--with-fresh-context".startsWith(lastToken)) {
+    completions.push({
+      value: "--with-fresh-context",
+      label: "--with-fresh-context",
+      description: "Start with minimal sub-agent context instead of forking this conversation",
     });
   }
 
