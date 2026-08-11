@@ -12,10 +12,7 @@ import { agentGitConfigGlobal } from "./lib/agent-git-config.ts";
 
 const STATUS_KEY = "ralph-loop";
 const DEFAULT_MAX_ATTEMPTS = 2;
-const DEFAULT_VERIFY_TIMEOUT_MS = 20 * 60_000;
 const TERMINAL_STATUSES = new Set(["done", "completed", "closed"]);
-const PREFERRED_AUTO_VERIFY_SCRIPTS = ["check", "validate", "ci", "verify"];
-const FALLBACK_AUTO_VERIFY_SCRIPTS = ["typecheck", "lint", "format:check", "test:unit", "test"];
 const OUTCOME_VALUES = ["completed", "skipped", "needs_human", "blocked"] as const;
 const ISSUE_CONTEXT_MARKER_PREFIX = "Ralph Loop issue marker:";
 
@@ -28,8 +25,6 @@ type IssueRef = {
   status?: string | undefined;
   number?: number | undefined;
 };
-
-type VerifyMode = "auto" | "none" | "commands";
 
 type LoopState = {
   id: string;
@@ -45,9 +40,6 @@ type LoopState = {
   skipped: IssueRef[];
   maxIssues: number;
   maxAttempts: number;
-  verifyMode: VerifyMode;
-  verifyCommands: string[];
-  verifyTimeoutMs: number;
   allowDirty: boolean;
   includeDone: boolean;
   stoppedReason?: string;
@@ -58,9 +50,6 @@ type StartOptions = {
   selectors: string[];
   maxIssues?: number;
   maxAttempts: number;
-  verifyMode: VerifyMode;
-  verifyCommands: string[];
-  verifyTimeoutMs: number;
   allowDirty: boolean;
   includeDone: boolean;
 };
@@ -92,10 +81,8 @@ function helpText(): string {
     "  /ralph-loop start from .scratch/foo-bar, do in order: 08 → 09 → 11 → 10 → 12",
     "",
     "Options:",
-    `  --max-attempts <n>        Verification-fix attempts per issue (default ${DEFAULT_MAX_ATTEMPTS})`,
+    `  --max-attempts <n>        Commit-fix attempts per issue when pre-commit hooks reject (default ${DEFAULT_MAX_ATTEMPTS})`,
     "  --max-issues <n>          Cap how many selected non-done issues are attempted",
-    "  --verify <cmd|auto|none>  Verification command. Repeat for multiple commands. Default: auto",
-    `  --verify-timeout <ms>     Timeout per verification command (default ${DEFAULT_VERIFY_TIMEOUT_MS})`,
     "  --include-done            Do not pre-filter Status: done/completed/closed issue files",
     "  --allow-dirty             Start even if git status is dirty",
   ].join("\n");
@@ -175,9 +162,6 @@ function parseStartOptions(rawArgs: string): StartOptions {
   const options: StartOptions = {
     selectors: [],
     maxAttempts: DEFAULT_MAX_ATTEMPTS,
-    verifyMode: "auto",
-    verifyCommands: [],
-    verifyTimeoutMs: DEFAULT_VERIFY_TIMEOUT_MS,
     allowDirty: false,
     includeDone: false,
   };
@@ -212,24 +196,6 @@ function parseStartOptions(rawArgs: string): StartOptions {
           continue;
         case "--max-attempts":
           options.maxAttempts = parsePositiveInt(readValue(name, inline), name);
-          continue;
-        case "--verify": {
-          const value = readValue(name, inline);
-          if (value === "none") {
-            options.verifyMode = "none";
-            options.verifyCommands = [];
-          } else if (value === "auto") {
-            options.verifyMode = "auto";
-            options.verifyCommands = [];
-          } else {
-            if (options.verifyMode !== "commands") options.verifyCommands = [];
-            options.verifyMode = "commands";
-            options.verifyCommands.push(value);
-          }
-          continue;
-        }
-        case "--verify-timeout":
-          options.verifyTimeoutMs = parsePositiveInt(readValue(name, inline), name);
           continue;
         default:
           throw new Error(`Unknown ralph-loop option: ${name}`);
@@ -464,85 +430,9 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-async function discoverAutoVerifyCommands(repoRootPath: string): Promise<string[]> {
-  const packageJsonPath = join(repoRootPath, "package.json");
-  if (!(await pathExists(packageJsonPath))) return [];
-
-  const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
-    packageManager?: string;
-    scripts?: Record<string, string>;
-  };
-  const scripts = packageJson.scripts ?? {};
-  const manager = await detectPackageManager(repoRootPath, packageJson.packageManager);
-  const preferredScript = PREFERRED_AUTO_VERIFY_SCRIPTS.find((script) =>
-    Object.prototype.hasOwnProperty.call(scripts, script),
-  );
-  const selectedScripts = preferredScript
-    ? [preferredScript]
-    : FALLBACK_AUTO_VERIFY_SCRIPTS.filter((script) =>
-        Object.prototype.hasOwnProperty.call(scripts, script),
-      );
-
-  return selectedScripts.map((script) =>
-    manager === "yarn" ? `yarn ${script}` : `${manager} run ${script}`,
-  );
-}
-
-async function detectPackageManager(
-  repoRootPath: string,
-  packageManager?: string,
-): Promise<"bun" | "pnpm" | "yarn" | "npm"> {
-  const declared = packageManager?.split("@")[0];
-  if (declared === "bun" || declared === "pnpm" || declared === "yarn" || declared === "npm")
-    return declared;
-  if (
-    (await pathExists(join(repoRootPath, "bun.lock"))) ||
-    (await pathExists(join(repoRootPath, "bun.lockb")))
-  )
-    return "bun";
-  if (await pathExists(join(repoRootPath, "pnpm-lock.yaml"))) return "pnpm";
-  if (await pathExists(join(repoRootPath, "yarn.lock"))) return "yarn";
-  return "npm";
-}
-
 function truncateText(text: string, maxChars = 8000): string {
   if (text.length <= maxChars) return text;
   return text.slice(0, maxChars) + `\n...[truncated ${text.length - maxChars} chars]`;
-}
-
-async function runVerification(pi: ExtensionAPI, state: LoopState, signal?: AbortSignal) {
-  const execOptions = signal
-    ? { timeout: state.verifyTimeoutMs, signal }
-    : { timeout: state.verifyTimeoutMs };
-
-  if (state.verifyMode === "none") {
-    return { ok: true, output: "Verification disabled by --verify none." };
-  }
-
-  if (state.verifyCommands.length === 0) {
-    return {
-      ok: true,
-      output: "No extension verification commands were discovered or configured.",
-    };
-  }
-
-  const chunks: string[] = [];
-  for (const command of state.verifyCommands) {
-    chunks.push(`$ ${command}`);
-    const result = (await pi.exec(
-      "bash",
-      ["-lc", `cd ${shellQuote(state.repoRoot)} && ${command}`],
-      execOptions,
-    )) as CommandResult;
-    const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-    if (output) chunks.push(truncateText(output));
-    chunks.push(`exit code: ${result.code}${result.killed ? " (killed/timeout)" : ""}`);
-    if (result.code !== 0) {
-      return { ok: false, output: chunks.join("\n\n") };
-    }
-  }
-
-  return { ok: true, output: chunks.join("\n\n") };
 }
 
 function safeCommitMessage(raw: string | undefined, issue: IssueRef): string {
@@ -575,7 +465,7 @@ async function commitCurrentIssue(
   state: LoopState,
   issue: IssueRef,
   commitMessage: string,
-): Promise<string> {
+): Promise<{ ok: boolean; output: string }> {
   const add = (await pi.exec("git", gitArgs(state.repoRoot, ["add", "-A"]), {
     timeout: 60_000,
   })) as CommandResult;
@@ -589,9 +479,13 @@ async function commitCurrentIssue(
   const commit = (await pi.exec("bash", ["-lc", commitScript], {
     timeout: 120_000,
   })) as CommandResult;
-  if (commit.code !== 0)
-    throw new Error(commit.stderr.trim() || commit.stdout.trim() || "git commit failed");
-  return [commit.stdout, commit.stderr].filter(Boolean).join("\n").trim();
+  const output = [commit.stdout, commit.stderr].filter(Boolean).join("\n").trim();
+  // A non-zero exit here is normally a pre-commit hook rejecting the change.
+  // Surface it to the caller so the agent can fix it and retry.
+  return {
+    ok: commit.code === 0,
+    output: output || (commit.code === 0 ? "" : "git commit failed"),
+  };
 }
 
 function formatIssueLine(issue: IssueRef): string {
@@ -611,7 +505,6 @@ function formatLoopStatus(state: LoopState): string {
     `Completed: ${state.completed.length}`,
     `Skipped: ${state.skipped.length}`,
     `Remaining: ${state.queue.length}`,
-    `Verification: ${state.verifyMode === "commands" || state.verifyCommands.length ? state.verifyCommands.join(" && ") : state.verifyMode}`,
     state.stoppedReason ? `Reason: ${state.stoppedReason}` : undefined,
   ]
     .filter(Boolean)
@@ -654,12 +547,6 @@ function statusValue(theme: StatusTheme | undefined, pill: StatusPill): string {
 
 function formatStatusPill(theme: StatusTheme | undefined, pill: StatusPill): string {
   return `${statusLabel(theme, pill)} ${statusValue(theme, pill)}`;
-}
-
-function verificationStatusValue(state: LoopState): string {
-  if (state.verifyMode === "commands") return `${state.verifyCommands.length} cmd`;
-  if (state.verifyCommands.length > 0) return "auto";
-  return state.verifyMode;
 }
 
 function currentStatusValue(state: LoopState): string {
@@ -712,13 +599,6 @@ function formatStatusLine(state: LoopState, theme: StatusTheme | undefined): str
       labelColor: "muted",
       valueColor: "text",
       bg: "selectedBg",
-    },
-    {
-      label: "verify",
-      value: verificationStatusValue(state),
-      labelColor: "muted",
-      valueColor: "dim",
-      bg: "customMessageBg",
     },
   ];
 
@@ -811,12 +691,6 @@ function containsText(value: unknown, needle: string, seen = new WeakSet<object>
 }
 
 function issuePrompt(state: LoopState, issue: IssueRef, retryContext?: string): string {
-  const verification = state.verifyCommands.length
-    ? state.verifyCommands.map((command) => `- ${command}`).join("\n")
-    : state.verifyMode === "none"
-      ? "- Extension verification disabled by --verify none. Run targeted validation yourself before reporting completed."
-      : "- No automatic verification command was discovered. Run targeted repo validation yourself before reporting completed.";
-
   return [
     "You are running Ralph Loop, an autonomous local .scratch issue loop.",
     "",
@@ -828,27 +702,24 @@ function issuePrompt(state: LoopState, issue: IssueRef, retryContext?: string): 
     `Selected issue ${state.startedIssues}/${state.maxIssues}; remaining after this: ${state.queue.length}`,
     "",
     retryContext
-      ? `Previous verification failed. Fix the failure before calling ralph_issue_result again.\n\n${retryContext}`
+      ? `The previous commit was rejected (normally by a pre-commit hook). Fix the reported problems before calling ralph_issue_result again.\n\n${retryContext}`
       : undefined,
     "Rules:",
     "1. The issue file under .scratch/ is the source of truth for this task. Read it first.",
-    "2. Work autonomously. Do not ask for approval before implementation.",
-    "3. Stop instead of guessing if the issue needs product judgment, secrets, external access, destructive actions, or an important unresolved ambiguity.",
-    "4. Local signed commits are allowed when needed, but do not amend, tag, push, or rewrite git history unless explicitly instructed. The Ralph Loop extension normally owns final verification and commit creation.",
-    "5. You may run targeted tests/checks while working, but the extension will run final verification after you call ralph_issue_result.",
+    "2. Follow the repo's own contribution guidelines (AGENTS.md/CONTRIBUTING and its documented harness). Do not invent your own build/test commands.",
+    "3. Work autonomously. Do not ask for approval before implementation.",
+    "4. Stop instead of guessing if the issue needs product judgment, secrets, external access, destructive actions, or an important unresolved ambiguity.",
+    "5. Local signed commits are allowed when needed, but do not amend, tag, push, or rewrite git history unless explicitly instructed. The Ralph Loop extension normally owns the final commit creation.",
     "6. Do not move to another issue yourself. Do not loop manually.",
     "7. When this issue reaches a terminal state, call ralph_issue_result as your final action. Do not provide a normal final answer instead.",
     "",
     "Call ralph_issue_result with:",
-    "- outcome=completed only after implementing the issue and any targeted validation you judge necessary.",
+    "- outcome=completed only after implementing the issue per the repo guidelines.",
     "- outcome=skipped if the issue is already done, not legitimate, not actionable, or outside the repo's current scope.",
     "- outcome=needs_human if meaningful human judgment/input is required.",
     "- outcome=blocked if an unexpected/unfixable technical failure prevents progress.",
     "",
-    "For completed, include a concise conventional-commit commitMessage. The extension will mark the issue Status as done, run verification, stage all changes, and create a signed commit using the configured agent git identity.",
-    "",
-    "Extension verification commands:",
-    verification,
+    "For completed, include a concise conventional-commit commitMessage. The extension will mark the issue Status as done, stage all changes, and create a signed commit using the configured agent git identity. The commit runs the repo's pre-commit hooks; if they reject the change, you will be asked to fix it and retry.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -906,66 +777,50 @@ async function handleCompleted(
   updateStatus(ctx, state);
   await ensureNoMergeState(pi, state.repoRoot);
 
-  let statusBeforeVerify = await gitStatus(pi, state.repoRoot);
-  if (!statusBeforeVerify) {
+  const statusBeforeCommit = await gitStatus(pi, state.repoRoot);
+  if (!statusBeforeCommit) {
     stopLoop(pi, ctx, `Issue ${issue.relPath} was reported completed but produced no git changes.`);
     return "Stopped: completed issue produced no git changes.";
   }
 
-  ctx.ui.notify?.(`Ralph Loop verifying ${issue.relPath}`, "info");
-  const verification = await runVerification(pi, state, ctx.signal);
-  if (!verification.ok) {
-    appendState(pi, "verification-failed", {
+  await markIssueDone(issue);
+
+  const message = safeCommitMessage(params.commitMessage, issue);
+  ctx.ui.notify?.(`Ralph Loop committing ${issue.relPath}`, "info");
+  const commit = await commitCurrentIssue(pi, state, issue, message);
+  if (!commit.ok) {
+    // The commit was rejected, normally by a pre-commit hook guarding quality.
+    appendState(pi, "commit-rejected", {
       issue: issue.relPath,
       attempt: state.currentAttempt,
-      output: verification.output,
+      output: commit.output,
     });
     if (state.currentAttempt >= state.maxAttempts) {
       stopLoop(
         pi,
         ctx,
-        `Verification failed for ${issue.relPath} after ${state.currentAttempt}/${state.maxAttempts} attempts.`,
+        `Commit rejected for ${issue.relPath} after ${state.currentAttempt}/${state.maxAttempts} attempts.`,
       );
-      return `Verification failed and max attempts were exhausted.\n\n${verification.output}`;
+      return `Commit rejected and max attempts were exhausted.\n\n${commit.output}`;
     }
 
     state.currentAttempt += 1;
     updateStatus(ctx, state);
-    const retryContext = truncateText(verification.output, 6000);
+    const retryContext = truncateText(commit.output, 6000);
     sendUserMessage(pi, ctx, issuePrompt(state, issue, retryContext));
-    return `Verification failed. Queued retry ${state.currentAttempt}/${state.maxAttempts}.`;
+    return `Commit rejected. Queued retry ${state.currentAttempt}/${state.maxAttempts}.`;
   }
-
-  await markIssueDone(issue);
-  statusBeforeVerify = await gitStatus(pi, state.repoRoot);
-  if (!statusBeforeVerify) {
-    stopLoop(pi, ctx, `Issue ${issue.relPath} has no changes to commit after verification.`);
-    return "Stopped: no changes to commit.";
-  }
-
-  const message = safeCommitMessage(params.commitMessage, issue);
-  ctx.ui.notify?.(`Ralph Loop committing ${issue.relPath}`, "info");
-  const commitOutput = await commitCurrentIssue(pi, state, issue, message);
 
   state.completed.push(issue);
   state.current = undefined;
   appendState(pi, "issue-committed", {
     issue: issue.relPath,
     commitMessage: message,
-    verification: verification.output,
-    commitOutput,
+    commitOutput: commit.output,
   });
   updateStatus(ctx, state);
   startNextIssue(pi, ctx);
-  return [
-    `Completed ${issue.relPath}.`,
-    "",
-    "Verification:",
-    verification.output,
-    "",
-    "Commit:",
-    commitOutput,
-  ].join("\n");
+  return [`Completed ${issue.relPath}.`, "", "Commit:", commit.output].join("\n");
 }
 
 async function handleSkippedOrBlocked(
@@ -1035,8 +890,6 @@ async function startLoop(pi: ExtensionAPI, args: string, ctx: ExtensionCommandCo
     return;
   }
 
-  const verifyCommands =
-    options.verifyMode === "auto" ? await discoverAutoVerifyCommands(root) : options.verifyCommands;
   const maxIssues = Math.min(options.maxIssues ?? issues.length, issues.length);
   activeLoop = {
     id: `${Date.now()}`,
@@ -1051,9 +904,6 @@ async function startLoop(pi: ExtensionAPI, args: string, ctx: ExtensionCommandCo
     skipped: [],
     maxIssues,
     maxAttempts: options.maxAttempts,
-    verifyMode: options.verifyMode,
-    verifyCommands,
-    verifyTimeoutMs: options.verifyTimeoutMs,
     allowDirty: options.allowDirty,
     includeDone: options.includeDone,
     startedAt: Date.now(),
@@ -1064,7 +914,6 @@ async function startLoop(pi: ExtensionAPI, args: string, ctx: ExtensionCommandCo
     issues: issues.map((issue) => issue.relPath),
     maxIssues,
     maxAttempts: options.maxAttempts,
-    verifyCommands,
   });
   ctx.ui.notify(
     `Ralph Loop starting with ${maxIssues}/${issues.length} selected .scratch issues.`,
