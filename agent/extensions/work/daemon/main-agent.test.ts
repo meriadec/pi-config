@@ -1,0 +1,240 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { WorkClient } from "../client/client.ts";
+import { createTopicStore, createWorkPaths } from "../shared/index.ts";
+import type { TopicManifest, TopicStore } from "../shared/index.ts";
+import type { DesktopController, MainAgentLaunch } from "./desktop.ts";
+import { MainAgentManager } from "./main-agent.ts";
+import { WorkDaemon } from "./server.ts";
+
+const roots: string[] = [];
+
+class FakeDesktop implements DesktopController {
+  launches: MainAgentLaunch[] = [];
+  closed: string[] = [];
+  result: "launched" | "focused" = "launched";
+
+  async accessWorkspace() {
+    return { kind: "focused" as const, workspace: 1, message: "Focused." };
+  }
+
+  async openTerminal() {
+    return { kind: "launched" as const, workspace: 1, message: "Opened." };
+  }
+
+  async openMainAgent(launch: MainAgentLaunch) {
+    this.launches.push(launch);
+    return { kind: this.result, workspace: 1, message: "Agent opened." };
+  }
+
+  async closeMainAgent(topicId: string) {
+    this.closed.push(topicId);
+    return { kind: "closed" as const, message: "Agent closed." };
+  }
+}
+
+interface World {
+  manager: MainAgentManager;
+  topics: TopicStore;
+  topic: TopicManifest;
+  desktop: FakeDesktop;
+  setNow(value: number): void;
+  sweep(): void;
+  stoppedTimers(): number;
+  socketPath: string;
+}
+
+async function world(): Promise<World> {
+  const root = await mkdtemp(join(tmpdir(), "work-main-agent-"));
+  roots.push(root);
+  const runtime = join(root, "runtime");
+  await mkdir(runtime, { recursive: true });
+  const topics = createTopicStore(createWorkPaths({ home: join(root, "home"), runtime }));
+  let topic = await topics.create({
+    name: "VG-123",
+    branch: "feat-vg-123",
+    repository: "owner/repo",
+  });
+  const worktree = join(root, "worktree");
+  topic = await topics.update(topic.id, (current) => ({
+    ...current,
+    setup: { state: "ready", repositoryAvailable: true, worktreeCreated: true },
+    worktreePath: worktree,
+  }));
+  const desktop = new FakeDesktop();
+  let now = 0;
+  let callback = (): void => undefined;
+  let stopped = 0;
+  const socketPath = join(runtime, "pi-workd.sock");
+  const manager = new MainAgentManager({
+    topics,
+    desktop,
+    socketPath,
+    now: () => now,
+    generateToken: () => "registration-token",
+    generateSessionId: () => "123e4567-e89b-42d3-a456-426614174099",
+    registrationTtlMs: 100,
+    heartbeatTimeoutMs: 20,
+    setInterval: ((handler: () => void) => {
+      callback = handler;
+      return 1;
+    }) as typeof setInterval,
+    clearInterval: (() => {
+      stopped += 1;
+    }) as typeof clearInterval,
+  });
+  await manager.start();
+  return {
+    manager,
+    topics,
+    topic,
+    desktop,
+    setNow(value) {
+      now = value;
+    },
+    sweep() {
+      callback();
+    },
+    stoppedTimers() {
+      return stopped;
+    },
+    socketPath,
+  };
+}
+
+async function register(item: World, connectionId = "connection-1") {
+  return item.manager.register({
+    connectionId,
+    topicId: item.topic.id,
+    sessionId: item.topic.mainAgent.sessionId,
+    sessionFile: join(dirnameOfWorktree(item.topic), "session.jsonl"),
+    token: "registration-token",
+  });
+}
+
+function dirnameOfWorktree(topic: TopicManifest): string {
+  return topic.worktreePath ?? "/tmp";
+}
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+describe("Main Agent lease", () => {
+  test("starts one deterministic launch and persists only its reported session file", async () => {
+    const item = await world();
+    expect(await item.manager.open(item.topic)).toMatchObject({ kind: "launched" });
+    expect(item.desktop.launches[0]).toMatchObject({
+      topicId: item.topic.id,
+      sessionId: item.topic.id,
+      registrationToken: "registration-token",
+    });
+    expect(item.manager.snapshot()[0]?.state).toBe("starting");
+
+    expect(await register(item)).toMatchObject({ state: "idle", connected: true });
+    expect((await item.topics.load(item.topic.id)).mainAgent.sessionFile).toBe(
+      join(dirnameOfWorktree(item.topic), "session.jsonl"),
+    );
+  });
+
+  test("starts a new empty session and keeps the previous session file", async () => {
+    const item = await world();
+    await item.manager.open(item.topic);
+    await register(item);
+    const previous = await item.topics.load(item.topic.id);
+    await mkdir(dirname(previous.mainAgent.sessionFile!), { recursive: true });
+    await writeFile(previous.mainAgent.sessionFile!, "previous session");
+
+    expect(await item.manager.reset(previous)).toMatchObject({ kind: "launched" });
+
+    expect(item.desktop.closed).toEqual([item.topic.id]);
+    expect(item.desktop.launches.at(-1)?.sessionId).toBe("123e4567-e89b-42d3-a456-426614174099");
+    expect((await item.topics.load(item.topic.id)).mainAgent).toEqual({
+      sessionId: "123e4567-e89b-42d3-a456-426614174099",
+      sessionFile: null,
+    });
+    expect(await Bun.file(previous.mainAgent.sessionFile!).exists()).toBeTrue();
+  });
+
+  test("validates registration tokens through the private socket protocol", async () => {
+    const item = await world();
+    const daemon = new WorkDaemon({
+      socketPath: item.socketPath,
+      runtimeDirectory: dirname(item.socketPath),
+      mainAgent: item.manager,
+    });
+    await daemon.start();
+    const client = await WorkClient.connect(item.socketPath);
+    try {
+      await item.manager.open(item.topic);
+      await expect(
+        client.registerMainAgent({
+          topicId: item.topic.id,
+          sessionId: item.topic.id,
+          sessionFile: "/tmp/session.jsonl",
+          token: "wrong",
+        }),
+      ).rejects.toMatchObject({ code: "invalid-registration" });
+      expect(
+        await client.registerMainAgent({
+          topicId: item.topic.id,
+          sessionId: item.topic.id,
+          sessionFile: "/tmp/session.jsonl",
+          token: "registration-token",
+        }),
+      ).toMatchObject({ state: "idle", connected: true });
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  test("rejects invalid tokens and transitions through thinking, waiting, and stopped", async () => {
+    const item = await world();
+    await item.manager.open(item.topic);
+    await expect(
+      item.manager.register({
+        connectionId: "bad",
+        topicId: item.topic.id,
+        sessionId: item.topic.id,
+        sessionFile: "/tmp/session.jsonl",
+        token: "wrong",
+      }),
+    ).rejects.toMatchObject({ code: "invalid-registration" });
+    await register(item);
+    expect(item.manager.transition("connection-1", "thinking").state).toBe("thinking");
+    expect(item.manager.transition("connection-1", "waiting-for-human").state).toBe(
+      "waiting-for-human",
+    );
+    expect(item.manager.transition("connection-1", "stopped")).toMatchObject({
+      state: "stopped",
+      connected: false,
+    });
+  });
+
+  test("expires a lost heartbeat and permits same-session reconnect", async () => {
+    const item = await world();
+    await item.manager.open(item.topic);
+    await register(item);
+    item.manager.disconnected("connection-1");
+    item.setNow(10);
+    expect(await register(item, "connection-2")).toMatchObject({ state: "idle", connected: true });
+    item.manager.heartbeat("connection-2");
+    item.setNow(31);
+    item.sweep();
+    expect(item.manager.snapshot()[0]).toMatchObject({
+      state: "failed",
+      connected: false,
+      reason: "Main Agent heartbeat expired.",
+    });
+  });
+
+  test("cleans up its daemon timer", async () => {
+    const item = await world();
+    item.manager.stop();
+    expect(item.stoppedTimers()).toBe(1);
+    expect(item.manager.snapshot()).toEqual([]);
+  });
+});

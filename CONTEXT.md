@@ -31,3 +31,7 @@ _Avoid_: socket, terminal output, session transcript
 **Context Packet**:
 The explicit, bounded startup information passed from the parent session to a Delegation Job, excluding the full parent conversation unless the user opts into a summary handoff.
 _Avoid_: conversation dump, prompt, system prompt
+
+**Branch**:
+A Topic's exact Git branch name. A Branch identifies a Topic within its GitHub repository.
+_Avoid_: slug, branch slug
