@@ -43,6 +43,7 @@ Only rungs 1 and 2 are required; 2 may itself be one commit. Rungs 3 and 4 appea
    - First check the backup: if a branch named `<branch>.bak` already exists, **stop everything** and tell the user — do not proceed, do not overwrite it.
    - Otherwise create it: `git branch <branch>.bak`.
    - Reshape the history to match the approved plan (interactive rebase to reorder/squash/reword, or soft-reset the branch to `<base>` and rebuild the commits from staged hunks when fusions cut across the original boundaries).
+   - Always commit with `--no-verify` to bypass pre-commit hooks. This step reshapes history, not the job the hooks check.
    - **Refresh every reshaped commit message.** For each commit that was fused, split, or had hunks moved in or out, re-read its final `git show --stat` and rewrite the subject and body to match what it now contains — never inherit a stale subject from one of the originals. Drop mentions of content that moved out; add mentions of content that moved in (extra packages, ADRs, docs, tests).
    - Verify the result: `git log --oneline <base>..HEAD` matches the plan, `git diff <branch>.bak..HEAD` is empty (the reshape changed history, not content) — unless the plan intentionally dropped something, which you then confirm is the only difference — and each commit's message accurately reflects its final `--stat`.
    - Completion: the branch history matches the approved clean stack, the diff against the backup is exactly the intended one, and no commit carries a message left over from a pre-reshape shape.
