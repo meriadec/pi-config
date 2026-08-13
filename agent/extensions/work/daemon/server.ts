@@ -266,6 +266,9 @@ export class WorkDaemon {
             sessionId: request.sessionId,
             sessionFile: request.sessionFile,
             token: request.token,
+            ...(request.affiliationToken === undefined
+              ? {}
+              : { affiliationToken: request.affiliationToken }),
           });
           await this.options.topicService?.refreshTopic(request.topicId);
           break;

@@ -28,6 +28,8 @@ The first `/work` run asks for `WORK_BASE`. This directory contains base checkou
 
 The dashboard starts or connects to `pi-workd`. Closing the dashboard does not stop the daemon or Main Agent. Workspace pool exhaustion is informational; close or move a window before you retry.
 
+Running `/new` inside a Main Agent window keeps the window affiliated with its Topic. The window carries a durable, non-secret window affiliation credential, so its new Pi session is adopted as the Topic's live Main Agent. Durable session identity repoints to the adopted session; the previous session file is kept.
+
 After extension development changes, run `/reload` in Pi before you test the new code.
 
 ## Architecture and storage

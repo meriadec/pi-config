@@ -50,6 +50,7 @@ export interface MainAgentLaunch {
   sessionId: string;
   socketPath: string;
   registrationToken: string;
+  affiliationToken: string;
 }
 
 export interface DesktopController {
@@ -230,6 +231,13 @@ export class I3KittyDesktopController implements DesktopController {
         PI_WORK_SOCKET: launch.socketPath,
         PI_WORK_REGISTRATION_TOKEN: launch.registrationToken,
         PI_WORK_SESSION_ID: launch.sessionId,
+        // Durable, non-secret window affiliation. It stays in the window process
+        // environment so a later in-window /new session can adopt this Topic. It
+        // never enters the shell command line, manifests, or logs.
+        PI_WORK_AFFILIATION: launch.affiliationToken,
+        // Launch-time Topic name so an adopted in-window /new session can restore
+        // the "Work: <topic>" footer label that --name gives the first session.
+        PI_WORK_TOPIC_NAME: launch.topicName,
       },
       timeoutMs: PROCESS_TIMEOUT_MS,
       maxOutputBytes: MAX_PROCESS_OUTPUT_BYTES,

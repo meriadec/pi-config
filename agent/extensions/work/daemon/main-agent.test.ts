@@ -74,6 +74,7 @@ async function world(): Promise<World> {
     socketPath,
     now: () => now,
     generateToken: () => "registration-token",
+    generateAffiliation: () => "window-affiliation",
     generateSessionId: () => "123e4567-e89b-42d3-a456-426614174099",
     registrationTtlMs: 100,
     heartbeatTimeoutMs: 20,
@@ -191,6 +192,34 @@ describe("Main Agent lease", () => {
     }
   });
 
+  test("adopts a new session over the private socket protocol", async () => {
+    const item = await world();
+    const daemon = new WorkDaemon({
+      socketPath: item.socketPath,
+      runtimeDirectory: dirname(item.socketPath),
+      mainAgent: item.manager,
+    });
+    await daemon.start();
+    const client = await WorkClient.connect(item.socketPath);
+    try {
+      await item.manager.open(item.topic);
+      const adoptedSession = "123e4567-e89b-42d3-a456-426614174100";
+      expect(
+        await client.registerMainAgent({
+          topicId: item.topic.id,
+          sessionId: adoptedSession,
+          sessionFile: "/tmp/adopted.jsonl",
+          token: "registration-token",
+          affiliationToken: "window-affiliation",
+        }),
+      ).toMatchObject({ state: "idle", connected: true, sessionId: adoptedSession });
+      expect((await item.topics.load(item.topic.id)).mainAgent.sessionId).toBe(adoptedSession);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
   test("rejects invalid tokens and transitions through thinking, waiting, and stopped", async () => {
     const item = await world();
     await item.manager.open(item.topic);
@@ -229,6 +258,97 @@ describe("Main Agent lease", () => {
       connected: false,
       reason: "Main Agent heartbeat expired.",
     });
+  });
+
+  test("adopts an in-window new session and repoints durable identity", async () => {
+    const item = await world();
+    await item.manager.open(item.topic);
+    await register(item);
+    const adoptedSession = "123e4567-e89b-42d3-a456-426614174100";
+    const adoptedFile = join(dirnameOfWorktree(item.topic), "adopted.jsonl");
+    // The originally launched socket closed when the window ran /new.
+    item.manager.disconnected("connection-1");
+    const lease = await item.manager.register({
+      connectionId: "connection-2",
+      topicId: item.topic.id,
+      sessionId: adoptedSession,
+      sessionFile: adoptedFile,
+      token: "registration-token",
+      affiliationToken: "window-affiliation",
+    });
+    expect(lease).toMatchObject({ state: "idle", connected: true, sessionId: adoptedSession });
+    const stored = await item.topics.load(item.topic.id);
+    expect(stored.mainAgent).toEqual({ sessionId: adoptedSession, sessionFile: adoptedFile });
+    // At most one live lease remains for the Topic after adoption.
+    expect(item.manager.snapshot()).toHaveLength(1);
+  });
+
+  test("still registers the originally launched session by exact match", async () => {
+    const item = await world();
+    await item.manager.open(item.topic);
+    expect(await register(item)).toMatchObject({
+      state: "idle",
+      connected: true,
+      sessionId: item.topic.mainAgent.sessionId,
+    });
+    expect((await item.topics.load(item.topic.id)).mainAgent.sessionId).toBe(
+      item.topic.mainAgent.sessionId,
+    );
+  });
+
+  test("rejects a foreign session without a valid affiliation", async () => {
+    const item = await world();
+    await item.manager.open(item.topic);
+    await register(item);
+    // A different live session id with no affiliation credential is rejected,
+    // whether or not it replays the launch token.
+    await expect(
+      item.manager.register({
+        connectionId: "foreign",
+        topicId: item.topic.id,
+        sessionId: "123e4567-e89b-42d3-a456-426614174200",
+        sessionFile: join(dirnameOfWorktree(item.topic), "foreign.jsonl"),
+        token: "registration-token",
+      }),
+    ).rejects.toMatchObject({ code: "invalid-registration" });
+    await expect(
+      item.manager.register({
+        connectionId: "foreign",
+        topicId: item.topic.id,
+        sessionId: "123e4567-e89b-42d3-a456-426614174200",
+        sessionFile: join(dirnameOfWorktree(item.topic), "foreign.jsonl"),
+        token: "wrong",
+        affiliationToken: "not-a-window",
+      }),
+    ).rejects.toMatchObject({ code: "invalid-registration" });
+    // Durable identity is unchanged by the rejected attempts.
+    expect((await item.topics.load(item.topic.id)).mainAgent.sessionId).toBe(
+      item.topic.mainAgent.sessionId,
+    );
+  });
+
+  test("rejects a cross-Topic affiliation adoption attempt", async () => {
+    const item = await world();
+    await item.manager.open(item.topic);
+    await register(item);
+    // A second, never-launched Topic. This window is affiliated only with the
+    // first Topic and cannot claim the second Topic's Main Agent identity.
+    const other = await item.topics.create({
+      name: "VG-999",
+      branch: "feat-vg-999",
+      repository: "owner/repo",
+    });
+    await expect(
+      item.manager.register({
+        connectionId: "cross",
+        topicId: other.id,
+        sessionId: "123e4567-e89b-42d3-a456-426614174300",
+        sessionFile: join(dirnameOfWorktree(item.topic), "cross.jsonl"),
+        token: "registration-token",
+        affiliationToken: "window-affiliation",
+      }),
+    ).rejects.toMatchObject({ code: "invalid-registration" });
+    expect((await item.topics.load(other.id)).mainAgent.sessionId).toBe(other.mainAgent.sessionId);
   });
 
   test("cleans up its daemon timer", async () => {

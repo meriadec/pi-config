@@ -53,6 +53,7 @@ export type WorkRequest =
       sessionId: string;
       sessionFile: string;
       token: string;
+      affiliationToken?: string;
     })
   | (RequestBase & {
       action: "agent.heartbeat" | "agent.thinking" | "agent.waiting" | "agent.stopped";
@@ -258,6 +259,16 @@ export function parseRequest(text: string): WorkRequest {
           "Registration token is required.",
           id,
         ),
+        ...(value["affiliationToken"] === undefined
+          ? {}
+          : {
+              affiliationToken: shortString(
+                value["affiliationToken"],
+                "invalid-arguments",
+                "Affiliation token is invalid.",
+                id,
+              ),
+            }),
       };
     case "agent.heartbeat":
     case "agent.thinking":

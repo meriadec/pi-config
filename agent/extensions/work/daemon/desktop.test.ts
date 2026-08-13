@@ -189,6 +189,7 @@ describe("marked Kitty launch", () => {
         sessionId: topicId,
         socketPath: "/run/user/1000/pi-workd.sock",
         registrationToken: "one-launch-token",
+        affiliationToken: "one-window-affiliation",
       }),
     ).toMatchObject({ kind: "launched", workspace: 1 });
     const kitty = runner.requests.find((request) => request.command === "kitty")!;
@@ -213,6 +214,8 @@ describe("marked Kitty launch", () => {
       PI_WORK_SOCKET: "/run/user/1000/pi-workd.sock",
       PI_WORK_REGISTRATION_TOKEN: "one-launch-token",
       PI_WORK_SESSION_ID: topicId,
+      PI_WORK_AFFILIATION: "one-window-affiliation",
+      PI_WORK_TOPIC_NAME: "VG-123",
     });
     expect(runner.requests.at(-1)?.args[0]).toContain(`mark --add ${mainAgentMark(topicId)}`);
   });
@@ -230,6 +233,7 @@ describe("marked Kitty launch", () => {
         sessionId: "session",
         socketPath: "/tmp/socket",
         registrationToken: "token",
+        affiliationToken: "affiliation",
       }),
     ).toEqual({ kind: "focused", workspace: 4, message: "Focused Main Agent on workspace 4." });
     expect(runner.requests.some((request) => request.command === "kitty")).toBe(false);

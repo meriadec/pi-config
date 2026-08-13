@@ -165,7 +165,13 @@ export class WorkClient {
   }
 
   registerMainAgent(
-    input: { topicId: string; sessionId: string; sessionFile: string; token: string },
+    input: {
+      topicId: string;
+      sessionId: string;
+      sessionFile: string;
+      token: string;
+      affiliationToken?: string;
+    },
     timeoutMs?: number,
   ): Promise<MainAgentLease> {
     return this.request("agent.register", input, timeoutMs) as Promise<MainAgentLease>;

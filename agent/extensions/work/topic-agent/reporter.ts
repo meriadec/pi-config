@@ -8,6 +8,8 @@ export interface TopicAgentEnvironment {
   socketPath: string;
   registrationToken: string;
   sessionId: string;
+  affiliationToken?: string;
+  topicName?: string;
 }
 
 interface AgentClient {
@@ -16,6 +18,7 @@ interface AgentClient {
     sessionId: string;
     sessionFile: string;
     token: string;
+    affiliationToken?: string;
   }): Promise<unknown>;
   heartbeatMainAgent(): Promise<unknown>;
   reportMainAgent(state: "thinking" | "waiting" | "stopped"): Promise<unknown>;
@@ -25,6 +28,8 @@ interface AgentClient {
 export interface TopicAgentReporterOptions {
   environment?: NodeJS.ProcessEnv;
   connect?: (socketPath: string) => Promise<AgentClient>;
+  /** Sets the Pi session display name, which the footer shows. */
+  setSessionName?: (name: string) => void;
   heartbeatMs?: number;
   setInterval?: typeof globalThis.setInterval;
   clearInterval?: typeof globalThis.clearInterval;
@@ -40,15 +45,23 @@ export class TopicAgentReporter {
   private settleTimer: ReturnType<typeof setTimeout> | undefined;
   private heartbeatPending = false;
   private registration:
-    | { topicId: string; sessionId: string; sessionFile: string; token: string }
+    | {
+        topicId: string;
+        sessionId: string;
+        sessionFile: string;
+        token: string;
+        affiliationToken?: string;
+      }
     | undefined;
   private shuttingDown = false;
   private readonly connect: (socketPath: string) => Promise<AgentClient>;
+  private readonly setSessionName: ((name: string) => void) | undefined;
   private readonly heartbeatMs: number;
 
   constructor(options: TopicAgentReporterOptions = {}) {
     this.environment = readTopicAgentEnvironment(options.environment ?? process.env);
     this.connect = options.connect ?? ((path) => WorkClient.connect(path));
+    this.setSessionName = options.setSessionName;
     this.heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
     this.startTimer = options.setInterval ?? globalThis.setInterval;
     this.stopTimer = options.clearInterval ?? globalThis.clearInterval;
@@ -68,16 +81,26 @@ export class TopicAgentReporter {
   async sessionStart(ctx: Pick<ExtensionContext, "sessionManager">): Promise<void> {
     const environment = this.environment;
     if (environment === undefined) return;
+    // Clean up the previous session's timer and connection first so a /new
+    // within one window process never leaks the prior session's resources.
     await this.close(false);
     const sessionFile = ctx.sessionManager.getSessionFile();
     const actualSessionId = ctx.sessionManager.getSessionId();
-    if (sessionFile === undefined || actualSessionId !== environment.sessionId) return;
+    if (sessionFile === undefined) return;
+    // Exact-match path for the originally launched session. Otherwise adopt the
+    // live session as this Topic's Main Agent, but only with a durable window
+    // affiliation credential; without it, keep the previous skip behavior.
+    const adopting = actualSessionId !== environment.sessionId;
+    if (adopting && environment.affiliationToken === undefined) return;
     this.shuttingDown = false;
     this.registration = {
       topicId: environment.topicId,
       sessionId: actualSessionId,
       sessionFile,
       token: environment.registrationToken,
+      ...(environment.affiliationToken === undefined
+        ? {}
+        : { affiliationToken: environment.affiliationToken }),
     };
     const client = await this.connect(environment.socketPath);
     try {
@@ -87,6 +110,14 @@ export class TopicAgentReporter {
       throw error;
     }
     this.client = client;
+    // Restore the "Work: <topic>" footer label for adopted in-window /new
+    // sessions, which start without the launch-time --name. Skip when the name
+    // already matches so the originally launched session stays untouched.
+    const desiredName =
+      environment.topicName === undefined ? undefined : `Work: ${environment.topicName}`;
+    if (desiredName !== undefined && ctx.sessionManager.getSessionName() !== desiredName) {
+      this.setSessionName?.(desiredName);
+    }
     this.timer = this.startTimer(() => {
       const activeClient = this.client;
       if (this.heartbeatPending || activeClient === undefined) return;
@@ -172,6 +203,8 @@ export function readTopicAgentEnvironment(
   const socketPath = env["PI_WORK_SOCKET"];
   const registrationToken = env["PI_WORK_REGISTRATION_TOKEN"];
   const sessionId = env["PI_WORK_SESSION_ID"];
+  const affiliationToken = env["PI_WORK_AFFILIATION"];
+  const topicName = env["PI_WORK_TOPIC_NAME"];
   if (
     topicId === undefined ||
     topicId.length === 0 ||
@@ -184,12 +217,21 @@ export function readTopicAgentEnvironment(
   ) {
     return undefined;
   }
-  return { topicId, socketPath, registrationToken, sessionId };
+  return {
+    topicId,
+    socketPath,
+    registrationToken,
+    sessionId,
+    ...(affiliationToken === undefined || affiliationToken.length === 0
+      ? {}
+      : { affiliationToken }),
+    ...(topicName === undefined || topicName.length === 0 ? {} : { topicName }),
+  };
 }
 
 export function registerTopicAgentTelemetry(
   pi: ExtensionAPI,
-  reporter = new TopicAgentReporter(),
+  reporter = new TopicAgentReporter({ setSessionName: (name) => pi.setSessionName(name) }),
 ): void {
   pi.on("session_start", async (_event, ctx) => reporter.sessionStart(ctx));
   pi.on("agent_start", async () => reporter.thinking());

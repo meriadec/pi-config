@@ -36,6 +36,7 @@ export interface MainAgentManagerOptions {
   socketPath: string;
   now?: () => number;
   generateToken?: () => string;
+  generateAffiliation?: () => string;
   generateSessionId?: () => string;
   heartbeatTimeoutMs?: number;
   registrationTtlMs?: number;
@@ -47,6 +48,8 @@ export interface MainAgentManagerOptions {
 export class MainAgentManager {
   private readonly leases = new Map<string, LiveAgent>();
   private readonly registrations = new Map<string, Registration>();
+  /** Durable per-window affiliation tokens (token -> topicId) for the window lifetime. */
+  private readonly affiliations = new Map<string, string>();
   private readonly listeners = new Set<(event: MainAgentEvent) => void>();
   private readonly now: () => number;
   private readonly heartbeatTimeoutMs: number;
@@ -85,6 +88,7 @@ export class MainAgentManager {
       this.timer = undefined;
     }
     this.registrations.clear();
+    this.affiliations.clear();
     this.leases.clear();
   }
 
@@ -112,6 +116,9 @@ export class MainAgentManager {
     for (const [token, registration] of this.registrations) {
       if (registration.topicId === topic.id) this.registrations.delete(token);
     }
+    for (const [token, affiliatedTopic] of this.affiliations) {
+      if (affiliatedTopic === topic.id) this.affiliations.delete(token);
+    }
     const sessionId = (this.options.generateSessionId ?? randomUUID)();
     const updated = await this.options.topics.update(topic.id, (current) => ({
       ...current,
@@ -132,6 +139,8 @@ export class MainAgentManager {
       sessionId: topic.mainAgent.sessionId,
       expiresAt: this.now() + this.registrationTtlMs,
     });
+    const affiliationToken = (this.options.generateAffiliation ?? randomUUID)();
+    this.affiliations.set(affiliationToken, topic.id);
     const previous = this.leases.get(topic.id);
     this.change(topic.id, {
       sessionId: topic.mainAgent.sessionId,
@@ -146,8 +155,12 @@ export class MainAgentManager {
         sessionId: topic.mainAgent.sessionId,
         socketPath: this.options.socketPath,
         registrationToken: token,
+        affiliationToken,
       });
-      if (result.kind !== "launched") this.registrations.delete(token);
+      if (result.kind !== "launched") {
+        this.registrations.delete(token);
+        this.affiliations.delete(affiliationToken);
+      }
       if (result.kind === "focused" && previous !== undefined) {
         this.change(topic.id, { ...previous });
       } else if (result.kind === "focused") {
@@ -162,6 +175,7 @@ export class MainAgentManager {
       return result;
     } catch (error) {
       this.registrations.delete(token);
+      this.affiliations.delete(affiliationToken);
       this.fail(topic.id, error instanceof Error ? error.message : "Main Agent launch failed.");
       throw error;
     }
@@ -173,31 +187,47 @@ export class MainAgentManager {
     sessionId: string;
     sessionFile: string;
     token: string;
+    affiliationToken?: string;
   }): Promise<MainAgentLease> {
-    const registration = this.registrations.get(input.token);
-    if (
-      registration === undefined ||
-      registration.expiresAt <= this.now() ||
-      registration.topicId !== input.topicId ||
-      registration.sessionId !== input.sessionId
-    ) {
-      throw new WorkDataError(
-        "invalid-registration",
-        "Main Agent registration token is invalid or expired.",
-      );
-    }
     if (!isAbsolute(input.sessionFile) || input.sessionFile.length > 1_000) {
       throw new WorkDataError("invalid-session-file", "Main Agent session file path is invalid.");
     }
     const topic = await this.options.topics.load(input.topicId);
-    if (topic.mainAgent.sessionId !== input.sessionId) {
+    const launch = this.registrations.get(input.token);
+    const launchValid =
+      launch !== undefined &&
+      launch.expiresAt > this.now() &&
+      launch.topicId === input.topicId &&
+      launch.sessionId === input.sessionId;
+    // Exact-match path: the originally launched session claims its own identity.
+    const exactMatch = launchValid && topic.mainAgent.sessionId === input.sessionId;
+    // Adoption path: the window proves affiliation for this Topic and brings a
+    // different (in-window /new) session id. Affiliation is per window, so a
+    // foreign Topic's token maps to a different topicId and cannot adopt.
+    const affiliatedTopic =
+      input.affiliationToken === undefined
+        ? undefined
+        : this.affiliations.get(input.affiliationToken);
+    const adopt = !exactMatch && affiliatedTopic !== undefined && affiliatedTopic === input.topicId;
+
+    if (!exactMatch && !adopt) {
+      if (!launchValid) {
+        throw new WorkDataError(
+          "invalid-registration",
+          "Main Agent registration token is invalid or expired.",
+        );
+      }
       throw new WorkDataError(
         "invalid-agent-identity",
         "Main Agent session identity does not match the Topic.",
       );
     }
+
     const current = this.leases.get(input.topicId);
+    // Adoption replaces the same window's previous session, so it bypasses the
+    // second-live-agent guard while still keeping exactly one lease per Topic.
     if (
+      !adopt &&
       current?.connected === true &&
       current.connectionId !== input.connectionId &&
       current.sessionId !== input.sessionId
@@ -207,12 +237,18 @@ export class MainAgentManager {
         "A different Main Agent is already connected for this Topic.",
       );
     }
-    if (topic.mainAgent.sessionFile !== input.sessionFile) {
-      const updated = await this.options.topics.update(topic.id, (value) => ({
+    if (adopt) {
+      // Repoint durable identity to the adopted session and persist its file.
+      // The previous session file stays on disk; its contents are never read.
+      await this.options.topics.update(topic.id, (value) => ({
+        ...value,
+        mainAgent: { sessionId: input.sessionId, sessionFile: input.sessionFile },
+      }));
+    } else if (topic.mainAgent.sessionFile !== input.sessionFile) {
+      await this.options.topics.update(topic.id, (value) => ({
         ...value,
         mainAgent: { ...value.mainAgent, sessionFile: input.sessionFile },
       }));
-      void updated;
     }
     return this.change(input.topicId, {
       sessionId: input.sessionId,
