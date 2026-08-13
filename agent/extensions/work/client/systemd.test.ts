@@ -183,7 +183,7 @@ describe("systemd unit management", () => {
     const calls: string[][] = [];
     let restarted = false;
     const client = {
-      ping: async () => ({ protocolVersion: 6, pid: 1 }),
+      ping: async () => ({ protocolVersion: 7, pid: 1 }),
       close: () => undefined,
     } as unknown as WorkClient;
     const manager = new SystemdWorkdManager({

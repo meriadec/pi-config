@@ -353,6 +353,34 @@ describe("Topic Service daemon integration", () => {
     expect((await item.client.retryTopic(topic.id)).status).toBe("ready");
   });
 
+  test("renames a Topic and keeps its branch and repository", async () => {
+    const item = await world();
+    const created = await item.client.createTopic({
+      name: "Original name",
+      branch: "feat-rename",
+      repository: "LedgerHQ/revault",
+    });
+    expect(created.status).toBe("ready");
+    const topic = (await item.client.snapshot()).topics[0]!;
+    const renamed = await item.client.renameTopic(topic.id, "New name");
+    expect(renamed.status).toBe("renamed");
+    const stored = (await item.client.snapshot()).topics[0]!;
+    expect(stored.name).toBe("New name");
+    expect(stored.branch).toBe(topic.branch);
+    expect(stored.repository).toBe(topic.repository);
+  });
+
+  test("rejects an empty rename", async () => {
+    const item = await world();
+    await item.client.createTopic({
+      name: "Keep name",
+      branch: "feat-empty-rename",
+      repository: "LedgerHQ/revault",
+    });
+    const topic = (await item.client.snapshot()).topics[0]!;
+    await expect(item.client.renameTopic(topic.id, "   ")).rejects.toThrow();
+  });
+
   test("runs independent Topic creation concurrently", async () => {
     const item = await world();
     let release = (): void => undefined;

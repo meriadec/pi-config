@@ -225,6 +225,14 @@ export class WorkDaemon {
             request.topicId,
           );
           break;
+        case "topic.rename":
+          result = await this.requireTopicService().rename(
+            request.clientId,
+            request.id,
+            request.topicId,
+            request.name,
+          );
+          break;
         case "topic.delete":
           result = await this.requireTopicService().delete(
             request.clientId,

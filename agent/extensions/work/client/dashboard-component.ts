@@ -21,6 +21,7 @@ import {
   type DashboardState,
   type TopicWizardStage,
   updateWizardField,
+  updateRenameField,
 } from "./dashboard.ts";
 
 export interface DashboardClient {
@@ -35,6 +36,12 @@ export interface DashboardClient {
     timeoutMs?: number,
   ): Promise<TopicMutationResult>;
   retryTopic(topicId: string, requestId?: string, timeoutMs?: number): Promise<TopicMutationResult>;
+  renameTopic(
+    topicId: string,
+    name: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult>;
   deleteTopic(
     topicId: string,
     requestId?: string,
@@ -79,6 +86,8 @@ export class WorkDashboardComponent implements Component, Focusable {
   private _focused = false;
   private wizardInput: Input | undefined;
   private wizardInputStage: Exclude<TopicWizardStage, "review"> | undefined;
+  private renameInput: Input | undefined;
+  private renameInputTopicId: string | undefined;
   private client: DashboardClient | undefined;
   private removeDisconnect: (() => void) | undefined;
   private disposed = false;
@@ -101,10 +110,12 @@ export class WorkDashboardComponent implements Component, Focusable {
   set focused(value: boolean) {
     this._focused = value;
     if (this.wizardInput !== undefined) this.wizardInput.focused = value;
+    if (this.renameInput !== undefined) this.renameInput.focused = value;
   }
 
   render(width: number): string[] {
-    const wizardInputLine = this.wizardInput?.render(width)[0];
+    const textInput = this.wizardInput ?? this.renameInput;
+    const wizardInputLine = textInput?.render(width)[0];
     return renderDashboard(this.state, width, this.options.tui.terminal.rows, wizardInputLine);
   }
 
@@ -124,9 +135,24 @@ export class WorkDashboardComponent implements Component, Focusable {
       }
     }
 
+    if (this.state.rename !== undefined) {
+      if (!matchesKey(data, Key.enter) && !matchesKey(data, Key.escape)) {
+        this.renameInput?.handleInput(data);
+        if (this.renameInput !== undefined) {
+          this.state = updateRenameField(this.state, this.renameInput.getValue());
+        }
+        this.options.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, Key.enter) && this.renameInput !== undefined) {
+        this.state = updateRenameField(this.state, this.renameInput.getValue());
+      }
+    }
+
     const result = handleDashboardInput(this.state, data);
     this.state = result.state;
     this.syncWizardInput();
+    this.syncRenameInput();
     if (result.action !== undefined) this.beginAction(result.action);
     if (result.exit) {
       this.dispose();
@@ -138,6 +164,7 @@ export class WorkDashboardComponent implements Component, Focusable {
 
   invalidate(): void {
     this.wizardInput?.invalidate();
+    this.renameInput?.invalidate();
     this.options.tui.requestRender();
   }
 
@@ -170,6 +197,21 @@ export class WorkDashboardComponent implements Component, Focusable {
     input.handleInput(wizard[wizard.stage]);
     this.wizardInput = input;
     this.wizardInputStage = wizard.stage;
+  }
+
+  private syncRenameInput(): void {
+    const rename = this.state.rename;
+    if (rename === undefined) {
+      this.renameInput = undefined;
+      this.renameInputTopicId = undefined;
+      return;
+    }
+    if (this.renameInputTopicId === rename.topicId && this.renameInput !== undefined) return;
+    const input = new Input();
+    input.focused = this.focused;
+    input.handleInput(rename.name);
+    this.renameInput = input;
+    this.renameInputTopicId = rename.topicId;
   }
 
   private async connect(): Promise<void> {
@@ -358,6 +400,13 @@ function requestMutation(
       return client.createTopic(action.input, mutation.requestId, MUTATION_TIMEOUT_MS);
     case "retry":
       return client.retryTopic(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
+    case "rename":
+      return client.renameTopic(
+        action.topicId,
+        action.name,
+        mutation.requestId,
+        MUTATION_TIMEOUT_MS,
+      );
     case "workspace":
       return client.accessWorkspace(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
     case "terminal":
@@ -387,6 +436,8 @@ function actionResultMessage(result: WorkActionResult): string {
   switch (result.status) {
     case "ready":
       return `Topic ${result.topic.name} is ready.`;
+    case "renamed":
+      return `Topic renamed to ${result.topic.name}.`;
     case "deleted":
       return "Topic deleted.";
     case "rejected":

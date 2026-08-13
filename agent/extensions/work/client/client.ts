@@ -109,6 +109,20 @@ export class WorkClient {
     ) as Promise<TopicMutationResult>;
   }
 
+  renameTopic(
+    topicId: string,
+    name: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
+    return this.request(
+      "topic.rename",
+      { topicId, name },
+      timeoutMs,
+      requestId,
+    ) as Promise<TopicMutationResult>;
+  }
+
   deleteTopic(
     topicId: string,
     requestId?: string,

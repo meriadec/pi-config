@@ -30,12 +30,19 @@ export interface DashboardConfirmation {
   text: string;
 }
 
+export interface TopicRenameState {
+  topicId: string;
+  name: string;
+  error?: string;
+}
+
 export type TopicActionId =
   | "workspace"
   | "terminal"
   | "agent"
   | "reset-agent"
   | "pull-request"
+  | "rename"
   | "retry"
   | "delete";
 
@@ -54,10 +61,12 @@ export interface DashboardState {
   pullRequests: Readonly<Record<string, PullRequestRef>>;
   unavailableActions: Readonly<Record<string, readonly TopicActionId[]>>;
   wizard?: TopicWizardState;
+  rename?: TopicRenameState;
   confirmation?: DashboardConfirmation;
   submissionInFlight?:
     | "create"
     | "retry"
+    | "rename"
     | "confirm"
     | "reject"
     | "workspace"
@@ -250,6 +259,7 @@ export type DashboardAction =
         | "delete";
       topicId: string;
     }
+  | { type: "rename"; topicId: string; name: string }
   | { type: "confirm"; token: string }
   | { type: "reject"; token: string };
 
@@ -261,6 +271,7 @@ export interface DashboardInputResult {
 
 export function handleDashboardInput(state: DashboardState, data: string): DashboardInputResult {
   if (state.confirmation !== undefined) return handleConfirmationInput(state, data);
+  if (state.rename !== undefined) return handleRenameInput(state, data);
   if (state.wizard !== undefined) return handleWizardInput(state, data);
   if ((data === "a" || data === "A") && state.submissionInFlight === undefined) {
     return {
@@ -322,6 +333,7 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
     if (state.focus === "actions" && state.submissionInFlight === undefined) {
       const action = topicActions(state)[state.focusedAction];
       if (action === undefined || action.unavailable) return { state, exit: false };
+      if (action.id === "rename") return openRenamePrompt(state);
       return invokeTopicAction(state, action);
     }
     return openActionRail(state);
@@ -451,6 +463,62 @@ export function updateWizardField(state: DashboardState, value: string): Dashboa
   };
 }
 
+function openRenamePrompt(state: DashboardState): DashboardInputResult {
+  const topic = state.topics.find((item) => item.id === state.selectedTopicId);
+  if (topic === undefined) return { state, exit: false };
+  return {
+    state: { ...state, rename: { topicId: topic.id, name: topic.name } },
+    exit: false,
+  };
+}
+
+function handleRenameInput(state: DashboardState, data: string): DashboardInputResult {
+  const rename = state.rename!;
+  if (matchesKey(data, Key.escape)) {
+    const { rename: _rename, ...rest } = state;
+    return { state: { ...rest, message: "Rename cancelled." }, exit: false };
+  }
+  if (matchesKey(data, Key.enter)) {
+    if (state.submissionInFlight !== undefined) return { state, exit: false };
+    const name = rename.name.trim();
+    if (name.length === 0) {
+      return {
+        state: { ...state, rename: { ...rename, error: "Topic name must not be empty." } },
+        exit: false,
+      };
+    }
+    const topic = state.topics.find((item) => item.id === rename.topicId);
+    if (topic !== undefined && topic.name === name) {
+      const { rename: _rename, ...rest } = state;
+      return { state: { ...rest, message: "Topic name is unchanged." }, exit: false };
+    }
+    const { rename: _rename, ...rest } = state;
+    return {
+      state: {
+        ...rest,
+        submissionInFlight: "rename",
+        message: `Renaming Topic to ${name}…`,
+      },
+      exit: false,
+      action: { type: "rename", topicId: rename.topicId, name },
+    };
+  }
+  const current = rename.name;
+  let next = current;
+  if (matchesKey(data, Key.backspace) || data === "\x7f") next = [...current].slice(0, -1).join("");
+  else if (isPrintableInput(data)) next += data;
+  else return { state, exit: false };
+  const { error: _error, ...withoutError } = rename;
+  return { state: { ...state, rename: { ...withoutError, name: next } }, exit: false };
+}
+
+export function updateRenameField(state: DashboardState, value: string): DashboardState {
+  const rename = state.rename;
+  if (rename === undefined) return state;
+  const { error: _error, ...withoutError } = rename;
+  return { ...state, rename: { ...withoutError, name: value } };
+}
+
 function handleConfirmationInput(state: DashboardState, data: string): DashboardInputResult {
   if (state.submissionInFlight !== undefined) return { state, exit: false };
   const confirmation = state.confirmation!;
@@ -524,6 +592,9 @@ export function renderDashboard(
   const safeHeight = Math.max(1, height);
   if (state.wizard !== undefined) {
     return renderWizard(state.wizard, safeWidth, safeHeight, wizardInputLine);
+  }
+  if (state.rename !== undefined) {
+    return renderRename(state.rename, safeWidth, safeHeight, wizardInputLine);
   }
   if (state.confirmation !== undefined) {
     return renderConfirmation(state.confirmation, safeWidth, safeHeight);
@@ -701,6 +772,18 @@ function renderWizard(
   return fitLines(lines, width, height);
 }
 
+function renderRename(
+  rename: TopicRenameState,
+  width: number,
+  height: number,
+  inputLine?: string,
+): string[] {
+  const lines = ["RENAME TOPIC", "", "New name", inputLine ?? `> ${rename.name}`];
+  if (rename.error !== undefined) lines.push("", `! ${rename.error}`);
+  lines.push("", "enter rename · esc cancel");
+  return fitLines(lines, width, height);
+}
+
 function renderConfirmation(
   confirmation: DashboardConfirmation,
   width: number,
@@ -799,6 +882,11 @@ function topicActions(
       unavailable: false,
     });
   }
+  actions.push({
+    id: "rename",
+    label: "Rename Topic",
+    unavailable: false,
+  });
   if (topic.setup.state === "setup-failed" || topic.setup.state === "provisioning") {
     actions.push({
       id: "retry",
@@ -853,7 +941,7 @@ function invokeTopicAction(
   state: DashboardState,
   action: { id: TopicActionId; label: string },
 ): DashboardInputResult {
-  if (state.selectedTopicId === undefined) return { state, exit: false };
+  if (state.selectedTopicId === undefined || action.id === "rename") return { state, exit: false };
   return {
     state: {
       ...state,

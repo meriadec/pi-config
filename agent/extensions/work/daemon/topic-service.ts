@@ -78,6 +78,7 @@ export interface ConfirmationRequirement {
 
 export type TopicMutationResult =
   | { status: "ready"; topic: TopicManifest }
+  | { status: "renamed"; topic: TopicManifest }
   | { status: "deleted"; topicId: string }
   | { status: "rejected"; topicId: string }
   | { status: "denied" | "failed" | "timeout" | "cancelled"; reason: string; topic: TopicManifest }
@@ -279,6 +280,29 @@ export class TopicService {
       this.requireConfigured();
       return this.provision(topic.id, this.requestKey(clientId, requestId), new Set(), clientId);
     });
+  }
+
+  rename(
+    clientId: string,
+    requestId: string,
+    topicId: string,
+    name: string,
+  ): Promise<TopicMutationResult> {
+    return this.deduplicate(clientId, requestId, `rename:${topicId}:${name}`, () =>
+      this.serializeTopic(topicId, async () => {
+        const trimmed = name.trim();
+        if (trimmed.length === 0) {
+          throw new WorkDataError("invalid-topic", "Topic name must not be empty.");
+        }
+        const topic = await this.options.topics.update(topicId, (current) => ({
+          ...current,
+          name: trimmed,
+        }));
+        this.topicById.set(topic.id, topic);
+        this.emit({ type: "topic-changed", topic });
+        return { status: "renamed", topic };
+      }),
+    ) as Promise<TopicMutationResult>;
   }
 
   delete(clientId: string, requestId: string, topicId: string): Promise<TopicMutationResult> {

@@ -71,7 +71,7 @@ function snapshot(topics: readonly TopicManifest[] = []): DaemonSnapshot {
     baseCheckouts: Object.fromEntries(
       topics.map((item) => [item.id, `/base/${item.repository.split("/")[1]}`]),
     ),
-    daemon: { protocolVersion: 6, pid: 10, startedAt: "2026-01-01T00:00:00.000Z" },
+    daemon: { protocolVersion: 7, pid: 10, startedAt: "2026-01-01T00:00:00.000Z" },
   };
 }
 
@@ -492,6 +492,7 @@ class FakeDashboardClient implements DashboardClient {
   disconnect: ((error: Error) => void) | undefined;
   createCalls: Array<{ input: NewTopic; requestId?: string }> = [];
   retryCalls: Array<{ topicId: string; requestId?: string }> = [];
+  renameCalls: Array<{ topicId: string; name: string; requestId?: string }> = [];
   actionCalls: Array<{
     type: "delete" | "workspace" | "terminal" | "agent" | "reset-agent" | "pull-request";
     topicId: string;
@@ -501,6 +502,7 @@ class FakeDashboardClient implements DashboardClient {
   rejectCalls: Array<{ token: string; requestId?: string }> = [];
   createResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
   retryResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
+  renameResult: TopicMutationResult = { status: "renamed", topic: topic(ID_A, "Alpha") };
   confirmResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
   rejectResult: TopicMutationResult = { status: "rejected", topicId: ID_A };
   private readonly topics: readonly TopicManifest[];
@@ -525,6 +527,15 @@ class FakeDashboardClient implements DashboardClient {
   async retryTopic(topicId: string, requestId?: string): Promise<TopicMutationResult> {
     this.retryCalls.push({ topicId, ...(requestId === undefined ? {} : { requestId }) });
     return this.retryResult;
+  }
+
+  async renameTopic(
+    topicId: string,
+    name: string,
+    requestId?: string,
+  ): Promise<TopicMutationResult> {
+    this.renameCalls.push({ topicId, name, ...(requestId === undefined ? {} : { requestId }) });
+    return this.renameResult;
   }
 
   async deleteTopic(topicId: string, requestId?: string): Promise<TopicMutationResult> {
@@ -817,6 +828,7 @@ describe("dashboard submission behavior", () => {
     component.handleInput("j");
     component.handleInput("j");
     component.handleInput("j");
+    component.handleInput("j");
     component.handleInput("\r");
     await Bun.sleep(0);
     const warning = component.render(180).join("\n");
@@ -839,6 +851,45 @@ describe("dashboard submission behavior", () => {
       expect(client.retryCalls).toHaveLength(1);
       component.dispose();
     }
+  });
+
+  test("renames a Topic through the actions prompt", async () => {
+    const client = new FakeDashboardClient([topic(ID_A, "Alpha")]);
+    const component = dashboardComponent(client);
+    await Bun.sleep(0);
+    component.handleInput("\r");
+    expect(component.render(80).join("\n")).toContain("Rename Topic");
+    component.handleInput("j");
+    component.handleInput("j");
+    component.handleInput("j");
+    component.handleInput("j");
+    component.handleInput("\r");
+    expect(component.render(80).join("\n")).toContain("RENAME TOPIC");
+    component.handleInput("2");
+    component.handleInput("\r");
+    await Bun.sleep(0);
+    expect(client.renameCalls).toEqual([
+      { topicId: ID_A, name: "Alpha2", requestId: expect.any(String) },
+    ]);
+    component.dispose();
+  });
+
+  test("cancels a rename with Escape and makes no request", async () => {
+    const client = new FakeDashboardClient([topic(ID_A, "Alpha")]);
+    const component = dashboardComponent(client);
+    await Bun.sleep(0);
+    component.handleInput("\r");
+    component.handleInput("j");
+    component.handleInput("j");
+    component.handleInput("j");
+    component.handleInput("j");
+    component.handleInput("\r");
+    expect(component.render(80).join("\n")).toContain("RENAME TOPIC");
+    component.handleInput("\x1b");
+    await Bun.sleep(0);
+    expect(client.renameCalls).toHaveLength(0);
+    expect(component.render(80).join("\n")).not.toContain("RENAME TOPIC");
+    component.dispose();
   });
 });
 

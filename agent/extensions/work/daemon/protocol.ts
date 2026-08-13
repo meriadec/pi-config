@@ -4,7 +4,7 @@ import type { TopicDiagnostic } from "../shared/topic-store.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 6 as const;
+export const WORK_PROTOCOL_VERSION = 7 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 
@@ -14,6 +14,7 @@ export type RequestAction =
   | "subscribe"
   | "topic.create"
   | "topic.retry"
+  | "topic.rename"
   | "topic.delete"
   | "workspace.access"
   | "terminal.open"
@@ -38,6 +39,7 @@ interface RequestBase {
 export type WorkRequest =
   | (RequestBase & { action: "ping" | "snapshot" | "subscribe" })
   | (RequestBase & { action: "topic.create"; input: NewTopic })
+  | (RequestBase & { action: "topic.rename"; topicId: string; name: string })
   | (RequestBase & {
       action:
         | "topic.retry"
@@ -233,6 +235,13 @@ export function parseRequest(text: string): WorkRequest {
         },
       };
     }
+    case "topic.rename":
+      return {
+        ...base,
+        action: "topic.rename",
+        topicId: shortString(value["topicId"], "invalid-arguments", "Topic id is required.", id),
+        name: shortString(value["name"], "invalid-arguments", "Topic name is required.", id),
+      };
     case "topic.retry":
     case "topic.delete":
     case "workspace.access":
