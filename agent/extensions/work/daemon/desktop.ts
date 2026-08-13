@@ -119,7 +119,7 @@ export class I3KittyDesktopController implements DesktopController {
   }
 
   async accessWorkspace(topicId: string): Promise<WorkspaceActionResult> {
-    const selection = selectTopicWorkspace(await this.getTree(), topicMark(topicId));
+    const selection = selectTopicWorkspace(await this.getTree(), topicId);
     if (selection.kind === "unavailable") return selection;
     await this.focusWorkspace(selection.workspace);
     return {
@@ -133,7 +133,7 @@ export class I3KittyDesktopController implements DesktopController {
     const mark = topicMark(topicId);
     const identity = topicWindowIdentity(topicId);
     const beforeTree = await this.getTree();
-    const selection = selectTopicWorkspace(beforeTree, mark);
+    const selection = selectTopicWorkspace(beforeTree, topicId);
     if (selection.kind === "unavailable") return selection;
     const existingIdentityIds = new Set(
       findIdentityWindows(beforeTree, identity).map((item) => item.conId),
@@ -221,7 +221,7 @@ export class I3KittyDesktopController implements DesktopController {
       };
     }
 
-    const selection = selectTopicWorkspace(tree, topicMark(launch.topicId));
+    const selection = selectTopicWorkspace(tree, launch.topicId);
     if (selection.kind === "unavailable") return selection;
     const identity = mainAgentWindowIdentity(launch.topicId);
     const existingIdentityIds = new Set(
@@ -470,16 +470,29 @@ export function mainAgentWindowIdentity(topicId: string): string {
   return `pi-work-main-agent-${digest(topicId)}`;
 }
 
+/**
+ * Find the pool workspace that holds this Topic's windows, or lease an empty
+ * one. i3 marks are unique per window, so `topicMark` can only ever sit on one
+ * window at a time and it hops to the newest terminal; it vanishes when that
+ * single window closes. To stay robust, a window counts as a Topic window when
+ * it carries any Topic mark (terminal or Main Agent) or its durable kitty
+ * window identity matches the Topic. Thus the Main Agent window alone keeps the
+ * Topic anchored to its workspace after transient terminals close.
+ */
 export function selectTopicWorkspace(
   tree: unknown,
-  mark: string,
+  topicId: string,
 ): { kind: "selected"; workspace: number } | { kind: "unavailable"; message: string } {
   if (!isNode(tree)) throw new WorkDataError("invalid-i3-tree", "i3 returned an invalid tree.");
+  const marks = new Set([topicMark(topicId), mainAgentMark(topicId)]);
+  const identities = new Set([topicWindowIdentity(topicId), mainAgentWindowIdentity(topicId)]);
   const topicWorkspaces = new Set<number>();
   const materialized = new Map<number, I3Node>();
   walk(tree, undefined, (node, workspace) => {
     if (node.type === "workspace" && isPoolWorkspace(node.num)) materialized.set(node.num, node);
-    if (workspace !== undefined && nodeMarks(node).includes(mark)) topicWorkspaces.add(workspace);
+    if (workspace !== undefined && isTopicWindow(node, marks, identities)) {
+      topicWorkspaces.add(workspace);
+    }
   });
   if (topicWorkspaces.size === 1) {
     return { kind: "selected", workspace: [...topicWorkspaces][0]! };
@@ -498,6 +511,16 @@ export function selectTopicWorkspace(
     kind: "unavailable",
     message: "No empty workspace is available in the temporary pool (1-10).",
   };
+}
+
+function isTopicWindow(
+  node: I3Node,
+  marks: ReadonlySet<string>,
+  identities: ReadonlySet<string>,
+): boolean {
+  if (nodeMarks(node).some((mark) => marks.has(mark))) return true;
+  const identity = node.window_properties?.class;
+  return typeof identity === "string" && identities.has(identity);
 }
 
 function findMarkedWindows(tree: I3Node, mark: string): WindowLocation[] {

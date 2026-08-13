@@ -67,33 +67,66 @@ function windowNode(id: number, options: { marks?: string[]; identity?: string }
 
 describe("i3 workspace selection", () => {
   test("finds an existing marked Topic window at its current tree location", () => {
-    const mark = topicMark("opaque/topic id");
+    const topicId = "opaque/topic id";
+    const mark = topicMark(topicId);
     expect(
       selectTopicWorkspace(
         root(workspace(2), workspace(7, [windowNode(3, { marks: [mark] })])),
-        mark,
+        topicId,
       ),
     ).toEqual({
       kind: "selected",
       workspace: 7,
     });
     expect(
-      selectTopicWorkspace(root(workspace(4, [windowNode(3, { marks: [mark] })])), mark),
+      selectTopicWorkspace(root(workspace(4, [windowNode(3, { marks: [mark] })])), topicId),
     ).toEqual({
       kind: "selected",
       workspace: 4,
     });
   });
 
+  test("anchors to the Main Agent window after the marked terminal closes", () => {
+    const topicId = "topic";
+    // The terminal that carried topicMark is gone; only the Main Agent window
+    // remains, identified by its mainAgentMark and durable window identity.
+    expect(
+      selectTopicWorkspace(
+        root(
+          workspace(1),
+          workspace(6, [
+            windowNode(9, {
+              marks: [mainAgentMark(topicId)],
+              identity: mainAgentWindowIdentity(topicId),
+            }),
+          ]),
+        ),
+        topicId,
+      ),
+    ).toEqual({ kind: "selected", workspace: 6 });
+    // A Topic terminal that lost its unique mark is still found by identity.
+    expect(
+      selectTopicWorkspace(
+        root(
+          workspace(1),
+          workspace(5, [windowNode(8, { identity: topicWindowIdentity(topicId) })]),
+        ),
+        topicId,
+      ),
+    ).toEqual({ kind: "selected", workspace: 5 });
+  });
+
   test("selects the lowest empty or unmaterialized workspace in 1 through 10", () => {
-    const mark = topicMark("topic");
+    const topicId = "topic";
     expect(
       selectTopicWorkspace(
         root(workspace(1, [windowNode(1, { marks: ["unrelated"] })]), workspace(2)),
-        mark,
+        topicId,
       ),
     ).toEqual({ kind: "selected", workspace: 2 });
-    expect(selectTopicWorkspace(root(workspace(1, [windowNode(1)]), workspace(3)), mark)).toEqual({
+    expect(
+      selectTopicWorkspace(root(workspace(1, [windowNode(1)]), workspace(3)), topicId),
+    ).toEqual({
       kind: "selected",
       workspace: 2,
     });
@@ -103,7 +136,7 @@ describe("i3 workspace selection", () => {
     const tree = root(
       ...Array.from({ length: 10 }, (_, index) => workspace(index + 1, [windowNode(index + 1)])),
     );
-    expect(selectTopicWorkspace(tree, topicMark("topic"))).toMatchObject({ kind: "unavailable" });
+    expect(selectTopicWorkspace(tree, "topic")).toMatchObject({ kind: "unavailable" });
   });
 });
 
