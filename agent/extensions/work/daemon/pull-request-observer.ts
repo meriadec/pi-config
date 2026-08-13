@@ -17,6 +17,7 @@ const PR_QUERY = `query($owner:String!,$repo:String!,$branch:String!){
         isDraft
         reviewDecision
         reviewRequests{totalCount}
+        latestReviews:latestReviews(first:${MAX_REVIEW_THREADS}){nodes{state author{login}}}
         reviewThreads(first:${MAX_REVIEW_THREADS}){nodes{isResolved}}
         commits(last:1){nodes{commit{statusCheckRollup{state}}}}
       }
@@ -117,6 +118,7 @@ export function parsePullRequest(stdout: string): PullRequestRef | null {
     draft: node["isDraft"] === true,
     ci: parseCi(node["commits"]),
     reviewPending: reviewRequestCount(node["reviewRequests"]) > 0,
+    copilotReviewed: hasCopilotReview(node["latestReviews"]),
     changesRequested: decision === "CHANGES_REQUESTED",
     approved: decision === "APPROVED",
     unresolvedThreads: unresolvedThreadCount(node["reviewThreads"]),
@@ -166,6 +168,18 @@ function parseCi(commits: unknown): PullRequestCi {
 function reviewRequestCount(reviewRequests: unknown): number {
   const total = record(reviewRequests)?.["totalCount"];
   return typeof total === "number" && total > 0 ? total : 0;
+}
+
+/** True when the Copilot reviewer has submitted a (non-pending) review of the head. */
+function hasCopilotReview(latestReviews: unknown): boolean {
+  const nodes = record(latestReviews)?.["nodes"];
+  if (!Array.isArray(nodes)) return false;
+  return nodes.some((review) => {
+    const node = record(review);
+    if (node === undefined || node["state"] === "PENDING") return false;
+    const login = record(node["author"])?.["login"];
+    return typeof login === "string" && login.toLowerCase().includes("copilot");
+  });
 }
 
 function unresolvedThreadCount(reviewThreads: unknown): number {

@@ -32,6 +32,7 @@ interface NodeOverrides {
   reviewDecision?: string | null;
   reviewRequests?: number;
   reviewThreads?: boolean[];
+  reviews?: { login: string; state?: string }[];
   ci?: string | null;
 }
 
@@ -48,6 +49,12 @@ function payload(node: NodeOverrides): string {
               isDraft: node.isDraft ?? false,
               reviewDecision: node.reviewDecision ?? null,
               reviewRequests: { totalCount: node.reviewRequests ?? 0 },
+              latestReviews: {
+                nodes: (node.reviews ?? []).map((review) => ({
+                  state: review.state ?? "COMMENTED",
+                  author: { login: review.login },
+                })),
+              },
               reviewThreads: {
                 nodes: (node.reviewThreads ?? []).map((isResolved) => ({ isResolved })),
               },
@@ -81,9 +88,24 @@ describe("pull request parsing", () => {
       draft: false,
       ci: "passing",
       reviewPending: false,
+      copilotReviewed: false,
       changesRequested: true,
       approved: false,
       unresolvedThreads: 1,
+    });
+  });
+
+  test("detects a submitted Copilot review and ignores a pending one", () => {
+    expect(
+      parsePullRequest(payload({ reviews: [{ login: "copilot-pull-request-reviewer" }] })),
+    ).toMatchObject({ copilotReviewed: true });
+    expect(
+      parsePullRequest(
+        payload({ reviews: [{ login: "copilot-pull-request-reviewer", state: "PENDING" }] }),
+      ),
+    ).toMatchObject({ copilotReviewed: false });
+    expect(parsePullRequest(payload({ reviews: [{ login: "meriadec" }] }))).toMatchObject({
+      copilotReviewed: false,
     });
   });
 

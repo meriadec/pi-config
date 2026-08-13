@@ -259,6 +259,8 @@ export class TopicService {
       if (!isValidBranchName(input.branch)) {
         throw new WorkDataError("invalid-topic", "Topic branch is not a valid Git branch name.");
       }
+      // Re-read config from disk so a manually edited Repository Recipe applies to a new Topic.
+      this.config = await this.options.config.load();
       this.requireConfigured();
       const topic = await this.options.topics.create(input);
       this.topicById.set(topic.id, topic);
@@ -277,6 +279,8 @@ export class TopicService {
         );
       }
       this.topicById.set(topic.id, topic);
+      // Re-read config from disk so a manually edited Repository Recipe applies on retry.
+      this.config = await this.options.config.load();
       this.requireConfigured();
       return this.provision(topic.id, this.requestKey(clientId, requestId), new Set(), clientId);
     });

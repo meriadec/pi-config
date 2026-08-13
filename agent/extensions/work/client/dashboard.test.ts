@@ -322,6 +322,36 @@ describe("dashboard state and navigation", () => {
     expect(state.selectedTopicId).toBe(ID_A);
   });
 
+  test("bubbles Topics with a running Main Agent above inactive ones and dims the inactive", () => {
+    let state = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([topic(ID_A, "Alpha"), topic(ID_B, "Beta")]),
+    );
+    // All Main Agents stopped: pure name order.
+    expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B]);
+
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_B, sessionId: ID_B, state: "thinking", connected: true },
+    });
+    // Beta now runs, so it bubbles above the inactive Alpha.
+    expect(state.topics.map((item) => item.id)).toEqual([ID_B, ID_A]);
+
+    const rendered = renderDashboard(state, 100, 24);
+    const betaRow = rendered.find((line) => line.includes("Beta"));
+    const alphaRow = rendered.find((line) => line.includes("Alpha"));
+    // The inactive Topic is dimmed; the active one is not.
+    expect(alphaRow).toContain("\x1b[2m");
+    expect(betaRow).not.toContain("\x1b[2m");
+
+    // A stopped Main Agent sinks the Topic back and re-dims it.
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_B, sessionId: ID_B, state: "stopped", connected: false },
+    });
+    expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B]);
+  });
+
   test("opens the action rail on its first available action and supports navigation", () => {
     let state = hydrateDashboard(
       initialDashboardState(),

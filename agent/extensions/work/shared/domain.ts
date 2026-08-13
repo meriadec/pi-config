@@ -84,6 +84,7 @@ export type PullRequestStatus =
   | "feedback"
   | "checks"
   | "approved"
+  | "ready"
   | "clear";
 
 /** One GitHub pull request that belongs to a Topic branch. */
@@ -96,6 +97,8 @@ export interface PullRequestRef {
   ci: PullRequestCi;
   /** A requested reviewer (for example Copilot) has not submitted a review yet. */
   reviewPending: boolean;
+  /** The Copilot reviewer has submitted a review for the head. */
+  copilotReviewed: boolean;
   /** The formal review decision is CHANGES_REQUESTED. */
   changesRequested: boolean;
   /** The formal review decision is APPROVED. */
@@ -113,9 +116,11 @@ export function pullRequestStatus(ref: PullRequestRef): PullRequestStatus {
   if (ref.state === "closed") return "closed";
   if (ref.draft) return "draft";
   if (ref.ci === "failing") return "ci-failing";
-  if (ref.reviewPending) return "reviewing";
   if (ref.changesRequested || ref.unresolvedThreads > 0) return "feedback";
   if (ref.ci === "pending") return "checks";
+  // Copilot review is done and every thread resolved, even while other reviewers are still requested.
+  if (ref.copilotReviewed) return "ready";
+  if (ref.reviewPending) return "reviewing";
   if (ref.approved) return "approved";
   return "clear";
 }

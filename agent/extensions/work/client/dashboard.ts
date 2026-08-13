@@ -6,6 +6,7 @@ import {
   isValidBranchName,
   parseRepository,
   pullRequestStatus,
+  type MainAgentState,
   type PullRequestRef,
   type TopicManifest,
 } from "../shared/domain.ts";
@@ -136,7 +137,7 @@ export function hydrateDashboard(state: DashboardState, snapshot: DaemonSnapshot
   return stabilizeSelection({
     ...current,
     phase: "connected",
-    topics: sortTopics(snapshot.topics),
+    topics: sortTopics(snapshot.topics, snapshot.mainAgents),
     diagnostics: [...snapshot.diagnostics],
     operations: [...snapshot.operations],
     mainAgents: [...snapshot.mainAgents],
@@ -159,7 +160,7 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
       return stabilizeSelection({
         ...state,
         phase: "connected",
-        topics: sortTopics(upsert(state.topics, event.topic)),
+        topics: sortTopics(upsert(state.topics, event.topic), state.mainAgents),
         selectedTopicId: event.topic.id,
       });
     case "setup-changed":
@@ -167,7 +168,7 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
       return stabilizeSelection({
         ...state,
         phase: "connected",
-        topics: sortTopics(upsert(state.topics, event.topic)),
+        topics: sortTopics(upsert(state.topics, event.topic), state.mainAgents),
       });
     case "topic-removed": {
       const workspaces = { ...state.workspaces };
@@ -206,14 +207,18 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
                 event.operation,
               ],
       };
-    case "main-agent-changed":
+    case "main-agent-changed": {
+      // Re-sort so a Topic bubbles up or sinks when its Main Agent starts or stops.
+      const mainAgents = [
+        ...state.mainAgents.filter((agent) => agent.topicId !== event.agent.topicId),
+        event.agent,
+      ];
       return {
         ...state,
-        mainAgents: [
-          ...state.mainAgents.filter((agent) => agent.topicId !== event.agent.topicId),
-          event.agent,
-        ],
+        mainAgents,
+        topics: sortTopics(state.topics, mainAgents),
       };
+    }
     case "pull-request-changed": {
       const pullRequests = { ...state.pullRequests };
       if (event.pullRequest === null) delete pullRequests[event.topicId];
@@ -682,27 +687,57 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
   const selected = topic.id === state.selectedTopicId;
   const prefix = selected ? (state.focus === "list" ? "> " : "* ") : "  ";
   const agent = state.mainAgents.find((item) => item.topicId === topic.id)?.state ?? "stopped";
+  const inactive = !isMainAgentRunning(agent);
+  // Dim only the status word for an idle Main Agent; the Topic stays active and bubbled up.
+  // A Main Agent waiting for a human stands out in yellow.
+  const agentCell =
+    agent === "idle" ? dim(agent) : agent === "waiting-for-human" ? yellow(agent) : agent;
   const pullRequest = state.pullRequests[topic.id];
   // A live Repository Recipe phase (setup N/M) replaces the durable setup state.
+  // A settled "ready" Topic shows a blank cell; only intermediate states matter.
   const operationDetail = state.operations.find((item) => item.topicId === topic.id)?.detail;
-  const setupCell = operationDetail ?? topic.setup.state;
+  const setupState = topic.setup.state === "ready" ? "" : topic.setup.state;
+  const setupCell = operationDetail ?? setupState;
   if (width < 72) {
     const link = pullRequest === undefined ? "" : ` · ${pullRequestCell(pullRequest)}`;
-    return truncateToWidth(`${prefix}${topic.name} · ${setupCell} · ${agent}${link}`, width);
+    const setupSegment = setupCell === "" ? "" : ` · ${setupCell}`;
+    const row = truncateToWidth(
+      `${prefix}${topic.name}${setupSegment} · ${agentCell}${link}`,
+      width,
+    );
+    return inactive ? dim(row) : row;
   }
   const nameWidth = Math.max(12, Math.floor(width * 0.25));
   const repoWidth = Math.max(18, Math.floor(width * 0.3));
-  return truncateToWidth(
-    `${prefix}${pad(topic.name, nameWidth)} ${pad(topic.repository, repoWidth)} ${pad(pullRequestCell(pullRequest), 18)} ${pad(setupCell, 14)} ${agent}`,
+  const row = truncateToWidth(
+    `${prefix}${pad(topic.name, nameWidth)} ${pad(topic.repository, repoWidth)} ${pad(pullRequestCell(pullRequest), 18)} ${pad(setupCell, 14)} ${agentCell}`,
     width,
   );
+  return inactive ? dim(row) : row;
+}
+
+/** Wraps a fully truncated line in the terminal faint (dim) attribute. */
+function dim(text: string): string {
+  return `\x1b[2m${text}\x1b[22m`;
+}
+
+/** Colours a status word yellow. */
+function yellow(text: string): string {
+  return `\x1b[33m${text}\x1b[39m`;
+}
+
+/** Colours a status word a light violet. */
+function purple(text: string): string {
+  return `\x1b[38;5;183m${text}\x1b[39m`;
 }
 
 /** Renders the PR number as an underlined OSC 8 hyperlink plus its short status. */
 function pullRequestCell(ref: PullRequestRef | undefined): string {
   if (ref === undefined) return "";
   const link = `\x1b[4m${hyperlink(`#${ref.number}`, ref.url)}\x1b[24m`;
-  return `${link} ${pullRequestStatus(ref)}`;
+  const status = pullRequestStatus(ref);
+  // A ready PR (Copilot review passed, all threads resolved) stands out in purple.
+  return `${link} ${status === "ready" ? purple(status) : status}`;
 }
 
 function renderSidebar(state: DashboardState, width: number, height: number): string[] {
@@ -968,13 +1003,29 @@ function stabilizeSelection(state: DashboardState, removedIndex = 0): DashboardS
   return { ...state, selectedTopicId: state.topics[index]!.id };
 }
 
-function sortTopics(topics: readonly TopicManifest[]): TopicManifest[] {
-  return [...topics].toSorted(
-    (left, right) =>
+/** A Topic is active while its Main Agent runs; stopped or failed Agents count as inactive. */
+function isMainAgentRunning(state: MainAgentState): boolean {
+  return state !== "stopped" && state !== "failed";
+}
+
+/** Sorts by name, then bubbles active Topics (running Main Agent) above inactive ones. */
+function sortTopics(
+  topics: readonly TopicManifest[],
+  mainAgents: readonly MainAgentLease[],
+): TopicManifest[] {
+  const active = new Set(
+    mainAgents.filter((agent) => isMainAgentRunning(agent.state)).map((agent) => agent.topicId),
+  );
+  return [...topics].toSorted((left, right) => {
+    const leftActive = active.has(left.id);
+    const rightActive = active.has(right.id);
+    if (leftActive !== rightActive) return leftActive ? -1 : 1;
+    return (
       left.name.localeCompare(right.name) ||
       left.repository.localeCompare(right.repository) ||
-      left.id.localeCompare(right.id),
-  );
+      left.id.localeCompare(right.id)
+    );
+  });
 }
 
 function upsert(topics: readonly TopicManifest[], topic: TopicManifest): TopicManifest[] {

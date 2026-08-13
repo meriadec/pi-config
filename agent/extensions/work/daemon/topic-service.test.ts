@@ -31,6 +31,7 @@ const clients: WorkClient[] = [];
 
 class FakeProvisioner {
   readonly calls: string[] = [];
+  readonly recipes: (readonly string[])[] = [];
   active = 0;
   maxActive = 0;
   failBranches = new Set<string>();
@@ -44,6 +45,7 @@ class FakeProvisioner {
 
   async provision(request: ProvisionRequest): Promise<ProvisionResult> {
     this.calls.push(request.topicId);
+    this.recipes.push(request.recipe ?? []);
     this.active += 1;
     this.maxActive = Math.max(this.maxActive, this.active);
     try {
@@ -263,6 +265,26 @@ describe("Topic Service daemon integration", () => {
     expect((await item.client.snapshot()).topics[0]?.setup.state).toBe("ready");
   });
 
+  test("re-reads a manually edited Repository Recipe before provisioning a new Topic", async () => {
+    const item = await world();
+    // Simulate a manual edit of config.json after the daemon has started.
+    await createConfigStore(item.paths).update((current) => ({
+      ...current,
+      repositories: {
+        "LedgerHQ/revault": { setupCommands: ["pnpm install", "pnpm build"] },
+      },
+    }));
+
+    const result = await item.client.createTopic({
+      name: "Fresh",
+      branch: "feat-fresh",
+      repository: "LedgerHQ/revault",
+    });
+
+    expect(result.status).toBe("ready");
+    expect(item.provisioner.recipes.at(-1)).toEqual(["pnpm install", "pnpm build"]);
+  });
+
   test("discovers a pull request for a ready Topic and opens it in a browser", async () => {
     const openedUrls: string[] = [];
     const desktop = {
@@ -280,6 +302,7 @@ describe("Topic Service daemon integration", () => {
           draft: false,
           ci: "failing" as const,
           reviewPending: false,
+          copilotReviewed: false,
           changesRequested: false,
           approved: false,
           unresolvedThreads: 2,
@@ -312,6 +335,7 @@ describe("Topic Service daemon integration", () => {
       draft: false,
       ci: "failing",
       reviewPending: false,
+      copilotReviewed: false,
       changesRequested: false,
       approved: false,
       unresolvedThreads: 2,
