@@ -56,6 +56,11 @@ export interface DashboardClient {
     requestId?: string,
     timeoutMs?: number,
   ): Promise<MainAgentActionResult | WorkActionResult>;
+  openPullRequest(
+    topicId: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<WorkActionResult>;
   confirm(token: string, requestId?: string, timeoutMs?: number): Promise<WorkActionResult>;
   reject(token: string, requestId?: string, timeoutMs?: number): Promise<TopicMutationResult>;
   onDisconnect?(handler: (error: Error) => void): () => void;
@@ -361,6 +366,8 @@ function requestMutation(
       return client.openMainAgent(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
     case "reset-agent":
       return client.resetMainAgent(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
+    case "pull-request":
+      return client.openPullRequest(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
     case "delete":
       return client.deleteTopic(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
     case "confirm":

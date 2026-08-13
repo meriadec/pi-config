@@ -1,8 +1,14 @@
-import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, hyperlink } from "@earendil-works/pi-tui";
 import type { DaemonSnapshot, WorkEvent } from "../daemon/protocol.ts";
 import type { MainAgentLease } from "../daemon/main-agent.ts";
 import type { TopicOperation } from "../daemon/topic-service.ts";
-import { isValidBranchName, parseRepository, type TopicManifest } from "../shared/domain.ts";
+import {
+  isValidBranchName,
+  parseRepository,
+  pullRequestStatus,
+  type PullRequestRef,
+  type TopicManifest,
+} from "../shared/domain.ts";
 import type { TopicDiagnostic } from "../shared/topic-store.ts";
 
 export type DashboardPhase = "loading" | "connected" | "reconnecting" | "failure";
@@ -24,7 +30,14 @@ export interface DashboardConfirmation {
   text: string;
 }
 
-export type TopicActionId = "workspace" | "terminal" | "agent" | "reset-agent" | "retry" | "delete";
+export type TopicActionId =
+  | "workspace"
+  | "terminal"
+  | "agent"
+  | "reset-agent"
+  | "pull-request"
+  | "retry"
+  | "delete";
 
 export interface DashboardState {
   phase: DashboardPhase;
@@ -38,6 +51,7 @@ export interface DashboardState {
   focusedAction: number;
   workspaces: Readonly<Record<string, number>>;
   baseCheckouts: Readonly<Record<string, string>>;
+  pullRequests: Readonly<Record<string, PullRequestRef>>;
   unavailableActions: Readonly<Record<string, readonly TopicActionId[]>>;
   wizard?: TopicWizardState;
   confirmation?: DashboardConfirmation;
@@ -50,6 +64,7 @@ export interface DashboardState {
     | "terminal"
     | "agent"
     | "reset-agent"
+    | "pull-request"
     | "delete";
   message?: string;
 }
@@ -77,6 +92,7 @@ export function initialDashboardState(): DashboardState {
     focusedAction: 0,
     workspaces: {},
     baseCheckouts: {},
+    pullRequests: {},
     unavailableActions: {},
   };
 }
@@ -91,7 +107,10 @@ export function dashboardViewModel(state: DashboardState): DashboardViewModel {
     };
   }
   if (state.phase === "failure") {
-    return { kind: "failure", message: state.message ?? "workd is unavailable." };
+    return {
+      kind: "failure",
+      message: state.message ?? "workd is unavailable.",
+    };
   }
   const common = {
     topics: state.topics,
@@ -113,6 +132,7 @@ export function hydrateDashboard(state: DashboardState, snapshot: DaemonSnapshot
     operations: [...snapshot.operations],
     mainAgents: [...snapshot.mainAgents],
     baseCheckouts: { ...(snapshot.baseCheckouts ?? state.baseCheckouts) },
+    pullRequests: { ...(snapshot.pullRequests ?? state.pullRequests) },
     unavailableActions: snapshot.deniedActions
       ? Object.fromEntries(
           Object.entries(snapshot.deniedActions).map(([topicId, actions]) => [
@@ -143,9 +163,11 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
     case "topic-removed": {
       const workspaces = { ...state.workspaces };
       const baseCheckouts = { ...state.baseCheckouts };
+      const pullRequests = { ...state.pullRequests };
       const unavailableActions = { ...state.unavailableActions };
       delete workspaces[event.topicId];
       delete baseCheckouts[event.topicId];
+      delete pullRequests[event.topicId];
       delete unavailableActions[event.topicId];
       return stabilizeSelection(
         {
@@ -153,6 +175,7 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
           topics: state.topics.filter((topic) => topic.id !== event.topicId),
           workspaces,
           baseCheckouts,
+          pullRequests,
           unavailableActions,
         },
         state.topics.findIndex((topic) => topic.id === event.topicId),
@@ -182,15 +205,28 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
           event.agent,
         ],
       };
+    case "pull-request-changed": {
+      const pullRequests = { ...state.pullRequests };
+      if (event.pullRequest === null) delete pullRequests[event.topicId];
+      else pullRequests[event.topicId] = event.pullRequest;
+      return { ...state, pullRequests };
+    }
     case "daemon-stopping":
-      return { ...state, phase: "reconnecting", message: "workd stopped. Reconnecting…" };
+      return {
+        ...state,
+        phase: "reconnecting",
+        message: "workd stopped. Reconnecting…",
+      };
     case "workspace-accessed":
     case "terminal-opened":
     case "main-agent-opened":
       return "workspace" in event.result
         ? {
             ...state,
-            workspaces: { ...state.workspaces, [event.topicId]: event.result.workspace },
+            workspaces: {
+              ...state.workspaces,
+              [event.topicId]: event.result.workspace,
+            },
           }
         : state;
     case "snapshot-changed":
@@ -199,9 +235,19 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
 }
 
 export type DashboardAction =
-  | { type: "create"; input: { name: string; branch: string; repository: string } }
   | {
-      type: "retry" | "workspace" | "terminal" | "agent" | "reset-agent" | "delete";
+      type: "create";
+      input: { name: string; branch: string; repository: string };
+    }
+  | {
+      type:
+        | "retry"
+        | "workspace"
+        | "terminal"
+        | "agent"
+        | "reset-agent"
+        | "pull-request"
+        | "delete";
       topicId: string;
     }
   | { type: "confirm"; token: string }
@@ -231,7 +277,11 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
     const topic = state.topics.find((item) => item.id === state.selectedTopicId);
     if (topic?.setup.state === "setup-failed" || topic?.setup.state === "provisioning") {
       return {
-        state: { ...state, submissionInFlight: "retry", message: "Retrying Topic setup…" },
+        state: {
+          ...state,
+          submissionInFlight: "retry",
+          message: "Retrying Topic setup…",
+        },
         exit: false,
         action: { type: "retry", topicId: topic.id },
       };
@@ -245,8 +295,15 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
     const action = topicActions(state).find((item) => item.id === "workspace");
     if (action !== undefined && !action.unavailable) return invokeTopicAction(state, action);
   }
+  if (data === "p" && state.focus === "list" && state.submissionInFlight === undefined) {
+    const action = topicActions(state).find((item) => item.id === "pull-request");
+    if (action !== undefined && !action.unavailable) return invokeTopicAction(state, action);
+  }
   if ((data === "q" || data === "Q") && state.sidebarOpen) {
-    return { state: { ...state, sidebarOpen: false, focus: "list" }, exit: false };
+    return {
+      state: { ...state, sidebarOpen: false, focus: "list" },
+      exit: false,
+    };
   }
   if (matchesKey(data, Key.escape)) return { state, exit: true };
   if (matchesKey(data, Key.down) || data === "j") {
@@ -300,7 +357,10 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
   const wizard = state.wizard!;
   if (matchesKey(data, Key.escape)) {
     const { wizard: _wizard, ...rest } = state;
-    return { state: { ...rest, message: "Topic creation cancelled." }, exit: false };
+    return {
+      state: { ...rest, message: "Topic creation cancelled." },
+      exit: false,
+    };
   }
   if (matchesKey(data, Key.enter)) {
     if (wizard.stage === "name") {
@@ -311,7 +371,12 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
       return {
         state: {
           ...state,
-          wizard: clearWizardError({ ...wizard, stage: "repository", name, branch }),
+          wizard: clearWizardError({
+            ...wizard,
+            stage: "repository",
+            name,
+            branch,
+          }),
         },
         exit: false,
       };
@@ -322,7 +387,10 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
         return wizardError(state, "Repository must have the exact owner/repo form.");
       }
       return {
-        state: { ...state, wizard: clearWizardError({ ...wizard, stage: "branch", repository }) },
+        state: {
+          ...state,
+          wizard: clearWizardError({ ...wizard, stage: "branch", repository }),
+        },
         exit: false,
       };
     }
@@ -331,7 +399,10 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
       if (!isValidBranchName(branch))
         return wizardError(state, "Enter a valid non-empty Git branch name.");
       return {
-        state: { ...state, wizard: clearWizardError({ ...wizard, stage: "review", branch }) },
+        state: {
+          ...state,
+          wizard: clearWizardError({ ...wizard, stage: "review", branch }),
+        },
         exit: false,
       };
     }
@@ -346,7 +417,11 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
       exit: false,
       action: {
         type: "create",
-        input: { name: wizard.name, branch: wizard.branch, repository: wizard.repository },
+        input: {
+          name: wizard.name,
+          branch: wizard.branch,
+          repository: wizard.repository,
+        },
       },
     };
   }
@@ -401,7 +476,10 @@ function handleConfirmationInput(state: DashboardState, data: string): Dashboard
 }
 
 function wizardError(state: DashboardState, error: string): DashboardInputResult {
-  return { state: { ...state, wizard: { ...state.wizard!, error } }, exit: false };
+  return {
+    state: { ...state, wizard: { ...state.wizard!, error } },
+    exit: false,
+  };
 }
 
 function clearWizardError(wizard: TopicWizardState): TopicWizardState {
@@ -492,7 +570,7 @@ function renderList(state: DashboardState, width: number, height: number): strin
   lines.push(truncateToWidth(status, width));
   lines.push(
     truncateToWidth(
-      "a Add · j/k or ↑/↓ move · enter actions · o workspace · m Main Agent · r retry · esc quit",
+      "a Add · j/k or ↑/↓ move · enter actions · o workspace · m Main Agent · p PR · r retry · esc quit",
       width,
     ),
   );
@@ -517,10 +595,10 @@ function visibleTopics(
 }
 
 function renderWideHeader(width: number): string {
-  const nameWidth = Math.max(12, Math.floor(width * 0.27));
-  const repoWidth = Math.max(18, Math.floor(width * 0.32));
+  const nameWidth = Math.max(12, Math.floor(width * 0.25));
+  const repoWidth = Math.max(18, Math.floor(width * 0.3));
   return truncateToWidth(
-    `  ${pad("TOPIC", nameWidth)} ${pad("REPOSITORY", repoWidth)} ${pad("SETUP", 14)} MAIN AGENT`,
+    `  ${pad("TOPIC", nameWidth)} ${pad("REPOSITORY", repoWidth)} ${pad("PR", 18)} ${pad("SETUP", 14)} MAIN AGENT`,
     width,
   );
 }
@@ -529,15 +607,27 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
   const selected = topic.id === state.selectedTopicId;
   const prefix = selected ? (state.focus === "list" ? "> " : "* ") : "  ";
   const agent = state.mainAgents.find((item) => item.topicId === topic.id)?.state ?? "stopped";
+  const pullRequest = state.pullRequests[topic.id];
   if (width < 72) {
-    return truncateToWidth(`${prefix}${topic.name} · ${topic.setup.state} · ${agent}`, width);
+    const link = pullRequest === undefined ? "" : ` · ${pullRequestCell(pullRequest)}`;
+    return truncateToWidth(
+      `${prefix}${topic.name} · ${topic.setup.state} · ${agent}${link}`,
+      width,
+    );
   }
-  const nameWidth = Math.max(12, Math.floor(width * 0.27));
-  const repoWidth = Math.max(18, Math.floor(width * 0.32));
+  const nameWidth = Math.max(12, Math.floor(width * 0.25));
+  const repoWidth = Math.max(18, Math.floor(width * 0.3));
   return truncateToWidth(
-    `${prefix}${pad(topic.name, nameWidth)} ${pad(topic.repository, repoWidth)} ${pad(topic.setup.state, 14)} ${agent}`,
+    `${prefix}${pad(topic.name, nameWidth)} ${pad(topic.repository, repoWidth)} ${pad(pullRequestCell(pullRequest), 18)} ${pad(topic.setup.state, 14)} ${agent}`,
     width,
   );
+}
+
+/** Renders the PR number as an underlined OSC 8 hyperlink plus its short status. */
+function pullRequestCell(ref: PullRequestRef | undefined): string {
+  if (ref === undefined) return "";
+  const link = `\x1b[4m${hyperlink(`#${ref.number}`, ref.url)}\x1b[24m`;
+  return `${link} ${pullRequestStatus(ref)}`;
 }
 
 function renderSidebar(state: DashboardState, width: number, height: number): string[] {
@@ -556,6 +646,9 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
       `Branch: ${topic.branch}`,
       `Repository: ${topic.repository}`,
       `Base: ${state.baseCheckouts[topic.id] ?? "not observable"}`,
+      ...(state.pullRequests[topic.id] === undefined
+        ? []
+        : [`Pull Request: ${pullRequestCell(state.pullRequests[topic.id])}`]),
       `Worktree: ${topic.worktreePath ?? "not ready"}`,
       `Setup: ${topic.setup.state}`,
       `Main Agent: ${agent?.state ?? "stopped"}`,
@@ -627,7 +720,11 @@ function moveSelection(state: DashboardState, delta: number): DashboardInputResu
   const current = state.topics.findIndex((topic) => topic.id === state.selectedTopicId);
   const index = Math.max(0, Math.min(state.topics.length - 1, (current < 0 ? 0 : current) + delta));
   return {
-    state: { ...state, selectedTopicId: state.topics[index]!.id, focusedAction: 0 },
+    state: {
+      ...state,
+      selectedTopicId: state.topics[index]!.id,
+      focusedAction: 0,
+    },
     exit: false,
   };
 }
@@ -664,24 +761,51 @@ function topicActions(
   if (topic === undefined) return [];
   const denied = state.unavailableActions[topic.id] ?? [];
   const ready = topic.setup.state === "ready" && topic.worktreePath !== null;
-  const actions: Array<{ id: TopicActionId; label: string; unavailable: boolean }> = [
+  const actions: Array<{
+    id: TopicActionId;
+    label: string;
+    unavailable: boolean;
+  }> = [
     {
       id: "workspace",
       label: "Access Topic Workspace",
       unavailable: denied.includes("workspace"),
     },
-    { id: "terminal", label: "Open Terminal", unavailable: !ready || denied.includes("terminal") },
-    { id: "agent", label: "Open Main Agent", unavailable: !ready || denied.includes("agent") },
+    {
+      id: "terminal",
+      label: "Open Terminal",
+      unavailable: !ready || denied.includes("terminal"),
+    },
+    {
+      id: "agent",
+      label: "Open Main Agent",
+      unavailable: !ready || denied.includes("agent"),
+    },
     {
       id: "reset-agent",
       label: "Start New Main Agent",
       unavailable: !ready || denied.includes("reset-agent"),
     },
   ];
-  if (topic.setup.state === "setup-failed" || topic.setup.state === "provisioning") {
-    actions.push({ id: "retry", label: "Retry Setup (r)", unavailable: denied.includes("retry") });
+  if (state.pullRequests[topic.id] !== undefined) {
+    actions.push({
+      id: "pull-request",
+      label: "Open Pull Request in Browser",
+      unavailable: false,
+    });
   }
-  actions.push({ id: "delete", label: "Delete Topic", unavailable: denied.includes("delete") });
+  if (topic.setup.state === "setup-failed" || topic.setup.state === "provisioning") {
+    actions.push({
+      id: "retry",
+      label: "Retry Setup (r)",
+      unavailable: denied.includes("retry"),
+    });
+  }
+  actions.push({
+    id: "delete",
+    label: "Delete Topic",
+    unavailable: denied.includes("delete"),
+  });
   return actions;
 }
 

@@ -1,10 +1,10 @@
 import { boundMessage } from "../shared/domain.ts";
-import type { ActionId, NewTopic, TopicManifest } from "../shared/domain.ts";
+import type { ActionId, NewTopic, PullRequestRef, TopicManifest } from "../shared/domain.ts";
 import type { TopicDiagnostic } from "../shared/topic-store.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 5 as const;
+export const WORK_PROTOCOL_VERSION = 6 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 
@@ -19,6 +19,7 @@ export type RequestAction =
   | "terminal.open"
   | "agent.open"
   | "agent.reset"
+  | "pull-request.open"
   | "agent.register"
   | "agent.heartbeat"
   | "agent.thinking"
@@ -44,7 +45,8 @@ export type WorkRequest =
         | "workspace.access"
         | "terminal.open"
         | "agent.open"
-        | "agent.reset";
+        | "agent.reset"
+        | "pull-request.open";
       topicId: string;
     })
   | (RequestBase & {
@@ -74,6 +76,7 @@ export interface DaemonSnapshot {
   mainAgents: readonly MainAgentLease[];
   baseCheckouts?: Readonly<Record<string, string>>;
   deniedActions?: Readonly<Record<string, readonly ActionId[]>>;
+  pullRequests?: Readonly<Record<string, PullRequestRef>>;
   daemon: {
     protocolVersion: typeof WORK_PROTOCOL_VERSION;
     pid: number;
@@ -236,6 +239,7 @@ export function parseRequest(text: string): WorkRequest {
     case "terminal.open":
     case "agent.open":
     case "agent.reset":
+    case "pull-request.open":
       return {
         ...base,
         action: value["action"],

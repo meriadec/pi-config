@@ -3,5 +3,6 @@ export * from "./main-agent.ts";
 export * from "./process-runner.ts";
 export * from "./protocol.ts";
 export * from "./provisioner.ts";
+export * from "./pull-request-observer.ts";
 export * from "./server.ts";
 export * from "./topic-service.ts";

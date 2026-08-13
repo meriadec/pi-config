@@ -48,6 +48,7 @@ export type ProvisionResult =
 export interface TopicProvisionerOptions {
   topics: TopicStore;
   runner?: ProcessRunner;
+  ghCommand?: string;
   processTimeoutMs?: number;
   maxProcessOutputBytes?: number;
 }
@@ -56,6 +57,7 @@ export interface TopicProvisionerOptions {
 export class TopicProvisioner {
   private readonly topics: TopicStore;
   private readonly runner: ProcessRunner;
+  private readonly ghCommand: string;
   private readonly processTimeoutMs: number;
   private readonly maxProcessOutputBytes: number;
   private readonly queues = new Map<string, Promise<void>>();
@@ -63,6 +65,7 @@ export class TopicProvisioner {
   constructor(options: TopicProvisionerOptions) {
     this.topics = options.topics;
     this.runner = options.runner ?? new LocalProcessRunner();
+    this.ghCommand = options.ghCommand ?? "gh";
     this.processTimeoutMs = options.processTimeoutMs ?? PROCESS_TIMEOUT_MS;
     this.maxProcessOutputBytes = options.maxProcessOutputBytes ?? MAX_PROCESS_OUTPUT_BYTES;
   }
@@ -93,7 +96,7 @@ export class TopicProvisioner {
         if (policyResult !== undefined) return policyResult;
 
         const clone = await this.run({
-          command: "gh",
+          command: this.ghCommand,
           args: ["repo", "clone", repository.fullName, baseCheckout],
           cwd: request.workBase,
           signal: request.signal,

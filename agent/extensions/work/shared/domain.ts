@@ -55,6 +55,58 @@ export interface MainAgentReference {
   sessionFile: string | null;
 }
 
+/** GitHub lifecycle of a pull request, from the GraphQL `state`. */
+export type PullRequestState = "open" | "merged" | "closed";
+
+/** Rollup of the pull request head commit checks, from `statusCheckRollup`. */
+export type PullRequestCi = "none" | "pending" | "passing" | "failing";
+
+/** Short display status for the dashboard PR column, ordered by signal. */
+export type PullRequestStatus =
+  | "merged"
+  | "closed"
+  | "draft"
+  | "ci-failing"
+  | "reviewing"
+  | "feedback"
+  | "checks"
+  | "approved"
+  | "clear";
+
+/** One GitHub pull request that belongs to a Topic branch. */
+export interface PullRequestRef {
+  number: number;
+  url: string;
+  state: PullRequestState;
+  draft: boolean;
+  /** Check rollup of the head commit. */
+  ci: PullRequestCi;
+  /** A requested reviewer (for example Copilot) has not submitted a review yet. */
+  reviewPending: boolean;
+  /** The formal review decision is CHANGES_REQUESTED. */
+  changesRequested: boolean;
+  /** The formal review decision is APPROVED. */
+  approved: boolean;
+  /** Count of review threads that are not resolved. */
+  unresolvedThreads: number;
+}
+
+/**
+ * Collapses lifecycle, CI, and review signals into one progressive status.
+ * The first matching rule wins, so the highest-signal condition is shown.
+ */
+export function pullRequestStatus(ref: PullRequestRef): PullRequestStatus {
+  if (ref.state === "merged") return "merged";
+  if (ref.state === "closed") return "closed";
+  if (ref.draft) return "draft";
+  if (ref.ci === "failing") return "ci-failing";
+  if (ref.reviewPending) return "reviewing";
+  if (ref.changesRequested || ref.unresolvedThreads > 0) return "feedback";
+  if (ref.ci === "pending") return "checks";
+  if (ref.approved) return "approved";
+  return "clear";
+}
+
 export interface TopicManifest {
   version: typeof WORK_DATA_VERSION;
   id: string;

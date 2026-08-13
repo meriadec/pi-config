@@ -4,6 +4,7 @@ import { I3KittyDesktopController } from "./desktop.ts";
 import { MainAgentManager } from "./main-agent.ts";
 import { LocalProcessRunner } from "./process-runner.ts";
 import { TopicProvisioner } from "./provisioner.ts";
+import { PullRequestObserver } from "./pull-request-observer.ts";
 import { WorkDaemon } from "./server.ts";
 import { TopicService } from "./topic-service.ts";
 
@@ -24,12 +25,21 @@ export async function runWorkDaemon(): Promise<void> {
       : { shellCommand: process.env["PI_WORK_SHELL"] }),
   });
   const mainAgent = new MainAgentManager({ topics, desktop, socketPath: paths.socket });
+  const ghCommand = process.env["PI_WORK_GH_EXECUTABLE"];
   const topicService = new TopicService({
     config: createConfigStore(paths),
     topics,
-    provisioner: new TopicProvisioner({ topics, runner }),
+    provisioner: new TopicProvisioner({
+      topics,
+      runner,
+      ...(ghCommand === undefined ? {} : { ghCommand }),
+    }),
     desktop,
     mainAgent,
+    pullRequests: new PullRequestObserver({
+      runner,
+      ...(ghCommand === undefined ? {} : { ghCommand }),
+    }),
   });
   const daemon = new WorkDaemon({
     socketPath: paths.socket,

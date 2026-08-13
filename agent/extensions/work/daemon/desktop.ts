@@ -43,6 +43,10 @@ export type CloseMainAgentResult =
   | { kind: "closed" | "absent"; message: string }
   | { kind: "unavailable"; message: string };
 
+export type PullRequestActionResult =
+  | { kind: "opened"; message: string }
+  | { kind: "unavailable"; message: string };
+
 export interface MainAgentLaunch {
   topicId: string;
   topicName: string;
@@ -58,6 +62,7 @@ export interface DesktopController {
   openTerminal(topicId: string, worktreePath: string): Promise<TerminalActionResult>;
   openMainAgent?(launch: MainAgentLaunch): Promise<MainAgentActionResult>;
   closeMainAgent?(topicId: string): Promise<CloseMainAgentResult>;
+  openPullRequest?(url: string): Promise<PullRequestActionResult>;
 }
 
 export interface DesktopControllerOptions {
@@ -71,6 +76,7 @@ export interface DesktopControllerOptions {
   nodeCommand?: string;
   piCommand?: string;
   shellCommand?: string;
+  browserCommand?: string;
   processCwd?: string;
 }
 
@@ -86,6 +92,7 @@ export class I3KittyDesktopController implements DesktopController {
   private readonly nodeCommand: string | undefined;
   private readonly piCommand: string;
   private readonly shellCommand: string;
+  private readonly browserCommand: string;
   private readonly processCwd: string;
 
   constructor(options: DesktopControllerOptions) {
@@ -99,6 +106,7 @@ export class I3KittyDesktopController implements DesktopController {
     this.nodeCommand = options.nodeCommand;
     this.piCommand = options.piCommand ?? "pi";
     this.shellCommand = options.shellCommand ?? defaultLoginShell();
+    this.browserCommand = options.browserCommand ?? "xdg-open";
     this.processCwd = options.processCwd ?? process.cwd();
   }
 
@@ -170,6 +178,20 @@ export class I3KittyDesktopController implements DesktopController {
     }
     await this.i3CommandRun(`[con_id=${existing[0]!.conId}] kill`, "Main Agent close");
     return { kind: "closed", message: "Closed the previous Main Agent window." };
+  }
+
+  async openPullRequest(url: string): Promise<PullRequestActionResult> {
+    const launch = await this.run({
+      command: this.browserCommand,
+      args: [url],
+      cwd: this.processCwd,
+      timeoutMs: PROCESS_TIMEOUT_MS,
+      maxOutputBytes: MAX_PROCESS_OUTPUT_BYTES,
+    });
+    if (launch.status !== "completed" || launch.exitCode !== 0) {
+      return { kind: "unavailable", message: "Could not open the pull request in a browser." };
+    }
+    return { kind: "opened", message: "Opened the pull request in a browser." };
   }
 
   async openMainAgent(launch: MainAgentLaunch): Promise<MainAgentActionResult> {

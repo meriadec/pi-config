@@ -70,7 +70,7 @@ function snapshot(topics: readonly TopicManifest[] = []): DaemonSnapshot {
     baseCheckouts: Object.fromEntries(
       topics.map((item) => [item.id, `/base/${item.repository.split("/")[1]}`]),
     ),
-    daemon: { protocolVersion: 5, pid: 10, startedAt: "2026-01-01T00:00:00.000Z" },
+    daemon: { protocolVersion: 6, pid: 10, startedAt: "2026-01-01T00:00:00.000Z" },
   };
 }
 
@@ -492,7 +492,7 @@ class FakeDashboardClient implements DashboardClient {
   createCalls: Array<{ input: NewTopic; requestId?: string }> = [];
   retryCalls: Array<{ topicId: string; requestId?: string }> = [];
   actionCalls: Array<{
-    type: "delete" | "workspace" | "terminal" | "agent" | "reset-agent";
+    type: "delete" | "workspace" | "terminal" | "agent" | "reset-agent" | "pull-request";
     topicId: string;
     requestId?: string;
   }> = [];
@@ -582,6 +582,15 @@ class FakeDashboardClient implements DashboardClient {
       ...(requestId === undefined ? {} : { requestId }),
     });
     return { kind: "launched", workspace: 3, message: "Started a new Main Agent." };
+  }
+
+  async openPullRequest(topicId: string, requestId?: string): Promise<WorkActionResult> {
+    this.actionCalls.push({
+      type: "pull-request",
+      topicId,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    return { kind: "opened", message: "Opened the pull request in a browser." };
   }
 
   async confirm(token: string, requestId?: string): Promise<WorkActionResult> {

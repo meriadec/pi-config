@@ -19,6 +19,8 @@ import type {
   WorkPolicies,
 } from "../shared/index.ts";
 import type { ProvisionRequest, ProvisionResult } from "./provisioner.ts";
+import type { PullRequestObserver } from "./pull-request-observer.ts";
+import type { DesktopController } from "./desktop.ts";
 import type { MainAgentManager } from "./main-agent.ts";
 import { WorkDaemon } from "./server.ts";
 import { TopicService } from "./topic-service.ts";
@@ -92,6 +94,10 @@ interface World {
 
 async function world(
   policyOverrides: Partial<Record<ActionId, "allow" | "ask" | "deny">> = {},
+  extras: {
+    pullRequests?: PullRequestObserver;
+    desktop?: DesktopController;
+  } = {},
 ): Promise<World> {
   const root = await mkdtemp(join(tmpdir(), "work-topic-service-test-"));
   roots.push(root);
@@ -124,6 +130,8 @@ async function world(
     mainAgent,
     now: () => new Date(now),
     confirmationTtlMs: 100,
+    ...(extras.pullRequests === undefined ? {} : { pullRequests: extras.pullRequests }),
+    ...(extras.desktop === undefined ? {} : { desktop: extras.desktop }),
   });
   const daemon = new WorkDaemon({
     socketPath: paths.socket,
@@ -247,6 +255,82 @@ describe("Topic Service daemon integration", () => {
       "operation-changed",
     ]);
     expect((await item.client.snapshot()).topics[0]?.setup.state).toBe("ready");
+  });
+
+  test("discovers a pull request for a ready Topic and opens it in a browser", async () => {
+    const openedUrls: string[] = [];
+    const desktop = {
+      async openPullRequest(url: string) {
+        openedUrls.push(url);
+        return { kind: "opened" as const, message: "Opened the pull request in a browser." };
+      },
+    } as unknown as DesktopController;
+    const observer = {
+      async discover(target: { branch: string; worktreePath: string }) {
+        return {
+          number: 42,
+          url: `https://github.com/LedgerHQ/revault/pull/42?b=${target.branch}`,
+          state: "open" as const,
+          draft: false,
+          ci: "failing" as const,
+          reviewPending: false,
+          changesRequested: false,
+          approved: false,
+          unresolvedThreads: 2,
+        };
+      },
+    } as unknown as PullRequestObserver;
+    const item = await world({}, { pullRequests: observer, desktop });
+
+    const changed = new Promise<{ topicId: string; number: number }>((resolve) => {
+      void item.client.subscribe((event) => {
+        if (event.type === "pull-request-changed" && event.pullRequest !== null) {
+          resolve({ topicId: event.topicId, number: event.pullRequest.number });
+        }
+      });
+    });
+    const ready = await item.client.createTopic({
+      name: "Has PR",
+      branch: "feat-has-pr",
+      repository: "LedgerHQ/revault",
+    });
+    expect(ready.status).toBe("ready");
+    const topicId = (ready as { topic: TopicManifest }).topic.id;
+    expect(await changed).toEqual({ topicId, number: 42 });
+
+    const snapshot = await item.client.snapshot();
+    expect(snapshot.pullRequests?.[topicId]).toEqual({
+      number: 42,
+      url: "https://github.com/LedgerHQ/revault/pull/42?b=feat-has-pr",
+      state: "open",
+      draft: false,
+      ci: "failing",
+      reviewPending: false,
+      changesRequested: false,
+      approved: false,
+      unresolvedThreads: 2,
+    });
+
+    const opened = await item.client.openPullRequest(topicId);
+    expect(opened).toMatchObject({ kind: "opened" });
+    expect(openedUrls).toEqual(["https://github.com/LedgerHQ/revault/pull/42?b=feat-has-pr"]);
+  });
+
+  test("reports unavailable when a Topic has no known pull request", async () => {
+    const observer = {
+      async discover() {
+        return null;
+      },
+    } as unknown as PullRequestObserver;
+    const item = await world({}, { pullRequests: observer });
+    const ready = await item.client.createTopic({
+      name: "No PR",
+      branch: "feat-no-pr",
+      repository: "LedgerHQ/revault",
+    });
+    const topicId = (ready as { topic: TopicManifest }).topic.id;
+    const opened = await item.client.openPullRequest(topicId);
+    expect(opened).toMatchObject({ kind: "unavailable" });
   });
 
   test("reports setup failure and retries it", async () => {

@@ -164,6 +164,19 @@ export class WorkClient {
     >;
   }
 
+  openPullRequest(
+    topicId: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<WorkActionResult> {
+    return this.request(
+      "pull-request.open",
+      { topicId },
+      timeoutMs,
+      requestId,
+    ) as Promise<WorkActionResult>;
+  }
+
   registerMainAgent(
     input: {
       topicId: string;
@@ -382,6 +395,7 @@ function isWorkEvent(value: unknown): value is WorkEvent {
     type === "terminal-opened" ||
     type === "main-agent-opened" ||
     type === "main-agent-changed" ||
+    type === "pull-request-changed" ||
     type === "operation-changed"
   );
 }

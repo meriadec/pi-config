@@ -11,6 +11,7 @@ import type {
   ActionId,
   ConfigStore,
   NewTopic,
+  PullRequestRef,
   TopicDiagnostic,
   TopicManifest,
   TopicStore,
@@ -19,14 +20,17 @@ import type {
 import type {
   DesktopController,
   MainAgentActionResult,
+  PullRequestActionResult,
   TerminalActionResult,
   WorkspaceActionResult,
 } from "./desktop.ts";
 import type { MainAgentManager } from "./main-agent.ts";
+import type { PullRequestObserver } from "./pull-request-observer.ts";
 import type { ProvisionRequest, ProvisionResult, TopicProvisioner } from "./provisioner.ts";
 
 const CONFIRMATION_TTL_MS = 60_000;
 const MAX_DEDUPLICATED_REQUESTS = 1_000;
+const PULL_REQUEST_POLL_INTERVAL_MS = 60_000;
 
 export interface TopicOperation {
   topicId: string;
@@ -46,6 +50,7 @@ export interface TopicServiceSnapshot {
   operations: readonly TopicOperation[];
   baseCheckouts: Readonly<Record<string, string>>;
   deniedActions: Readonly<Record<string, readonly ActionId[]>>;
+  pullRequests: Readonly<Record<string, PullRequestRef>>;
 }
 
 export type TopicServiceEvent =
@@ -57,6 +62,7 @@ export type TopicServiceEvent =
   | { type: "workspace-accessed"; topicId: string; result: WorkspaceActionResult }
   | { type: "terminal-opened"; topicId: string; result: TerminalActionResult }
   | { type: "main-agent-opened"; topicId: string; result: MainAgentActionResult }
+  | { type: "pull-request-changed"; topicId: string; pullRequest: PullRequestRef | null }
   | { type: "operation-changed"; topicId: string; operation: TopicOperation | null };
 
 export interface ConfirmationRequirement {
@@ -79,7 +85,8 @@ export type WorkActionResult =
   | TopicMutationResult
   | WorkspaceActionResult
   | TerminalActionResult
-  | MainAgentActionResult;
+  | MainAgentActionResult
+  | PullRequestActionResult;
 
 interface PendingConfirmation {
   token: string;
@@ -98,9 +105,13 @@ export interface TopicServiceOptions {
   provisioner: Pick<TopicProvisioner, "provision">;
   desktop?: DesktopController;
   mainAgent?: MainAgentManager;
+  pullRequests?: PullRequestObserver;
   now?: () => Date;
   confirmationTtlMs?: number;
   generateToken?: () => string;
+  pullRequestPollIntervalMs?: number;
+  setInterval?: typeof globalThis.setInterval;
+  clearInterval?: typeof globalThis.clearInterval;
 }
 
 /** Owns durable Topic mutations and live daemon operation state. */
@@ -109,6 +120,8 @@ export class TopicService {
   private readonly topicById = new Map<string, TopicManifest>();
   private diagnostics: TopicDiagnostic[] = [];
   private readonly operations = new Map<string, TopicOperation>();
+  private readonly pullRequestById = new Map<string, PullRequestRef>();
+  private pullRequestTimer: ReturnType<typeof setInterval> | undefined;
   private readonly topicQueues = new Map<string, Promise<void>>();
   private readonly confirmations = new Map<string, PendingConfirmation>();
   private readonly deduplicated = new Map<
@@ -121,12 +134,15 @@ export class TopicService {
   private readonly now: () => Date;
   private readonly confirmationTtlMs: number;
   private readonly generateToken: () => string;
+  private readonly pullRequestPollIntervalMs: number;
 
   constructor(options: TopicServiceOptions) {
     this.options = options;
     this.now = options.now ?? (() => new Date());
     this.confirmationTtlMs = options.confirmationTtlMs ?? CONFIRMATION_TTL_MS;
     this.generateToken = options.generateToken ?? randomUUID;
+    this.pullRequestPollIntervalMs =
+      options.pullRequestPollIntervalMs ?? PULL_REQUEST_POLL_INTERVAL_MS;
   }
 
   async start(): Promise<void> {
@@ -152,6 +168,21 @@ export class TopicService {
         }
       }
     }
+
+    if (this.options.pullRequests !== undefined && this.pullRequestTimer === undefined) {
+      const start = this.options.setInterval ?? globalThis.setInterval;
+      this.pullRequestTimer = start(() => {
+        void this.refreshAllPullRequests();
+      }, this.pullRequestPollIntervalMs);
+      void this.refreshAllPullRequests();
+    }
+  }
+
+  stop(): void {
+    if (this.pullRequestTimer !== undefined) {
+      (this.options.clearInterval ?? globalThis.clearInterval)(this.pullRequestTimer);
+      this.pullRequestTimer = undefined;
+    }
   }
 
   snapshot(): TopicServiceSnapshot {
@@ -176,6 +207,7 @@ export class TopicService {
           deniedTopicActions(this.config, topic),
         ]),
       ),
+      pullRequests: Object.fromEntries(this.pullRequestById),
     };
   }
 
@@ -189,6 +221,30 @@ export class TopicService {
     this.topicById.set(topic.id, topic);
     this.emit({ type: "topic-changed", topic });
     return topic;
+  }
+
+  private async refreshAllPullRequests(): Promise<void> {
+    for (const topicId of Array.from(this.topicById.keys())) {
+      await this.refreshPullRequest(topicId);
+    }
+  }
+
+  private async refreshPullRequest(topicId: string): Promise<void> {
+    const observer = this.options.pullRequests;
+    if (observer === undefined) return;
+    const topic = this.topicById.get(topicId);
+    const worktreePath = topic?.worktreePath ?? null;
+    const next =
+      topic === undefined || topic.setup.state !== "ready" || worktreePath === null
+        ? null
+        : await observer
+            .discover({ ...prTarget(topic.repository), branch: topic.branch, worktreePath })
+            .catch(() => null);
+    const current = this.pullRequestById.get(topicId) ?? null;
+    if (samePullRequest(current, next)) return;
+    if (next === null) this.pullRequestById.delete(topicId);
+    else this.pullRequestById.set(topicId, next);
+    this.emit({ type: "pull-request-changed", topicId, pullRequest: next });
   }
 
   create(clientId: string, requestId: string, input: NewTopic): Promise<TopicMutationResult> {
@@ -271,6 +327,24 @@ export class TopicService {
         this.resetMainAgentSerial(topicId, clientId, this.requestKey(clientId, requestId), false),
       ),
     );
+  }
+
+  openPullRequest(
+    clientId: string,
+    requestId: string,
+    topicId: string,
+  ): Promise<PullRequestActionResult> {
+    return this.deduplicate(clientId, requestId, `pull-request:${topicId}`, async () => {
+      await this.options.topics.load(topicId);
+      const pullRequest = this.pullRequestById.get(topicId);
+      if (pullRequest === undefined) {
+        return { kind: "unavailable", message: "This Topic has no known pull request." };
+      }
+      if (this.options.desktop?.openPullRequest === undefined) {
+        return { kind: "unavailable", message: "Pull request browser control is not available." };
+      }
+      return this.options.desktop.openPullRequest(pullRequest.url);
+    }) as Promise<PullRequestActionResult>;
   }
 
   confirm<T extends WorkActionResult = TopicMutationResult>(
@@ -519,6 +593,7 @@ export class TopicService {
       });
     }
     this.clearOperation(topicId);
+    void this.refreshPullRequest(topicId);
     return provisionResult(result);
   }
 
@@ -577,6 +652,9 @@ export class TopicService {
     }
     this.clearOperation(topicId);
     this.topicById.delete(topicId);
+    if (this.pullRequestById.delete(topicId)) {
+      this.emit({ type: "pull-request-changed", topicId, pullRequest: null });
+    }
     this.emit({ type: "topic-removed", topicId });
     return { status: "deleted", topicId };
   }
@@ -732,4 +810,25 @@ function provisionResult(result: ProvisionResult): TopicMutationResult {
     throw new Error("Confirmation result must be handled by Topic Service.");
   }
   return result;
+}
+
+function samePullRequest(left: PullRequestRef | null, right: PullRequestRef | null): boolean {
+  if (left === null || right === null) return left === right;
+  return (
+    left.number === right.number &&
+    left.url === right.url &&
+    left.state === right.state &&
+    left.draft === right.draft &&
+    left.ci === right.ci &&
+    left.reviewPending === right.reviewPending &&
+    left.changesRequested === right.changesRequested &&
+    left.approved === right.approved &&
+    left.unresolvedThreads === right.unresolvedThreads
+  );
+}
+
+/** Splits a validated owner/name Topic repository into pull request target fields. */
+function prTarget(repository: string): { owner: string; repo: string } {
+  const reference = parseRepository(repository);
+  return { owner: reference.owner, repo: reference.name };
 }

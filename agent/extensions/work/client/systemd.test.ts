@@ -22,6 +22,7 @@ async function paths(): Promise<SystemdPaths> {
     bunExecutable: join(home, "bun executable"),
     nodeExecutable: join(home, "node executable"),
     piExecutable: join(home, "pi executable"),
+    ghExecutable: join(home, "gh executable"),
     daemonEntryPath: join(home, "daemon%entry.ts"),
     socketPath: join(home, "pi-workd.sock"),
   };
@@ -74,6 +75,7 @@ describe("systemd unit management", () => {
     expect(generateSystemdUnit(value)).toBe(first);
     expect(first).toContain(`Environment="PI_WORK_NODE_EXECUTABLE=${value.nodeExecutable}"`);
     expect(first).toContain(`Environment="PI_WORK_PI_EXECUTABLE=${value.piExecutable}"`);
+    expect(first).toContain(`Environment="PI_WORK_GH_EXECUTABLE=${value.ghExecutable}"`);
     expect(first).toContain(`ExecStart="${value.bunExecutable}"`);
     expect(first).toContain("daemon%%entry.ts");
     expect(first).not.toContain("WantedBy=multi-user.target");
@@ -105,6 +107,7 @@ describe("systemd unit management", () => {
     const manager = new SystemdWorkdManager({
       paths: value,
       run: async () => ({ code: 0, stdout: "", stderr: "" }),
+      environment: {},
       connect: async () => {
         attempts += 1;
         throw new Error("socket unavailable");
@@ -137,6 +140,7 @@ describe("systemd unit management", () => {
     const startManager = new SystemdWorkdManager({
       paths: startPaths,
       run: failed,
+      environment: {},
       connect: async () => {
         throw new Error("not running");
       },
@@ -161,6 +165,7 @@ describe("systemd unit management", () => {
         if (args.includes("restart")) restarted = true;
         return { code: 0, stdout: "", stderr: "" };
       },
+      environment: {},
       connect: async () => {
         if (!restarted) throw new Error("Work daemon uses an unsupported protocol version.");
         return client;
@@ -169,6 +174,37 @@ describe("systemd unit management", () => {
 
     expect(await manager.ensureConnected()).toBe(client);
     expect(calls).toEqual([["--user", "restart", "pi-workd.service"]]);
+  });
+
+  test("forwards GitHub credentials into the user manager before it starts the daemon", async () => {
+    const value = await paths();
+    await mkdir(dirname(value.unitPath), { recursive: true });
+    await writeFile(value.unitPath, generateSystemdUnit(value));
+    const calls: string[][] = [];
+    let restarted = false;
+    const client = {
+      ping: async () => ({ protocolVersion: 6, pid: 1 }),
+      close: () => undefined,
+    } as unknown as WorkClient;
+    const manager = new SystemdWorkdManager({
+      paths: value,
+      run: async (_command, args) => {
+        calls.push([...args]);
+        if (args.includes("restart")) restarted = true;
+        return { code: 0, stdout: "", stderr: "" };
+      },
+      environment: { GH_TOKEN: "ghp_test" },
+      connect: async () => {
+        if (!restarted) throw new Error("Work daemon uses an unsupported protocol version.");
+        return client;
+      },
+    });
+
+    expect(await manager.ensureConnected()).toBe(client);
+    expect(calls).toEqual([
+      ["--user", "import-environment", "GH_TOKEN"],
+      ["--user", "restart", "pi-workd.service"],
+    ]);
   });
 
   test("returns an already running client without systemd calls", async () => {

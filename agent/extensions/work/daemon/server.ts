@@ -159,6 +159,7 @@ export class WorkDaemon {
     this.unsubscribeTopics = undefined;
     this.unsubscribeAgents?.();
     this.unsubscribeAgents = undefined;
+    this.options.topicService?.stop();
     this.options.mainAgent?.stop();
   }
 
@@ -254,6 +255,13 @@ export class WorkDaemon {
           break;
         case "agent.reset":
           result = await this.requireTopicService().resetMainAgent(
+            request.clientId,
+            request.id,
+            request.topicId,
+          );
+          break;
+        case "pull-request.open":
+          result = await this.requireTopicService().openPullRequest(
             request.clientId,
             request.id,
             request.topicId,

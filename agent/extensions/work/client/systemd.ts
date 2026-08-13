@@ -19,6 +19,7 @@ export interface SystemdPaths {
   bunExecutable: string;
   nodeExecutable: string;
   piExecutable: string;
+  ghExecutable: string;
   daemonEntryPath: string;
   socketPath: string;
 }
@@ -32,7 +33,13 @@ export interface SystemdManagerOptions {
   startupTimeoutMs?: number;
   attemptTimeoutMs?: number;
   clientId?: string;
+  environment?: NodeJS.ProcessEnv;
 }
+
+// The daemon inherits the systemd user manager environment, not the client
+// shell. Forward these GitHub credentials so daemon-side gh (pull request
+// discovery and gh clone) authenticates the same way the client shell does.
+const FORWARDED_CREDENTIALS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
 
 export interface InstallResult {
   changed: boolean;
@@ -48,6 +55,7 @@ export function defaultSystemdPaths(
     bunExecutable: findBunExecutable(home, environment),
     nodeExecutable: findNodeExecutable(environment),
     piExecutable: findPiExecutable(home, environment),
+    ghExecutable: findGhExecutable(environment),
     daemonEntryPath: fileURLToPath(new URL("../daemon/entry.ts", import.meta.url)),
     socketPath,
   };
@@ -68,6 +76,13 @@ export function findNodeExecutable(environment: NodeJS.ProcessEnv): string {
 
 export function findPiExecutable(home: string, environment: NodeJS.ProcessEnv): string {
   return findExecutable("pi", environment, [join(home, ".bun", "bin", "pi")]);
+}
+
+// The daemon inherits the minimal systemd user PATH, so resolve gh from the
+// richer client environment (mise, Homebrew, and similar) and pass its absolute
+// path. Otherwise pull request discovery and gh-based cloning cannot find gh.
+export function findGhExecutable(environment: NodeJS.ProcessEnv): string {
+  return findExecutable("gh", environment, ["gh"]);
 }
 
 function findExecutable(
@@ -102,6 +117,7 @@ export function generateSystemdUnit(paths: SystemdPaths): string {
     "Type=simple",
     `Environment=${systemdQuote(`PI_WORK_NODE_EXECUTABLE=${resolve(paths.nodeExecutable)}`)}`,
     `Environment=${systemdQuote(`PI_WORK_PI_EXECUTABLE=${resolve(paths.piExecutable)}`)}`,
+    `Environment=${systemdQuote(`PI_WORK_GH_EXECUTABLE=${resolve(paths.ghExecutable)}`)}`,
     `ExecStart=${systemdQuote(resolve(paths.bunExecutable))} ${systemdQuote(resolve(paths.daemonEntryPath))}`,
     "Restart=on-failure",
     "RestartSec=1s",
@@ -117,6 +133,7 @@ export class SystemdWorkdManager {
   private readonly connectClient: (socketPath: string, timeoutMs: number) => Promise<WorkClient>;
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly environment: NodeJS.ProcessEnv;
   private readonly options: SystemdManagerOptions;
 
   constructor(options: SystemdManagerOptions) {
@@ -131,6 +148,7 @@ export class SystemdWorkdManager {
         }));
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? sleep;
+    this.environment = options.environment ?? process.env;
   }
 
   async install(): Promise<InstallResult> {
@@ -166,6 +184,7 @@ export class SystemdWorkdManager {
     await this.install();
     // A failed ping can mean that an older daemon still owns the socket.
     // Restart also starts an inactive unit and always loads the current extension code.
+    await this.forwardCredentials();
     await this.systemctl(["restart", "pi-workd.service"], "restart pi-workd");
 
     const deadline = this.now() + (this.options.startupTimeoutMs ?? 5_000);
@@ -202,6 +221,23 @@ export class SystemdWorkdManager {
     if (result.code !== 0) {
       const reason = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
       throw new Error(boundMessage(`Could not ${action}: ${reason}`));
+    }
+  }
+
+  // Copy the credential values from the client shell into the systemd user
+  // manager environment, by name, so the next daemon start inherits them. The
+  // values never reach a command line and are not written to disk. Forwarding
+  // is best effort: a failure must not stop the daemon from starting.
+  private async forwardCredentials(): Promise<void> {
+    const names = FORWARDED_CREDENTIALS.filter((name) => {
+      const value = this.environment[name];
+      return typeof value === "string" && value.length > 0;
+    });
+    if (names.length === 0) return;
+    try {
+      await this.systemctl(["import-environment", ...names], "forward GitHub credentials");
+    } catch {
+      // The daemon can still start; only gh-authenticated features degrade.
     }
   }
 }
