@@ -484,16 +484,25 @@ export function selectTopicWorkspace(
   topicId: string,
 ): { kind: "selected"; workspace: number } | { kind: "unavailable"; message: string } {
   if (!isNode(tree)) throw new WorkDataError("invalid-i3-tree", "i3 returned an invalid tree.");
-  const marks = new Set([topicMark(topicId), mainAgentMark(topicId)]);
+  const mainMark = mainAgentMark(topicId);
+  const marks = new Set([topicMark(topicId), mainMark]);
   const identities = new Set([topicWindowIdentity(topicId), mainAgentWindowIdentity(topicId)]);
   const topicWorkspaces = new Set<number>();
+  let mainAgentWorkspace: number | undefined;
   const materialized = new Map<number, I3Node>();
   walk(tree, undefined, (node, workspace) => {
     if (node.type === "workspace" && isPoolWorkspace(node.num)) materialized.set(node.num, node);
-    if (workspace !== undefined && isTopicWindow(node, marks, identities)) {
-      topicWorkspaces.add(workspace);
-    }
+    if (workspace === undefined) return;
+    if (isTopicWindow(node, marks, identities)) topicWorkspaces.add(workspace);
+    if (nodeMarks(node).includes(mainMark)) mainAgentWorkspace = workspace;
   });
+  // The Main Agent window is the Topic's durable anchor. Its mark is globally
+  // unique in i3, so when it exists its workspace is authoritative even if a
+  // leftover terminal lingers on another workspace. Without this, a split
+  // layout would look ambiguous and refuse to move.
+  if (mainAgentWorkspace !== undefined) {
+    return { kind: "selected", workspace: mainAgentWorkspace };
+  }
   if (topicWorkspaces.size === 1) {
     return { kind: "selected", workspace: [...topicWorkspaces][0]! };
   }

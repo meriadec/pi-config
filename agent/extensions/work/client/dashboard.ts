@@ -299,6 +299,10 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
     const action = topicActions(state).find((item) => item.id === "pull-request");
     if (action !== undefined && !action.unavailable) return invokeTopicAction(state, action);
   }
+  if (data === "t" && state.focus === "list" && state.submissionInFlight === undefined) {
+    const action = topicActions(state).find((item) => item.id === "terminal");
+    if (action !== undefined && !action.unavailable) return invokeTopicAction(state, action);
+  }
   if ((data === "q" || data === "Q") && state.sidebarOpen) {
     return {
       state: { ...state, sidebarOpen: false, focus: "list" },
@@ -570,7 +574,7 @@ function renderList(state: DashboardState, width: number, height: number): strin
   lines.push(truncateToWidth(status, width));
   lines.push(
     truncateToWidth(
-      "a Add · j/k or ↑/↓ move · enter actions · o workspace · m Main Agent · p PR · r retry · esc quit",
+      "a Add · j/k or ↑/↓ move · enter actions · o workspace · t terminal · m Main Agent · p PR · r retry · esc quit",
       width,
     ),
   );

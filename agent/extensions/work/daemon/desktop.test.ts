@@ -116,6 +116,21 @@ describe("i3 workspace selection", () => {
     ).toEqual({ kind: "selected", workspace: 5 });
   });
 
+  test("keeps the Main Agent workspace authoritative when a terminal lingers elsewhere", () => {
+    const topicId = "topic";
+    // The Main Agent anchors workspace 5; a leftover terminal on workspace 2
+    // must not turn the layout ambiguous.
+    expect(
+      selectTopicWorkspace(
+        root(
+          workspace(2, [windowNode(20, { identity: topicWindowIdentity(topicId) })]),
+          workspace(5, [windowNode(50, { marks: [mainAgentMark(topicId)] })]),
+        ),
+        topicId,
+      ),
+    ).toEqual({ kind: "selected", workspace: 5 });
+  });
+
   test("selects the lowest empty or unmaterialized workspace in 1 through 10", () => {
     const topicId = "topic";
     expect(
@@ -362,6 +377,27 @@ describe("marked Kitty launch", () => {
     expect(
       ambiguousRunner.requests.some((request) => request.args[0]?.includes("mark --add")),
     ).toBe(false);
+  });
+
+  test("anchors workspace access on the Main Agent window even across split workspaces", async () => {
+    const runner = new FakeRunner();
+    const topicId = "topic";
+    // A leftover terminal carries the Topic identity on workspace 2 while the
+    // Main Agent sits on workspace 5. selectTopicWorkspace must still land on
+    // the Main Agent's workspace instead of calling the split layout ambiguous.
+    runner.trees.push(
+      root(
+        workspace(2, [windowNode(20, { identity: topicWindowIdentity(topicId) })]),
+        workspace(5, [windowNode(50, { marks: [mainAgentMark(topicId)] })]),
+      ),
+    );
+    const desktop = new I3KittyDesktopController({ runner });
+    expect(await desktop.accessWorkspace(topicId)).toEqual({
+      kind: "focused",
+      workspace: 5,
+      message: "Focused Topic workspace 5.",
+    });
+    expect(runner.requests.at(-1)?.args).toEqual(["workspace number 5"]);
   });
 
   test("reports bounded process timeout and output failures", async () => {
