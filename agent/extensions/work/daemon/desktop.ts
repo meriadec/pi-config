@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import { userInfo } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir, userInfo } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { WorkDataError, boundMessage } from "../shared/domain.ts";
 import type { ProcessRequest, ProcessResult, ProcessRunner } from "./process-runner.ts";
 
@@ -78,6 +80,8 @@ export interface DesktopControllerOptions {
   shellCommand?: string;
   browserCommand?: string;
   processCwd?: string;
+  runtimeDir?: string;
+  writeRcFile?: (path: string, content: string) => Promise<void>;
 }
 
 /** Owns all i3 workspace lookup and marked kitty window reconciliation. */
@@ -94,6 +98,8 @@ export class I3KittyDesktopController implements DesktopController {
   private readonly shellCommand: string;
   private readonly browserCommand: string;
   private readonly processCwd: string;
+  private readonly runtimeDir: string;
+  private readonly writeRcFile: (path: string, content: string) => Promise<void>;
 
   constructor(options: DesktopControllerOptions) {
     this.runner = options.runner;
@@ -108,6 +114,8 @@ export class I3KittyDesktopController implements DesktopController {
     this.shellCommand = options.shellCommand ?? defaultLoginShell();
     this.browserCommand = options.browserCommand ?? "xdg-open";
     this.processCwd = options.processCwd ?? process.cwd();
+    this.runtimeDir = options.runtimeDir ?? process.env["XDG_RUNTIME_DIR"] ?? tmpdir();
+    this.writeRcFile = options.writeRcFile ?? defaultWriteRcFile;
   }
 
   async accessWorkspace(topicId: string): Promise<WorkspaceActionResult> {
@@ -220,6 +228,22 @@ export class I3KittyDesktopController implements DesktopController {
       findIdentityWindows(tree, identity).map((item) => item.conId),
     );
     await this.focusWorkspace(selection.workspace);
+    // Run Pi through the user's interactive login shell so shell aliases load
+    // and Pi becomes a suspendable job-control child. zsh and bash start Pi
+    // from a startup file so `Ctrl-Z` drops to an interactive prompt (and `fg`
+    // resumes Pi) instead of closing the window.
+    const invocation = mainAgentShellInvocation({
+      shellPath: this.shellCommand,
+      runtimeDir: this.runtimeDir,
+      topicId: launch.topicId,
+      nodeCommand: this.nodeCommand,
+      piCommand: this.piCommand,
+      sessionId: launch.sessionId,
+      topicName: launch.topicName,
+    });
+    if (invocation.rcFile !== undefined) {
+      await this.writeRcFile(invocation.rcFile.path, invocation.rcFile.content);
+    }
     const result = await this.run({
       command: this.kittyCommand,
       args: [
@@ -233,22 +257,11 @@ export class I3KittyDesktopController implements DesktopController {
         identity,
         "--directory",
         launch.worktreePath,
-        // Run Pi through the user's interactive login shell so shell aliases
-        // load and Pi becomes a job-control child. The trailing no-op defeats
-        // the shell's single-command exec optimization, which would otherwise
-        // replace the shell with Pi and lose job control (C-z / fg).
-        this.shellCommand,
-        "-i",
-        "-c",
-        mainAgentShellScript({
-          nodeCommand: this.nodeCommand,
-          piCommand: this.piCommand,
-          sessionId: launch.sessionId,
-          topicName: launch.topicName,
-        }),
+        ...invocation.args,
       ],
       cwd: launch.worktreePath,
       env: {
+        ...invocation.env,
         PI_WORK_TOPIC_ID: launch.topicId,
         PI_WORK_SOCKET: launch.socketPath,
         PI_WORK_REGISTRATION_TOKEN: launch.registrationToken,
@@ -362,12 +375,39 @@ function defaultLoginShell(): string {
   return "/bin/sh";
 }
 
-export function mainAgentShellScript(options: {
+/**
+ * How to launch Pi as a suspendable Main Agent job.
+ *
+ * `args` are the shell command and arguments Kitty runs. `env` are extra
+ * environment variables the shell needs (for example `ZDOTDIR`). When present,
+ * `rcFile` must be written before the shell starts.
+ */
+export interface MainAgentShellInvocation {
+  args: string[];
+  env: Record<string, string>;
+  rcFile?: { path: string; content: string };
+}
+
+/**
+ * Build the shell invocation that runs Pi so `Ctrl-Z` suspends Pi to an
+ * interactive shell prompt (and `fg` resumes it) without closing the window.
+ *
+ * A plain `shell -i -c "pi"` shell exhausts its `-c` command source the moment
+ * Pi stops, so the shell exits, its window closes, and the stopped Pi job dies.
+ * To keep an interactive prompt whose job table holds the stopped Pi, the shell
+ * must read commands from the terminal, not from `-c`. Thus zsh and bash start
+ * Pi from a startup file and stay interactive. Other shells keep the legacy
+ * `-c` behavior, which does not preserve job control.
+ */
+export function mainAgentShellInvocation(options: {
+  shellPath: string;
+  runtimeDir: string;
+  topicId: string;
   nodeCommand: string | undefined;
   piCommand: string;
   sessionId: string;
   topicName: string;
-}): string {
+}): MainAgentShellInvocation {
   const piArgv = [
     ...(options.nodeCommand === undefined
       ? [options.piCommand]
@@ -377,7 +417,37 @@ export function mainAgentShellScript(options: {
     "--name",
     `Work: ${options.topicName}`,
   ];
-  return `${piArgv.map(shellQuote).join(" ")}\n:`;
+  const piLine = piArgv.map(shellQuote).join(" ");
+  const shellName = basename(options.shellPath);
+  const rcDir = join(options.runtimeDir, "pi-work-shell", digest(options.topicId));
+
+  if (shellName === "zsh") {
+    const path = join(rcDir, ".zshrc");
+    // ZDOTDIR redirects zsh startup here; source the user's own .zshrc first so
+    // aliases still load, then run Pi as a foreground job. No command follows
+    // Pi, so a suspend drops straight to this interactive prompt.
+    const content = `[ -r "$HOME/.zshrc" ] && source "$HOME/.zshrc"\n${piLine}\n`;
+    return { args: [options.shellPath, "-i"], env: { ZDOTDIR: rcDir }, rcFile: { path, content } };
+  }
+
+  if (shellName === "bash") {
+    const path = join(rcDir, "rc");
+    const content = `[ -r "$HOME/.bashrc" ] && source "$HOME/.bashrc"\n${piLine}\n`;
+    return {
+      args: [options.shellPath, "--rcfile", path, "-i"],
+      env: {},
+      rcFile: { path, content },
+    };
+  }
+
+  // Unknown shell: keep the previous behavior. Job control is not preserved.
+  return { args: [options.shellPath, "-i", "-c", `${piLine}\n:`], env: {} };
+}
+
+/** Write a shell startup file with private permissions. */
+async function defaultWriteRcFile(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writeFile(path, content, { mode: 0o600 });
 }
 
 function shellQuote(value: string): string {

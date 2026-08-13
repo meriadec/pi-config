@@ -7,6 +7,7 @@ import type { ActionId, ActionPolicy, TopicManifest } from "../shared/index.ts";
 import {
   I3KittyDesktopController,
   mainAgentMark,
+  mainAgentShellInvocation,
   mainAgentWindowIdentity,
   selectTopicWorkspace,
   topicMark,
@@ -220,6 +221,46 @@ describe("marked Kitty launch", () => {
     expect(runner.requests.at(-1)?.args[0]).toContain(`mark --add ${mainAgentMark(topicId)}`);
   });
 
+  test("launches a job-control zsh Main Agent from a private startup file", async () => {
+    const runner = new FakeRunner();
+    const topicId = "123e4567-e89b-42d3-a456-426614174000";
+    const identity = mainAgentWindowIdentity(topicId);
+    runner.trees.push(root(workspace(1)), root(workspace(1, [windowNode(30, { identity })])));
+    const written: Array<{ path: string; content: string }> = [];
+    const desktop = new I3KittyDesktopController({
+      runner,
+      piCommand: "/test/bin/pi",
+      shellCommand: "/usr/bin/zsh",
+      runtimeDir: "/run/user/1000",
+      writeRcFile: async (path, content) => {
+        written.push({ path, content });
+      },
+    });
+    expect(
+      await desktop.openMainAgent({
+        topicId,
+        topicName: "VG-123",
+        worktreePath: "/tmp/worktree",
+        sessionId: topicId,
+        socketPath: "/run/user/1000/pi-workd.sock",
+        registrationToken: "one-launch-token",
+        affiliationToken: "one-window-affiliation",
+      }),
+    ).toMatchObject({ kind: "launched", workspace: 1 });
+    const kitty = runner.requests.find((request) => request.command === "kitty")!;
+    // No `-c` command source, so a Ctrl-Z suspend drops to an interactive prompt.
+    expect(kitty.args.slice(-2)).toEqual(["/usr/bin/zsh", "-i"]);
+    expect(kitty.args).not.toContain("-c");
+    expect(kitty.env?.["ZDOTDIR"]).toBe(written[0]!.path.replace(/\/\.zshrc$/, ""));
+    expect(kitty.env?.["PI_WORK_TOPIC_ID"]).toBe(topicId);
+    // The startup file loads user aliases, then runs Pi as a foreground job.
+    expect(written).toHaveLength(1);
+    expect(written[0]!.path.endsWith("/.zshrc")).toBe(true);
+    expect(written[0]!.content).toContain('source "$HOME/.zshrc"');
+    expect(written[0]!.content).toContain("'/test/bin/pi' '--session-id'");
+    expect(written[0]!.content).not.toContain("\n:\n");
+  });
+
   test("focuses an existing marked Main Agent instead of launching another", async () => {
     const runner = new FakeRunner();
     const topicId = "topic";
@@ -415,4 +456,47 @@ async function serviceWorld(policy: ActionPolicy, ready: boolean) {
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+describe("mainAgentShellInvocation", () => {
+  const base = {
+    runtimeDir: "/run/user/1000",
+    topicId: "123e4567-e89b-42d3-a456-426614174000",
+    nodeCommand: undefined,
+    piCommand: "/test/bin/pi",
+    sessionId: "session",
+    topicName: "VG-123",
+  };
+
+  test("zsh runs Pi from ZDOTDIR so a suspend keeps an interactive prompt", () => {
+    const invocation = mainAgentShellInvocation({ ...base, shellPath: "/usr/bin/zsh" });
+    expect(invocation.args).toEqual(["/usr/bin/zsh", "-i"]);
+    expect(invocation.args).not.toContain("-c");
+    expect(invocation.env["ZDOTDIR"]).toBe(invocation.rcFile?.path.replace(/\/\.zshrc$/, ""));
+    expect(invocation.rcFile?.path.endsWith("/.zshrc")).toBe(true);
+    expect(invocation.rcFile?.content).toContain('source "$HOME/.zshrc"');
+    expect(invocation.rcFile?.content).toContain("'/test/bin/pi' '--session-id' 'session'");
+  });
+
+  test("bash runs Pi from an interactive rcfile", () => {
+    const invocation = mainAgentShellInvocation({ ...base, shellPath: "/bin/bash" });
+    expect(invocation.args[0]).toBe("/bin/bash");
+    expect(invocation.args).toContain("--rcfile");
+    expect(invocation.args).toContain("-i");
+    expect(invocation.args).not.toContain("-c");
+    expect(invocation.env).toEqual({});
+    expect(invocation.rcFile?.content).toContain('source "$HOME/.bashrc"');
+  });
+
+  test("unknown shell keeps the legacy -c launch without a startup file", () => {
+    const invocation = mainAgentShellInvocation({ ...base, shellPath: "/bin/dash" });
+    expect(invocation.args[0]).toBe("/bin/dash");
+    expect(invocation.args).toEqual([
+      "/bin/dash",
+      "-i",
+      "-c",
+      "'/test/bin/pi' '--session-id' 'session' '--name' 'Work: VG-123'\n:",
+    ]);
+    expect(invocation.rcFile).toBeUndefined();
+  });
 });
