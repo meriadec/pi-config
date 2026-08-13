@@ -41,11 +41,43 @@ After extension development changes, run `/reload` in Pi before you test the new
 - `topic-agent/` reports the visible Main Agent lifecycle and heartbeats.
 - `shared/` contains schemas, paths, policy resolution, and atomic stores.
 
+## Repository Recipes
+
+A **Repository Recipe** is an ordered list of **Setup commands** declared for one
+`owner/repo` repository. When a Topic gets a freshly created Worktree, the daemon runs
+the Recipe once, line by line, to prepare that Worktree. A Recipe does not run when the
+Worktree already exists, and a Topic that fails a Setup command goes to `setup-failed`;
+**Retry Setup** re-runs the whole Recipe from the top, so keep Setup commands safe to
+re-run.
+
+Declare Recipes by hand in `~/work/config.json` under a top-level `repositories` map:
+
+```json
+{
+  "version": 1,
+  "repositories": {
+    "LedgerHQ/revault": {
+      "setupCommands": [
+        "pnpm install",
+        "pnpm build --filter @ledgerhq/revault-sdk",
+        "cp ./packages/web/.env.sample ./packages/web/.env"
+      ]
+    }
+  }
+}
+```
+
+Each Setup command is one full shell line, run through your login shell (`-lc`) in the
+Worktree, with the daemon environment. Each command has a 5-minute deadline and bounded
+captured output. The list view shows a live `setup N/M` phase while the Recipe runs. The
+`topic.run-setup` Action gates the Recipe through the usual `allow` / `ask` / `deny`
+policy (default `allow`).
+
 The Main Agent starts inside your interactive login shell (`os.userInfo().shell`, or `PI_WORK_SHELL`). Thus your shell aliases load, and job control works: press `Ctrl-Z` to suspend Pi to the shell, then `fg` to resume it. For zsh and bash, the window runs Pi from a private, per-Topic startup file under `$XDG_RUNTIME_DIR/pi-work-shell/` so that a suspend drops to an interactive prompt in the same window instead of closing it. Other shells fall back to a `-c` launch that does not keep job control.
 
 User data:
 
-- `~/work/config.json` — version 1 configuration and action policies
+- `~/work/config.json` — version 1 configuration, action policies, and Repository Recipes
 - `~/work/affiliations.json` — durable, non-secret window-affiliation credentials so a live Main Agent window re-attaches after a daemon restart
 - `~/work/topics/<topic-id>/topic.json` — one durable Topic manifest
 - `$XDG_RUNTIME_DIR/pi-workd.sock` — private Unix socket
@@ -88,7 +120,7 @@ Version 1 does not provide:
 - Topic types or lifecycle phases
 - GitHub notification ingestion
 - pull request creation, monitoring, rebasing, conflict resolution, or commit-stack refinement
-- repository recipes, development servers, Kubernetes, or manual-test recipes
+- development servers, Kubernetes, or manual-test recipes
 - Delegation Jobs or headless agents
 - an LLM-callable control-plane tool
 - non-systemd Linux, non-i3 window managers, or non-kitty terminals

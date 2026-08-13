@@ -42,6 +42,8 @@ export interface TopicOperation {
     | "open-agent"
     | "reset-agent";
   state: "running" | "confirmation-required";
+  /** Live sub-step, for example a `setup N/M` Repository Recipe phase. */
+  detail?: string;
 }
 
 export interface TopicServiceSnapshot {
@@ -549,11 +551,22 @@ export class TopicService {
   ): Promise<TopicMutationResult> {
     const config = this.requireConfigured();
     this.setOperation({ topicId, kind: "provision", state: "running" });
+    const repository = this.topicById.get(topicId)?.repository;
+    const recipe =
+      repository === undefined ? [] : (config.repositories[repository]?.setupCommands ?? []);
     const request: ProvisionRequest = {
       topicId,
       workBase: config.workBase!,
       policies: config.policies,
+      recipe,
       approvedActions,
+      onSetupProgress: (progress) =>
+        this.setOperation({
+          topicId,
+          kind: "provision",
+          state: "running",
+          detail: `setup ${progress.index + 1}/${progress.total}`,
+        }),
     };
     let result: ProvisionResult;
     try {

@@ -44,6 +44,7 @@ function config(): WorkConfig {
       repositories: {},
       topics: {},
     },
+    repositories: {},
   };
 }
 
@@ -54,7 +55,12 @@ function manifest(id = ID_A): TopicManifest {
     name: "VG-123",
     branch: "feat/VG-31025_tokenization",
     repository: "LedgerHQ/revault",
-    setup: { state: "provisioning", repositoryAvailable: false, worktreeCreated: false },
+    setup: {
+      state: "provisioning",
+      repositoryAvailable: false,
+      worktreeCreated: false,
+      setupCommandsRun: false,
+    },
     worktreePath: null,
     mainAgent: { sessionId: id, sessionFile: null },
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -102,6 +108,36 @@ describe("domain validation", () => {
       parseTopicManifest({ ...manifest(), branch: undefined, slug: "feat/legacy" }),
     ).toThrow("unknown field: slug");
     expect(() => parseTopicManifest(manifest(), ID_B)).toThrow("do not match");
+  });
+
+  test("defaults a legacy manifest without setupCommandsRun to already handled", () => {
+    const legacy = manifest();
+    const { setupCommandsRun: _run, ...setup } = legacy.setup;
+    expect(parseTopicManifest({ ...legacy, setup }).setup.setupCommandsRun).toBe(true);
+  });
+
+  test("parses and validates repository recipes", () => {
+    const withRecipe = {
+      ...config(),
+      repositories: { "LedgerHQ/revault": { setupCommands: ["pnpm install", "pnpm build"] } },
+    };
+    expect(parseWorkConfig(withRecipe).repositories["LedgerHQ/revault"]?.setupCommands).toEqual([
+      "pnpm install",
+      "pnpm build",
+    ]);
+    expect(parseWorkConfig(config()).repositories).toEqual({});
+    // The action is added with an allow default for configurations created before recipes.
+    const legacy = config();
+    delete legacy.policies.defaults["topic.run-setup"];
+    expect(parseWorkConfig(legacy).policies.defaults["topic.run-setup"]).toBe("allow");
+    for (const bad of [
+      { "not-a-repo": { setupCommands: [] } },
+      { "LedgerHQ/revault": { setupCommands: "pnpm install" } },
+      { "LedgerHQ/revault": { setupCommands: [""] } },
+      { "LedgerHQ/revault": { setupCommands: [42] } },
+    ]) {
+      expect(() => parseWorkConfig({ ...config(), repositories: bad })).toThrow(WorkDataError);
+    }
   });
 });
 
@@ -187,6 +223,17 @@ describe("configuration persistence", () => {
     await createConfigStore(paths).save(config());
     expect((await stat(paths.config)).mode & 0o777).toBe(0o600);
     expect(await createConfigStore(paths).load()).toEqual(config());
+  });
+
+  test("round-trips repository recipes", async () => {
+    const paths = await temporaryPaths();
+    const store = createConfigStore(paths);
+    const withRecipe: WorkConfig = {
+      ...config(),
+      repositories: { "LedgerHQ/revault": { setupCommands: ["pnpm install", "pnpm build"] } },
+    };
+    await store.save(withRecipe);
+    expect((await createConfigStore(paths).load())?.repositories).toEqual(withRecipe.repositories);
   });
 });
 

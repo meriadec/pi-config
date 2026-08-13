@@ -71,7 +71,12 @@ class FakeProvisioner {
       }
       topic = await this.topics.update(topic.id, (current) => ({
         ...current,
-        setup: { state: "ready", repositoryAvailable: true, worktreeCreated: true },
+        setup: {
+          state: "ready",
+          repositoryAvailable: true,
+          worktreeCreated: true,
+          setupCommandsRun: true,
+        },
         worktreePath: join(request.workBase, "wt-owned", current.branch),
       }));
       return { status: "ready", topic };
@@ -164,6 +169,7 @@ function configuration(
     version: 1,
     workBase,
     policies: policies(overrides),
+    repositories: {},
   };
 }
 
@@ -538,7 +544,7 @@ describe("Topic Service daemon integration", () => {
       });
       await item.topics.update(topic.id, (current) => ({
         ...current,
-        setup: { state: "provisioning", ...checkpoint },
+        setup: { state: "provisioning", setupCommandsRun: false, ...checkpoint },
       }));
     }
     const provisioner = new FakeProvisioner(item.topics);

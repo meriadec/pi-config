@@ -64,7 +64,12 @@ async function world(): Promise<World> {
   const worktree = join(root, "worktree");
   topic = await topics.update(topic.id, (current) => ({
     ...current,
-    setup: { state: "ready", repositoryAvailable: true, worktreeCreated: true },
+    setup: {
+      state: "ready",
+      repositoryAvailable: true,
+      worktreeCreated: true,
+      setupCommandsRun: true,
+    },
     worktreePath: worktree,
   }));
   const desktop = new FakeDesktop();

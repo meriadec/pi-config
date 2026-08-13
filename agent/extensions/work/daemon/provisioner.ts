@@ -1,4 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
+import { userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   WorkDataError,
@@ -23,14 +24,25 @@ import type {
 } from "./process-runner.ts";
 
 const PROCESS_TIMEOUT_MS = 30_000;
+const SETUP_COMMAND_TIMEOUT_MS = 300_000;
 const MAX_PROCESS_OUTPUT_BYTES = 64 * 1024;
 const MAX_WT_JSON_BYTES = 64 * 1024;
+
+/** Live progress of one Setup command as the Repository Recipe runs. */
+export interface SetupProgress {
+  index: number;
+  total: number;
+  command: string;
+}
 
 export interface ProvisionRequest {
   topicId: string;
   workBase: string;
   policies: WorkPolicies;
+  /** The repository's Repository Recipe, run only when a fresh Worktree is created. */
+  recipe?: readonly string[];
   approvedActions?: ReadonlySet<ActionId>;
+  onSetupProgress?: (progress: SetupProgress) => void;
   signal?: AbortSignal;
 }
 
@@ -38,7 +50,7 @@ export type ProvisionResult =
   | { status: "ready"; topic: TopicManifest }
   | {
       status: "confirmation-required";
-      action: "repository.clone" | "topic.create-worktree";
+      action: "repository.clone" | "topic.create-worktree" | "topic.run-setup";
       policy: ResolvedPolicy;
       topic: TopicManifest;
     }
@@ -49,7 +61,9 @@ export interface TopicProvisionerOptions {
   topics: TopicStore;
   runner?: ProcessRunner;
   ghCommand?: string;
+  setupShell?: string;
   processTimeoutMs?: number;
+  setupCommandTimeoutMs?: number;
   maxProcessOutputBytes?: number;
 }
 
@@ -58,7 +72,9 @@ export class TopicProvisioner {
   private readonly topics: TopicStore;
   private readonly runner: ProcessRunner;
   private readonly ghCommand: string;
+  private readonly setupShell: string;
   private readonly processTimeoutMs: number;
+  private readonly setupCommandTimeoutMs: number;
   private readonly maxProcessOutputBytes: number;
   private readonly queues = new Map<string, Promise<void>>();
 
@@ -66,7 +82,9 @@ export class TopicProvisioner {
     this.topics = options.topics;
     this.runner = options.runner ?? new LocalProcessRunner();
     this.ghCommand = options.ghCommand ?? "gh";
+    this.setupShell = options.setupShell ?? defaultLoginShell();
     this.processTimeoutMs = options.processTimeoutMs ?? PROCESS_TIMEOUT_MS;
+    this.setupCommandTimeoutMs = options.setupCommandTimeoutMs ?? SETUP_COMMAND_TIMEOUT_MS;
     this.maxProcessOutputBytes = options.maxProcessOutputBytes ?? MAX_PROCESS_OUTPUT_BYTES;
   }
 
@@ -79,6 +97,9 @@ export class TopicProvisioner {
       ...current,
       setup: withoutReason(current.setup, "provisioning"),
     }));
+    // Whether a prior run already passed the Worktree checkpoint. This decides,
+    // exactly once, whether the Repository Recipe applies to this Worktree.
+    const worktreeWasCreated = topic.setup.worktreeCreated;
 
     try {
       this.assertNotCancelled(request.signal);
@@ -120,7 +141,9 @@ export class TopicProvisioner {
       }));
 
       let worktreePath = await this.findTopicWorktree(baseCheckout, topic.branch, request.signal);
+      let createdThisRun = false;
       if (worktreePath === undefined) {
+        createdThisRun = true;
         const branchExists = await this.branchExists(baseCheckout, topic.branch, request.signal);
         const policyResult = await this.enforcePolicy("topic.create-worktree", topic, request);
         if (policyResult !== undefined) return policyResult;
@@ -166,9 +189,18 @@ export class TopicProvisioner {
         repository.fullName,
         request.signal,
       );
+      // Decide the Recipe outcome once, on the first pass reaching this checkpoint.
+      // A Worktree that already existed here (not created by us) skips the Recipe
+      // for good; a Worktree we create runs it (and retries re-run it until success).
+      const setupCommandsRun = worktreeWasCreated ? topic.setup.setupCommandsRun : !createdThisRun;
       topic = await this.topics.update(topic.id, (current) => ({
         ...current,
-        setup: { ...current.setup, repositoryAvailable: true, worktreeCreated: true },
+        setup: {
+          ...current.setup,
+          repositoryAvailable: true,
+          worktreeCreated: true,
+          setupCommandsRun: worktreeWasCreated ? current.setup.setupCommandsRun : setupCommandsRun,
+        },
         worktreePath,
       }));
       // Validate the durable value, not only the process response, before ready is persisted.
@@ -179,6 +211,14 @@ export class TopicProvisioner {
         repository.fullName,
         request.signal,
       );
+      if (!topic.setup.setupCommandsRun) {
+        const recipeResult = await this.runRecipe(topic, topic.worktreePath!, request);
+        if (recipeResult !== undefined) return recipeResult;
+        topic = await this.topics.update(topic.id, (current) => ({
+          ...current,
+          setup: { ...current.setup, setupCommandsRun: true },
+        }));
+      }
       topic = await this.topics.update(topic.id, (current) => ({
         ...current,
         setup: withoutReason(current.setup, "ready"),
@@ -194,8 +234,44 @@ export class TopicProvisioner {
     }
   }
 
+  /**
+   * Run the Repository Recipe line by line in the fresh Worktree. Returns a
+   * ProvisionResult only when a policy blocks the run; otherwise resolves once
+   * every Setup command succeeded, or throws to fail the whole provision.
+   */
+  private async runRecipe(
+    topic: TopicManifest,
+    worktreePath: string,
+    request: ProvisionRequest,
+  ): Promise<ProvisionResult | undefined> {
+    const recipe = request.recipe ?? [];
+    if (recipe.length === 0) return undefined;
+    const policyResult = await this.enforcePolicy("topic.run-setup", topic, request);
+    if (policyResult !== undefined) return policyResult;
+    for (let index = 0; index < recipe.length; index += 1) {
+      const command = recipe[index]!;
+      this.assertNotCancelled(request.signal);
+      request.onSetupProgress?.({ index, total: recipe.length, command });
+      const result = await this.run({
+        command: this.setupShell,
+        args: ["-lc", command],
+        cwd: worktreePath,
+        timeoutMs: this.setupCommandTimeoutMs,
+        signal: request.signal,
+      });
+      if (result.status !== "completed") throw controlError(result.status, "Setup command");
+      if (result.exitCode !== 0) {
+        throw failure(
+          "setup-command-failed",
+          processFailure(`Setup command failed: ${command}`, result),
+        );
+      }
+    }
+    return undefined;
+  }
+
   private async enforcePolicy(
-    action: "repository.clone" | "topic.create-worktree",
+    action: "repository.clone" | "topic.create-worktree" | "topic.run-setup",
     topic: TopicManifest,
     request: ProvisionRequest,
   ): Promise<ProvisionResult | undefined> {
@@ -333,13 +409,14 @@ export class TopicProvisioner {
     command: string;
     args: readonly string[];
     cwd: string;
+    timeoutMs?: number;
     signal?: AbortSignal | undefined;
   }): Promise<ProcessResult> {
     const bounded: ProcessRequest = {
       command: request.command,
       args: request.args,
       cwd: request.cwd,
-      timeoutMs: this.processTimeoutMs,
+      timeoutMs: request.timeoutMs ?? this.processTimeoutMs,
       maxOutputBytes: this.maxProcessOutputBytes,
     };
     if (request.signal !== undefined) bounded.signal = request.signal;
@@ -417,7 +494,18 @@ function withoutReason(setup: TopicSetup, state: TopicSetup["state"]): TopicSetu
     state,
     repositoryAvailable: setup.repositoryAvailable,
     worktreeCreated: setup.worktreeCreated,
+    setupCommandsRun: setup.setupCommandsRun,
   };
+}
+
+function defaultLoginShell(): string {
+  try {
+    const shell = userInfo().shell;
+    if (typeof shell === "string" && shell.length > 0) return shell;
+  } catch {
+    // Fall through to the POSIX default below.
+  }
+  return "/bin/sh";
 }
 
 async function assertDirectory(path: string, message: string): Promise<void> {

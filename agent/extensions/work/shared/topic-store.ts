@@ -125,7 +125,12 @@ export function createTopicStore(paths: WorkPaths, options: TopicStoreOptions = 
             name: input.name,
             branch: input.branch,
             repository: input.repository,
-            setup: { state: "provisioning", repositoryAvailable: false, worktreeCreated: false },
+            setup: {
+              state: "provisioning",
+              repositoryAvailable: false,
+              worktreeCreated: false,
+              setupCommandsRun: false,
+            },
             worktreePath: null,
             mainAgent: { sessionId: id, sessionFile: null },
             createdAt: timestamp,

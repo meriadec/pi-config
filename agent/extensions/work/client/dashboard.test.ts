@@ -46,6 +46,7 @@ function topic(id: string, name: string, setup: TopicManifest["setup"]["state"] 
       state: setup,
       repositoryAvailable: setup === "ready",
       worktreeCreated: setup === "ready",
+      setupCommandsRun: setup === "ready",
       ...(setup === "setup-failed" ? { reason: "wt failed" } : {}),
     },
     worktreePath: setup === "ready" ? `/work/${name}` : null,

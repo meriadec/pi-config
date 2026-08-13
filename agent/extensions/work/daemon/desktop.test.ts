@@ -498,13 +498,19 @@ async function serviceWorld(policy: ActionPolicy, ready: boolean) {
     version: 1,
     workBase: rootPath,
     policies: { defaults, repositories: {}, topics: {} },
+    repositories: {},
   });
   const topics = createTopicStore(paths);
   let topic = await topics.create({ name: "Topic", branch: "topic", repository: "owner/repo" });
   if (ready) {
     topic = await topics.update(topic.id, (current) => ({
       ...current,
-      setup: { state: "ready", repositoryAvailable: true, worktreeCreated: true },
+      setup: {
+        state: "ready",
+        repositoryAvailable: true,
+        worktreeCreated: true,
+        setupCommandsRun: true,
+      },
       worktreePath: join(rootPath, "worktree"),
     }));
   }

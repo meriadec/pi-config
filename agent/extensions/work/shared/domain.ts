@@ -6,11 +6,16 @@ export const WORK_DATA_VERSION = 1 as const;
 export const ACTION_IDS = [
   "repository.clone",
   "topic.create-worktree",
+  "topic.run-setup",
   "terminal.open",
   "agent.open",
   "agent.reset",
   "topic.delete",
 ] as const;
+
+/** Upper bounds that keep a Repository Recipe small and its lines shell-safe. */
+export const MAX_SETUP_COMMANDS = 50;
+export const MAX_SETUP_COMMAND_LENGTH = 4_000;
 
 export type ActionId = (typeof ACTION_IDS)[number];
 export type ActionPolicy = "allow" | "ask" | "deny";
@@ -22,10 +27,16 @@ export interface WorkPolicies {
   topics: Record<string, ActionPolicyMap>;
 }
 
+/** The ordered Setup commands declared for one repository, run to prepare a fresh Worktree. */
+export interface RepositoryRecipe {
+  setupCommands: string[];
+}
+
 export interface WorkConfig {
   version: typeof WORK_DATA_VERSION;
   workBase?: string;
   policies: WorkPolicies;
+  repositories: Record<string, RepositoryRecipe>;
 }
 
 export interface RepositoryReference {
@@ -47,6 +58,8 @@ export interface TopicSetup {
   state: SetupState;
   repositoryAvailable: boolean;
   worktreeCreated: boolean;
+  /** The Repository Recipe has run (or was decided unnecessary) for this Worktree. */
+  setupCommandsRun: boolean;
   reason?: string;
 }
 
@@ -237,6 +250,8 @@ export function parseWorkConfig(input: unknown): WorkConfig {
   const defaults = parsePolicyMap(policies["defaults"], "default");
   // Version 1 configurations created before Main Agent reset default to confirmation.
   defaults["agent.reset"] ??= "ask";
+  // Configurations created before Repository Recipes default this authored-command action to allow.
+  defaults["topic.run-setup"] ??= "allow";
   if (ACTION_IDS.some((action) => defaults[action] === undefined)) {
     throw new WorkDataError(
       "invalid-config",
@@ -250,9 +265,49 @@ export function parseWorkConfig(input: unknown): WorkConfig {
       repositories: parsePolicyOverrides(policies["repositories"], "repository"),
       topics: parsePolicyOverrides(policies["topics"], "topic"),
     },
+    repositories: parseRepositoryRecipes(value["repositories"]),
   };
   if (workBase !== undefined) parsed.workBase = workBase;
   return parsed;
+}
+
+function parseRepositoryRecipes(input: unknown): Record<string, RepositoryRecipe> {
+  if (input === undefined) return {};
+  const value = object(input, "Configuration repositories must be an object.");
+  const result: Record<string, RepositoryRecipe> = {};
+  for (const [key, recipe] of Object.entries(value)) {
+    try {
+      parseRepository(key);
+    } catch {
+      throw new WorkDataError("invalid-config", "A repository recipe key is not owner/repo.");
+    }
+    result[key] = parseRepositoryRecipe(recipe);
+  }
+  return result;
+}
+
+function parseRepositoryRecipe(input: unknown): RepositoryRecipe {
+  const value = object(input, "A repository recipe must be an object.");
+  const commands = value["setupCommands"];
+  if (!Array.isArray(commands)) {
+    throw new WorkDataError(
+      "invalid-config",
+      "A repository recipe setupCommands must be an array.",
+    );
+  }
+  if (commands.length > MAX_SETUP_COMMANDS) {
+    throw new WorkDataError("invalid-config", "A repository recipe has too many setup commands.");
+  }
+  const setupCommands = commands.map((command) => {
+    if (typeof command !== "string" || command.trim().length === 0) {
+      throw new WorkDataError("invalid-config", "A setup command must be a non-empty string.");
+    }
+    if (command.length > MAX_SETUP_COMMAND_LENGTH) {
+      throw new WorkDataError("invalid-config", "A setup command is too long.");
+    }
+    return command;
+  });
+  return { setupCommands };
 }
 
 export function parseTopicManifest(input: unknown, expectedId?: string): TopicManifest {
@@ -275,7 +330,7 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
   const setupValue = object(value["setup"], "Topic setup must be an object.");
   exactKeys(
     setupValue,
-    new Set(["state", "repositoryAvailable", "worktreeCreated", "reason"]),
+    new Set(["state", "repositoryAvailable", "worktreeCreated", "setupCommandsRun", "reason"]),
     "Topic setup",
   );
   const state = parseSetupState(setupValue["state"]);
@@ -300,6 +355,12 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
     state,
     repositoryAvailable: boolean(setupValue["repositoryAvailable"], "repositoryAvailable"),
     worktreeCreated: boolean(setupValue["worktreeCreated"], "worktreeCreated"),
+    // A manifest predating Repository Recipes has no flag; its Worktree already
+    // exists, so the Recipe is treated as already handled and never runs.
+    setupCommandsRun:
+      setupValue["setupCommandsRun"] === undefined
+        ? true
+        : boolean(setupValue["setupCommandsRun"], "setupCommandsRun"),
   };
   if (reason !== undefined) setup.reason = reason;
 

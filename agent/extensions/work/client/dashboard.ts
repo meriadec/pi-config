@@ -568,7 +568,7 @@ function renderList(state: DashboardState, width: number, height: number): strin
   }
   const operation = state.operations.find((item) => item.topicId === state.selectedTopicId);
   const status = operation
-    ? `${operation.kind}: ${operation.state}`
+    ? `${operation.kind}: ${operation.detail ?? operation.state}`
     : (state.message ?? `${state.topics.length} Topic${state.topics.length === 1 ? "" : "s"}`);
   while (lines.length < Math.max(1, height - 2)) lines.push("");
   lines.push(truncateToWidth(status, width));
@@ -612,17 +612,17 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
   const prefix = selected ? (state.focus === "list" ? "> " : "* ") : "  ";
   const agent = state.mainAgents.find((item) => item.topicId === topic.id)?.state ?? "stopped";
   const pullRequest = state.pullRequests[topic.id];
+  // A live Repository Recipe phase (setup N/M) replaces the durable setup state.
+  const operationDetail = state.operations.find((item) => item.topicId === topic.id)?.detail;
+  const setupCell = operationDetail ?? topic.setup.state;
   if (width < 72) {
     const link = pullRequest === undefined ? "" : ` · ${pullRequestCell(pullRequest)}`;
-    return truncateToWidth(
-      `${prefix}${topic.name} · ${topic.setup.state} · ${agent}${link}`,
-      width,
-    );
+    return truncateToWidth(`${prefix}${topic.name} · ${setupCell} · ${agent}${link}`, width);
   }
   const nameWidth = Math.max(12, Math.floor(width * 0.25));
   const repoWidth = Math.max(18, Math.floor(width * 0.3));
   return truncateToWidth(
-    `${prefix}${pad(topic.name, nameWidth)} ${pad(topic.repository, repoWidth)} ${pad(pullRequestCell(pullRequest), 18)} ${pad(topic.setup.state, 14)} ${agent}`,
+    `${prefix}${pad(topic.name, nameWidth)} ${pad(topic.repository, repoWidth)} ${pad(pullRequestCell(pullRequest), 18)} ${pad(setupCell, 14)} ${agent}`,
     width,
   );
 }
@@ -643,6 +643,7 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
     agent?.reason ??
     state.diagnostics.find((item) => item.topicId === topic.id)?.message;
   const actions = topicActions(state);
+  const setupDetail = state.operations.find((item) => item.topicId === topic.id)?.detail;
   return fitLines(
     [
       state.focus === "detail" ? "> DETAIL" : "  DETAIL",
@@ -654,7 +655,7 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
         ? []
         : [`Pull Request: ${pullRequestCell(state.pullRequests[topic.id])}`]),
       `Worktree: ${topic.worktreePath ?? "not ready"}`,
-      `Setup: ${topic.setup.state}`,
+      `Setup: ${setupDetail ?? topic.setup.state}`,
       `Main Agent: ${agent?.state ?? "stopped"}`,
       `Workspace: ${state.workspaces[topic.id] ?? "not observable"}`,
       ...(diagnostic === undefined ? [] : [`Diagnostic: ${diagnostic}`]),

@@ -86,7 +86,21 @@ function mergeConfig(
     ),
     topics: mergeOverrideMaps(config.policies.topics, record(rawPolicies["topics"])),
   };
+  if (Object.keys(config.repositories).length === 0) delete result["repositories"];
+  else result["repositories"] = mergeRecipes(record(raw?.["repositories"]), config.repositories);
   return result;
+}
+
+function mergeRecipes(
+  raw: Record<string, unknown>,
+  current: Record<string, { setupCommands: string[] }>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(current).map(([key, recipe]) => [
+      key,
+      { ...record(raw[key]), setupCommands: [...recipe.setupCommands] },
+    ]),
+  );
 }
 
 function mergeOverrideMaps(

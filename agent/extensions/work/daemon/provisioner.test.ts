@@ -32,9 +32,19 @@ class FakeRunner implements ProcessRunner {
   wtResult: ProcessResult | undefined = undefined;
   onClone: (() => Promise<void>) | undefined = undefined;
   onWt: (() => Promise<void>) | undefined = undefined;
+  readonly setupCalls: { command: string; cwd: string; timeoutMs: number }[] = [];
+  setupResults: ProcessResult[] = [];
 
   async run(request: ProcessRequest): Promise<ProcessResult> {
     this.requests.push(request);
+    if (request.command === "setup-shell") {
+      this.setupCalls.push({
+        command: request.args[1] ?? "",
+        cwd: request.cwd,
+        timeoutMs: request.timeoutMs,
+      });
+      return this.setupResults.shift() ?? complete();
+    }
     if (request.command === "gh") {
       await this.onClone?.();
       return this.cloneResult ?? complete();
@@ -241,7 +251,12 @@ describe("wt provisioning and durable recovery", () => {
     const result = await provision(item);
     expect(result.status).toBe("ready");
     expect(await item.topics.load(ID)).toMatchObject({
-      setup: { state: "ready", repositoryAvailable: true, worktreeCreated: true },
+      setup: {
+        state: "ready",
+        repositoryAvailable: true,
+        worktreeCreated: true,
+        setupCommandsRun: true,
+      },
       worktreePath: item.worktree,
     });
     const wt = item.runner.requests.find((request) => request.command === "wt");
@@ -312,6 +327,90 @@ describe("wt provisioning and durable recovery", () => {
     expect((await provision(item)).status).toBe("ready");
     const wt = item.runner.requests.find((request) => request.command === "wt");
     expect(wt?.args).toEqual(["switch", "feat-test", "--format", "json"]);
+  });
+});
+
+describe("repository recipes", () => {
+  const recipe = ["pnpm install", "pnpm build", "cp .env.sample .env"];
+
+  async function recipeWorld(): Promise<TestWorld> {
+    const item = await world();
+    item.provisioner = new TopicProvisioner({
+      topics: item.topics,
+      runner: item.runner,
+      setupShell: "setup-shell",
+    });
+    return item;
+  }
+
+  function provisionRecipe(
+    item: TestWorld,
+    options: { recipe?: readonly string[]; policy?: WorkPolicies } = {},
+  ) {
+    const progress: string[] = [];
+    const result = item.provisioner.provision({
+      topicId: ID,
+      workBase: item.workBase,
+      policies: options.policy ?? policies(),
+      recipe: options.recipe ?? recipe,
+      onSetupProgress: (step) => progress.push(`${step.index + 1}/${step.total}`),
+    });
+    return { result, progress };
+  }
+
+  test("runs the recipe line by line in the fresh worktree with progress", async () => {
+    const item = await recipeWorld();
+    const { result, progress } = provisionRecipe(item);
+    expect((await result).status).toBe("ready");
+    expect(item.runner.setupCalls.map((call) => call.command)).toEqual(recipe);
+    expect(item.runner.setupCalls.every((call) => call.cwd === item.worktree)).toBeTrue();
+    expect(item.runner.setupCalls[0]?.timeoutMs).toBe(300_000);
+    expect(progress).toEqual(["1/3", "2/3", "3/3"]);
+    expect((await item.topics.load(ID)).setup.setupCommandsRun).toBeTrue();
+  });
+
+  test("fails fast on the first non-zero setup command and retries the whole recipe", async () => {
+    const item = await recipeWorld();
+    item.runner.setupResults = [complete(), complete("", 2)];
+    const failed = await provisionRecipe(item).result;
+    expect(failed.status).toBe("failed");
+    if (failed.status === "failed") expect(failed.reason).toContain("pnpm build");
+    expect(item.runner.setupCalls).toHaveLength(2);
+    const reloaded = await item.topics.load(ID);
+    expect(reloaded.setup.state).toBe("setup-failed");
+    expect(reloaded.setup.setupCommandsRun).toBeFalse();
+
+    // Retry Setup re-runs the whole recipe from the top on the existing worktree.
+    item.runner.setupResults = [];
+    item.runner.setupCalls.length = 0;
+    expect((await provisionRecipe(item).result).status).toBe("ready");
+    expect(item.runner.setupCalls.map((call) => call.command)).toEqual(recipe);
+  });
+
+  test("never runs the recipe on a pre-existing worktree", async () => {
+    const item = await recipeWorld();
+    await mkdir(item.worktree, { recursive: true });
+    item.runner.listedWorktree = true;
+    item.runner.branchExists = true;
+    expect((await provisionRecipe(item).result).status).toBe("ready");
+    expect(item.runner.setupCalls).toHaveLength(0);
+    expect((await item.topics.load(ID)).setup.setupCommandsRun).toBeTrue();
+  });
+
+  test("an empty recipe is a no-op that reaches ready", async () => {
+    const item = await recipeWorld();
+    expect((await provisionRecipe(item, { recipe: [] }).result).status).toBe("ready");
+    expect(item.runner.setupCalls).toHaveLength(0);
+    expect((await item.topics.load(ID)).setup.setupCommandsRun).toBeTrue();
+  });
+
+  test("a denied run-setup policy fails the provision before any command", async () => {
+    const item = await recipeWorld();
+    const denied = await provisionRecipe(item, {
+      policy: policies({ "topic.run-setup": "deny" }),
+    }).result;
+    expect(denied).toMatchObject({ status: "denied", action: "topic.run-setup" });
+    expect(item.runner.setupCalls).toHaveLength(0);
   });
 });
 

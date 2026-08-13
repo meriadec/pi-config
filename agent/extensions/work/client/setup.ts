@@ -58,6 +58,7 @@ export function defaultWorkConfig(workBase: string): WorkConfig {
       repositories: {},
       topics: {},
     },
+    repositories: {},
   };
 }
 
