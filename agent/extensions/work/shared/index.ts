@@ -1,3 +1,4 @@
+export * from "./affiliation-store.ts";
 export * from "./atomic-json.ts";
 export * from "./config-store.ts";
 export * from "./domain.ts";

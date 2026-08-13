@@ -46,6 +46,7 @@ The Main Agent starts inside your interactive login shell (`os.userInfo().shell`
 User data:
 
 - `~/work/config.json` — version 1 configuration and action policies
+- `~/work/affiliations.json` — durable, non-secret window-affiliation credentials so a live Main Agent window re-attaches after a daemon restart
 - `~/work/topics/<topic-id>/topic.json` — one durable Topic manifest
 - `$XDG_RUNTIME_DIR/pi-workd.sock` — private Unix socket
 - `~/.config/systemd/user/pi-workd.service` — generated user service unit
@@ -67,7 +68,7 @@ Restart the daemon and let it reconcile durable Topics:
 systemctl --user restart pi-workd
 ```
 
-If `/work` cannot connect, confirm that `XDG_RUNTIME_DIR` exists, inspect the two commands above, and check that `gh auth status`, `wt`, `i3-msg`, kitty, and Pi work in the user session. A Topic in `setup-failed` or interrupted `provisioning` can use **Retry Setup**. Restarting the daemon does not make a disconnected Main Agent live; a live agent must register and send heartbeats again.
+If `/work` cannot connect, confirm that `XDG_RUNTIME_DIR` exists, inspect the two commands above, and check that `gh auth status`, `wt`, `i3-msg`, kitty, and Pi work in the user session. A Topic in `setup-failed` or interrupted `provisioning` can use **Retry Setup**. After a daemon restart, a Main Agent window that is still open re-attaches by itself: it holds a durable, non-secret window-affiliation credential (stored in `~/work/affiliations.json`), so its next heartbeat reconnects and adopts its live session. The Topic returns from `stopped` to its live state without any action. If the window was already closed, the Topic stays `stopped` until you start a new Main Agent.
 
 To uninstall only the generated service and socket safely:
 

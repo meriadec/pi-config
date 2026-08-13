@@ -30,6 +30,8 @@ export interface TopicAgentReporterOptions {
   connect?: (socketPath: string) => Promise<AgentClient>;
   /** Sets the Pi session display name, which the footer shows. */
   setSessionName?: (name: string) => void;
+  /** Reports a bounded diagnostic when re-attach fails, for operator visibility. */
+  log?: (message: string) => void;
   heartbeatMs?: number;
   setInterval?: typeof globalThis.setInterval;
   clearInterval?: typeof globalThis.clearInterval;
@@ -56,12 +58,14 @@ export class TopicAgentReporter {
   private shuttingDown = false;
   private readonly connect: (socketPath: string) => Promise<AgentClient>;
   private readonly setSessionName: ((name: string) => void) | undefined;
+  private readonly log: (message: string) => void;
   private readonly heartbeatMs: number;
 
   constructor(options: TopicAgentReporterOptions = {}) {
     this.environment = readTopicAgentEnvironment(options.environment ?? process.env);
     this.connect = options.connect ?? ((path) => WorkClient.connect(path));
     this.setSessionName = options.setSessionName;
+    this.log = options.log ?? ((message) => console.error(`pi-work topic agent: ${message}`));
     this.heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
     this.startTimer = options.setInterval ?? globalThis.setInterval;
     this.stopTimer = options.clearInterval ?? globalThis.clearInterval;
@@ -171,8 +175,10 @@ export class TopicAgentReporter {
         return;
       }
       this.client = client;
-    } catch {
+    } catch (error) {
       // workd will report failed if the bounded heartbeat deadline expires.
+      // Surface the reason so a restart re-attach failure is not silent.
+      this.log(`re-attach failed: ${error instanceof Error ? error.message : "unknown error"}`);
     }
   }
 

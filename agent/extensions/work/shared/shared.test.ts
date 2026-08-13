@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   ACTION_IDS,
   WorkDataError,
+  createAffiliationStore,
   createConfigStore,
   createTopicStore,
   createWorkPaths,
@@ -267,5 +268,33 @@ describe("topic persistence", () => {
     expect(hydration.diagnostics.find((item) => item.topicId === ID_C)?.code).toBe(
       "unsupported-version",
     );
+  });
+});
+
+describe("affiliation persistence", () => {
+  test("round-trips valid entries and rejects malformed ones", async () => {
+    const paths = await temporaryPaths();
+    const store = createAffiliationStore(paths);
+    expect(await store.load()).toEqual(new Map());
+
+    await store.save(
+      new Map([
+        ["window-token", ID_A],
+        ["", ID_B],
+        ["bad-topic-token", "not-a-topic-id"],
+      ]),
+    );
+    // Only the well-formed credential survives; empty tokens and non-topic ids drop.
+    expect(await store.load()).toEqual(new Map([["window-token", ID_A]]));
+  });
+
+  test("ignores a corrupt affiliations file as an empty map", async () => {
+    const paths = await temporaryPaths();
+    await mkdir(join(paths.root), { recursive: true });
+    await writeFile(paths.affiliations, "{not valid json");
+    await expect(createAffiliationStore(paths).load()).rejects.toBeInstanceOf(WorkDataError);
+
+    await writeFile(paths.affiliations, JSON.stringify({ version: 1, affiliations: [] }));
+    expect(await createAffiliationStore(paths).load()).toEqual(new Map());
   });
 });

@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { WorkClient } from "../client/client.ts";
-import { createTopicStore, createWorkPaths } from "../shared/index.ts";
-import type { TopicManifest, TopicStore } from "../shared/index.ts";
+import { createAffiliationStore, createTopicStore, createWorkPaths } from "../shared/index.ts";
+import type { AffiliationStore, TopicManifest, TopicStore } from "../shared/index.ts";
 import type { DesktopController, MainAgentLaunch } from "./desktop.ts";
 import { MainAgentManager } from "./main-agent.ts";
 import { WorkDaemon } from "./server.ts";
@@ -40,6 +40,8 @@ interface World {
   topics: TopicStore;
   topic: TopicManifest;
   desktop: FakeDesktop;
+  affiliations: AffiliationStore;
+  restart(): Promise<MainAgentManager>;
   setNow(value: number): void;
   sweep(): void;
   stoppedTimers(): number;
@@ -51,7 +53,9 @@ async function world(): Promise<World> {
   roots.push(root);
   const runtime = join(root, "runtime");
   await mkdir(runtime, { recursive: true });
-  const topics = createTopicStore(createWorkPaths({ home: join(root, "home"), runtime }));
+  const paths = createWorkPaths({ home: join(root, "home"), runtime });
+  const topics = createTopicStore(paths);
+  const affiliations = createAffiliationStore(paths);
   let topic = await topics.create({
     name: "VG-123",
     branch: "feat-vg-123",
@@ -68,30 +72,39 @@ async function world(): Promise<World> {
   let callback = (): void => undefined;
   let stopped = 0;
   const socketPath = join(runtime, "pi-workd.sock");
-  const manager = new MainAgentManager({
-    topics,
-    desktop,
-    socketPath,
-    now: () => now,
-    generateToken: () => "registration-token",
-    generateAffiliation: () => "window-affiliation",
-    generateSessionId: () => "123e4567-e89b-42d3-a456-426614174099",
-    registrationTtlMs: 100,
-    heartbeatTimeoutMs: 20,
-    setInterval: ((handler: () => void) => {
-      callback = handler;
-      return 1;
-    }) as typeof setInterval,
-    clearInterval: (() => {
-      stopped += 1;
-    }) as typeof clearInterval,
-  });
+  const build = (): MainAgentManager =>
+    new MainAgentManager({
+      topics,
+      desktop,
+      socketPath,
+      affiliations,
+      now: () => now,
+      generateToken: () => "registration-token",
+      generateAffiliation: () => "window-affiliation",
+      generateSessionId: () => "123e4567-e89b-42d3-a456-426614174099",
+      registrationTtlMs: 100,
+      heartbeatTimeoutMs: 20,
+      setInterval: ((handler: () => void) => {
+        callback = handler;
+        return 1;
+      }) as typeof setInterval,
+      clearInterval: (() => {
+        stopped += 1;
+      }) as typeof clearInterval,
+    });
+  const manager = build();
   await manager.start();
   return {
     manager,
     topics,
     topic,
     desktop,
+    affiliations,
+    async restart() {
+      const next = build();
+      await next.start();
+      return next;
+    },
     setNow(value) {
       now = value;
     },
@@ -349,6 +362,43 @@ describe("Main Agent lease", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid-registration" });
     expect((await item.topics.load(other.id)).mainAgent.sessionId).toBe(other.mainAgent.sessionId);
+  });
+
+  test("re-attaches a live window through a durable affiliation after a restart", async () => {
+    const item = await world();
+    await item.manager.open(item.topic);
+    await register(item);
+    // The daemon restarts: the in-memory registration and lease are gone, but
+    // the window still holds its durable affiliation credential.
+    item.manager.stop();
+    const restarted = await item.restart();
+    expect(restarted.snapshot()[0]).toMatchObject({ state: "stopped", connected: false });
+    // The still-live window reconnects and re-registers its current session.
+    // The launch token is no longer valid, so it re-attaches through adoption.
+    const adoptedFile = join(dirnameOfWorktree(item.topic), "session.jsonl");
+    const lease = await restarted.register({
+      connectionId: "reconnect-1",
+      topicId: item.topic.id,
+      sessionId: item.topic.mainAgent.sessionId,
+      sessionFile: adoptedFile,
+      token: "registration-token",
+      affiliationToken: "window-affiliation",
+    });
+    expect(lease).toMatchObject({ state: "idle", connected: true });
+    restarted.stop();
+  });
+
+  test("drops persisted affiliations for topics that no longer exist on restart", async () => {
+    const item = await world();
+    await item.manager.open(item.topic);
+    await register(item);
+    item.manager.stop();
+    // The Topic is deleted while the daemon is down.
+    await item.topics.delete(item.topic.id);
+    const restarted = await item.restart();
+    restarted.stop();
+    // Restart pruned the stale credential, so it is no longer persisted.
+    expect(await item.affiliations.load()).toEqual(new Map());
   });
 
   test("cleans up its daemon timer", async () => {

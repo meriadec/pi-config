@@ -1,5 +1,10 @@
 #!/usr/bin/env bun
-import { createConfigStore, createTopicStore, createWorkPaths } from "../shared/index.ts";
+import {
+  createAffiliationStore,
+  createConfigStore,
+  createTopicStore,
+  createWorkPaths,
+} from "../shared/index.ts";
 import { I3KittyDesktopController } from "./desktop.ts";
 import { MainAgentManager } from "./main-agent.ts";
 import { LocalProcessRunner } from "./process-runner.ts";
@@ -24,7 +29,12 @@ export async function runWorkDaemon(): Promise<void> {
       ? {}
       : { shellCommand: process.env["PI_WORK_SHELL"] }),
   });
-  const mainAgent = new MainAgentManager({ topics, desktop, socketPath: paths.socket });
+  const mainAgent = new MainAgentManager({
+    topics,
+    desktop,
+    socketPath: paths.socket,
+    affiliations: createAffiliationStore(paths),
+  });
   const ghCommand = process.env["PI_WORK_GH_EXECUTABLE"];
   const topicService = new TopicService({
     config: createConfigStore(paths),

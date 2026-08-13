@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { WorkDataError, boundMessage } from "../shared/domain.ts";
-import type { MainAgentState, TopicManifest, TopicStore } from "../shared/index.ts";
+import type {
+  AffiliationStore,
+  MainAgentState,
+  TopicManifest,
+  TopicStore,
+} from "../shared/index.ts";
 import type { DesktopController, MainAgentActionResult } from "./desktop.ts";
 
 const REGISTRATION_TTL_MS = 30_000;
@@ -34,6 +39,8 @@ export interface MainAgentManagerOptions {
   topics: TopicStore;
   desktop: DesktopController;
   socketPath: string;
+  /** Durable window-affiliation store so agents re-attach after a restart. */
+  affiliations?: AffiliationStore;
   now?: () => number;
   generateToken?: () => string;
   generateAffiliation?: () => string;
@@ -68,6 +75,7 @@ export class MainAgentManager {
   async start(): Promise<void> {
     if (this.timer !== undefined) return;
     const hydration = await this.options.topics.list();
+    const known = new Set(hydration.topics.map((topic) => topic.id));
     for (const topic of hydration.topics) {
       if (!this.leases.has(topic.id)) {
         this.leases.set(topic.id, {
@@ -77,6 +85,20 @@ export class MainAgentManager {
           connected: false,
         });
       }
+    }
+    // Rehydrate durable window affiliations so a Main Agent window that outlived
+    // a daemon restart can re-attach through the adoption path. Drop credentials
+    // for Topics that no longer exist and persist the pruned set.
+    if (this.options.affiliations !== undefined) {
+      let pruned = false;
+      const persisted = await this.options.affiliations
+        .load()
+        .catch(() => new Map<string, string>());
+      for (const [token, topicId] of persisted) {
+        if (known.has(topicId)) this.affiliations.set(token, topicId);
+        else pruned = true;
+      }
+      if (pruned) await this.persistAffiliations();
     }
     const start = this.options.setInterval ?? globalThis.setInterval;
     this.timer = start(() => this.sweep(), SWEEP_INTERVAL_MS);
@@ -119,6 +141,7 @@ export class MainAgentManager {
     for (const [token, affiliatedTopic] of this.affiliations) {
       if (affiliatedTopic === topic.id) this.affiliations.delete(token);
     }
+    await this.persistAffiliations();
     const sessionId = (this.options.generateSessionId ?? randomUUID)();
     const updated = await this.options.topics.update(topic.id, (current) => ({
       ...current,
@@ -160,6 +183,16 @@ export class MainAgentManager {
       if (result.kind !== "launched") {
         this.registrations.delete(token);
         this.affiliations.delete(affiliationToken);
+      } else {
+        // A launch anchors exactly one live window per Topic. Drop any prior
+        // affiliation for this Topic (whose window is gone) and persist the new
+        // credential so it survives a daemon restart.
+        for (const [existing, affiliatedTopic] of this.affiliations) {
+          if (affiliatedTopic === topic.id && existing !== affiliationToken) {
+            this.affiliations.delete(existing);
+          }
+        }
+        await this.persistAffiliations();
       }
       if (result.kind === "focused" && previous !== undefined) {
         this.change(topic.id, { ...previous });
@@ -315,6 +348,13 @@ export class MainAgentManager {
       throw new WorkDataError("agent-not-registered", "Main Agent connection is not registered.");
     }
     return agent;
+  }
+
+  private async persistAffiliations(): Promise<void> {
+    if (this.options.affiliations === undefined) return;
+    // Persistence must never break a lease operation; the in-memory map stays
+    // authoritative for the running daemon and is retried on the next change.
+    await this.options.affiliations.save(new Map(this.affiliations)).catch(() => undefined);
   }
 
   private fail(topicId: string, reason: string): void {
