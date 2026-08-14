@@ -61,6 +61,8 @@ export interface DashboardState {
   baseCheckouts: Readonly<Record<string, string>>;
   pullRequests: Readonly<Record<string, PullRequestRef>>;
   unavailableActions: Readonly<Record<string, readonly TopicActionId[]>>;
+  /** Animation cursor for the thinking-status shimmer. Advanced by a UI timer only. */
+  shimmerPhase: number;
   wizard?: TopicWizardState;
   rename?: TopicRenameState;
   confirmation?: DashboardConfirmation;
@@ -104,7 +106,18 @@ export function initialDashboardState(): DashboardState {
     baseCheckouts: {},
     pullRequests: {},
     unavailableActions: {},
+    shimmerPhase: 0,
   };
+}
+
+/** True while at least one Main Agent is thinking, so the shimmer timer must run. */
+export function hasThinkingAgent(state: DashboardState): boolean {
+  return state.mainAgents.some((agent) => agent.state === "thinking");
+}
+
+/** Advances the shimmer cursor by one step, wrapping to keep the number bounded. */
+export function advanceShimmer(state: DashboardState): DashboardState {
+  return { ...state, shimmerPhase: (state.shimmerPhase + 1) % SHIMMER_PERIOD };
 }
 
 export function dashboardViewModel(state: DashboardState): DashboardViewModel {
@@ -691,7 +704,13 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
   // Dim only the status word for an idle Main Agent; the Topic stays active and bubbled up.
   // A Main Agent waiting for a human stands out in yellow.
   const agentCell =
-    agent === "idle" ? dim(agent) : agent === "waiting-for-human" ? yellow(agent) : agent;
+    agent === "idle"
+      ? dim(agent)
+      : agent === "waiting-for-human"
+        ? yellow(agent)
+        : agent === "thinking"
+          ? shimmer(agent, state.shimmerPhase)
+          : agent;
   const pullRequest = state.pullRequests[topic.id];
   // A live Repository Recipe phase (setup N/M) replaces the durable setup state.
   // A settled "ready" Topic shows a blank cell; only intermediate states matter.
@@ -718,9 +737,18 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
   return selected ? highlight(styled, width) : styled;
 }
 
+// truncateToWidth emits a full SGR reset (\x1b[0m) at truncation points (around the
+// ellipsis), which cancels any ambient attribute wrapped around the line. Reopen the
+// ambient sequence after every embedded reset so the style also covers the ellipsis
+// and trailing padding.
+const SGR_RESET = "\x1b[0m";
+function reopenAfterReset(text: string, open: string): string {
+  return text.split(SGR_RESET).join(SGR_RESET + open);
+}
+
 /** Wraps a fully truncated line in the terminal faint (dim) attribute. */
 function dim(text: string): string {
-  return `\x1b[2m${text}\x1b[22m`;
+  return `\x1b[2m${reopenAfterReset(text, "\x1b[2m")}\x1b[22m`;
 }
 
 // A subtle row highlight one shade lighter than the terminal background. The value is
@@ -728,8 +756,9 @@ function dim(text: string): string {
 // "current line" tint. The row is padded to the full list width first so the highlight
 // spans the whole line, then closed with a background reset.
 function highlight(row: string, width: number): string {
-  const padded = row + " ".repeat(Math.max(0, width - visibleWidth(row)));
-  return `\x1b[48;2;59;66;82m${padded}\x1b[49m`;
+  const open = "\x1b[48;2;59;66;82m";
+  const padded = reopenAfterReset(row, open) + " ".repeat(Math.max(0, width - visibleWidth(row)));
+  return `${open}${padded}\x1b[49m`;
 }
 
 /** Colours a status word yellow. */
@@ -740,6 +769,31 @@ function yellow(text: string): string {
 /** Colours a status word a light violet. */
 function purple(text: string): string {
   return `\x1b[38;5;183m${text}\x1b[39m`;
+}
+
+// A brightness ramp swept across the thinking word, brightest cell first.
+const SHIMMER_BASE = "\x1b[38;5;146m";
+const SHIMMER_COLORS = ["\x1b[38;5;231m", "\x1b[38;5;189m", "\x1b[38;5;183m"] as const;
+// A trailing gap after the word so each sweep restarts with a clear pause.
+const SHIMMER_TRAIL = 4;
+
+// Only the "thinking" status shimmers, so the sweep period is its length plus the trail.
+// The wrap must land exactly on this period, or the cursor jumps mid-sweep on every wrap.
+export const SHIMMER_PERIOD = "thinking".length + SHIMMER_TRAIL;
+
+/** Sweeps a bright highlight across the letters of a status word for the given phase. */
+function shimmer(text: string, phase: number): string {
+  const chars = [...text];
+  const period = chars.length + SHIMMER_TRAIL;
+  const head = phase % period;
+  return chars
+    .map((char, index) => {
+      const distance = head - index;
+      const colour =
+        distance >= 0 && distance < SHIMMER_COLORS.length ? SHIMMER_COLORS[distance] : SHIMMER_BASE;
+      return `${colour}${char}\x1b[39m`;
+    })
+    .join("");
 }
 
 /** Renders the PR number as an underlined OSC 8 hyperlink plus its short status. */
@@ -773,7 +827,7 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
         : [`Pull Request: ${pullRequestCell(state.pullRequests[topic.id])}`]),
       `Worktree: ${topic.worktreePath ?? "not ready"}`,
       `Setup: ${setupDetail ?? topic.setup.state}`,
-      `Main Agent: ${agent?.state ?? "stopped"}`,
+      `Main Agent: ${agent?.state === "thinking" ? shimmer(agent.state, state.shimmerPhase) : (agent?.state ?? "stopped")}`,
       `Workspace: ${state.workspaces[topic.id] ?? "not observable"}`,
       ...(diagnostic === undefined ? [] : [`Diagnostic: ${diagnostic}`]),
       "",

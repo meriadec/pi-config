@@ -14,6 +14,9 @@ import {
   handleDashboardInput,
   hydrateDashboard,
   initialDashboardState,
+  advanceShimmer,
+  hasThinkingAgent,
+  SHIMMER_PERIOD,
   reduceDashboardEvent,
   renderDashboard,
   defaultBranchForTopicName,
@@ -352,6 +355,66 @@ describe("dashboard state and navigation", () => {
     expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B]);
   });
 
+  test("keeps the ambient style across the truncation ellipsis on a narrow, selected row", () => {
+    // A long name at a narrow width forces truncateToWidth to insert an ellipsis. The
+    // library emits a bare SGR reset (\x1b[0m) around that ellipsis, which would cancel
+    // the ambient dim and highlight styles unless they are reopened after each reset.
+    const longName = "AlphaTopicWithAVeryLongNameThatOverflows";
+    let state = hydrateDashboard(initialDashboardState(), snapshot([topic(ID_A, longName)]));
+    state = { ...state, selectedTopicId: ID_A };
+    // The inactive (stopped Main Agent) selected row is both dimmed and highlighted.
+    const row = renderDashboard(state, 30, 24).find((line) => line.includes("Alpha"));
+    expect(row).toBeDefined();
+    // Every embedded full reset must reopen both the highlight background and the dim
+    // attribute, so no reset is left bare (which would drop the colour past the ellipsis).
+    const RESET = "\x1b[0m";
+    const reopenCodes = ["\x1b[48;2;59;66;82m", "\x1b[2m", "\x1b[49m", "\x1b[22m"];
+    const segments = row!.split(RESET);
+    // Each split point (except the trailing one) is immediately followed by a reopen code.
+    for (const after of segments.slice(1)) {
+      expect(reopenCodes.some((code) => after.startsWith(code))).toBeTrue();
+    }
+    // The row must actually be truncated here, otherwise the guarantee is vacuous.
+    expect(segments.length).toBeGreaterThan(1);
+  });
+
+  test("shimmers a thinking Main Agent status and advances the sweep across phases", () => {
+    let state = hydrateDashboard(initialDashboardState(), snapshot([topic(ID_A, "Alpha")]));
+    expect(hasThinkingAgent(state)).toBeFalse();
+
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_A, sessionId: ID_A, state: "thinking", connected: true },
+    });
+    expect(hasThinkingAgent(state)).toBeTrue();
+
+    // The thinking word carries the brightest sweep cell (256-colour SGR), not a bare label.
+    const first = renderDashboard(state, 100, 24).find((line) => line.includes("Alpha"));
+    expect(first).toContain("\x1b[38;5;231m");
+    // The plain "thinking" run must be broken up into per-letter colour spans.
+    expect(first).not.toContain("thinking\x1b");
+
+    // Advancing the phase moves the sweep, so the rendered row changes.
+    const advanced = advanceShimmer(state);
+    const second = renderDashboard(advanced, 100, 24).find((line) => line.includes("Alpha"));
+    expect(second).not.toEqual(first);
+
+    // The wrap must land exactly on a loop boundary: stepping a full period returns the
+    // start frame, so there is no visible jump after a couple of loops.
+    let looped = state;
+    for (let step = 0; step < SHIMMER_PERIOD; step += 1) looped = advanceShimmer(looped);
+    expect(looped.shimmerPhase).toBe(state.shimmerPhase);
+    const wrapped = renderDashboard(looped, 100, 24).find((line) => line.includes("Alpha"));
+    expect(wrapped).toEqual(first);
+
+    // A settled (idle) Main Agent stops the shimmer and needs no timer.
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_A, sessionId: ID_A, state: "idle", connected: true },
+    });
+    expect(hasThinkingAgent(state)).toBeFalse();
+  });
+
   test("opens the action rail on its first available action and supports navigation", () => {
     let state = hydrateDashboard(
       initialDashboardState(),
@@ -484,7 +547,8 @@ describe("dashboard state and navigation", () => {
     const detail = renderDashboard(state, 100, 24).join("\n");
     expect(detail).toContain("Base: /base/alpha");
     expect(detail).toContain("Worktree: /work/Alpha");
-    expect(detail).toContain("Main Agent: thinking");
+    // A thinking Main Agent shimmers, so the label is a per-letter colour sweep, not plain text.
+    expect(detail).toContain("Main Agent: \x1b[38;5;231mt\x1b[39m");
     expect(detail).toContain("Workspace: 4");
 
     for (const agentState of ["waiting-for-human", "stopped"] as const) {
