@@ -42,7 +42,7 @@ type LoopState = {
   maxAttempts: number;
   allowDirty: boolean;
   includeDone: boolean;
-  stoppedReason?: string;
+  stoppedReason?: string | undefined;
   startedAt: number;
 };
 
@@ -68,6 +68,7 @@ function helpText(): string {
     "Usage:",
     "  /ralph-loop start [options] <.scratch issue selectors>",
     "  /ralph-loop status",
+    "  /ralph-loop resume",
     "  /ralph-loop stop",
     "  /ralph-loop reset",
     "",
@@ -938,6 +939,41 @@ function statusCommand(ctx: ExtensionCommandContext) {
   ctx.ui.notify(lines.join("\n"), activeLoop.stoppedReason ? "warning" : "info");
 }
 
+function resumeLoop(pi: ExtensionAPI, ctx: ExtensionCommandContext) {
+  if (!activeLoop) {
+    ctx.ui.notify("No Ralph Loop to resume. Use /ralph-loop start.", "info");
+    return;
+  }
+  const state = activeLoop;
+  if (!state.stoppedReason) {
+    ctx.ui.notify("Ralph Loop is already running.", "warning");
+    return;
+  }
+
+  state.stoppedReason = undefined;
+  appendState(pi, "resumed", { status: formatLoopStatus(state) });
+
+  if (state.current) {
+    // Re-attempt the issue that stopped the loop (for example after needs_human).
+    // startedIssues already counts this issue, so do not increment it again.
+    const issue = state.current;
+    state.currentAttempt = 1;
+    appendState(pi, "issue-start", {
+      issue: issue.relPath,
+      attempt: state.currentAttempt,
+      resumed: true,
+    });
+    updateStatus(ctx, state);
+    ctx.ui.notify(`Ralph Loop resuming ${issue.relPath}.`, "info");
+    sendUserMessage(pi, ctx, issuePrompt(state, issue));
+    return;
+  }
+
+  ctx.ui.notify("Ralph Loop resuming.", "info");
+  updateStatus(ctx, state);
+  startNextIssue(pi, ctx);
+}
+
 function stopCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext) {
   if (!activeLoop) {
     ctx.ui.notify("No active Ralph Loop.", "info");
@@ -952,7 +988,7 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
   pi.registerCommand("ralph-loop", {
     description: "Run an autonomous Ralph Loop over explicitly selected local .scratch issue files",
     getArgumentCompletions: (prefix: string) => {
-      const commands = ["start", "status", "stop", "reset", "help"];
+      const commands = ["start", "status", "resume", "continue", "stop", "reset", "help"];
       const trimmed = prefix.trim();
       if (trimmed.includes(" ")) return null;
       const matches = commands.filter((command) => command.startsWith(trimmed));
@@ -960,7 +996,9 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
     },
     handler: async (args, ctx) => {
       const trimmed = args.trim();
-      const commandMatch = trimmed.match(/^(start|status|stop|reset|help)(?:\s+|$)/);
+      const commandMatch = trimmed.match(
+        /^(start|status|resume|continue|stop|reset|help)(?:\s+|$)/,
+      );
       const command = commandMatch?.[1] ?? (trimmed ? "start" : "help");
       const commandArgs = commandMatch ? trimmed.slice(commandMatch[0].length).trim() : trimmed;
 
@@ -971,6 +1009,10 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
             return;
           case "status":
             statusCommand(ctx);
+            return;
+          case "resume":
+          case "continue":
+            resumeLoop(pi, ctx);
             return;
           case "stop":
           case "reset":
