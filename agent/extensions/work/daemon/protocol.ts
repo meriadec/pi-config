@@ -4,7 +4,7 @@ import type { TopicDiagnostic } from "../shared/topic-store.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 7 as const;
+export const WORK_PROTOCOL_VERSION = 8 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 
@@ -12,6 +12,7 @@ export type RequestAction =
   | "ping"
   | "snapshot"
   | "subscribe"
+  | "refresh"
   | "topic.create"
   | "topic.retry"
   | "topic.rename"
@@ -37,7 +38,7 @@ interface RequestBase {
 }
 
 export type WorkRequest =
-  | (RequestBase & { action: "ping" | "snapshot" | "subscribe" })
+  | (RequestBase & { action: "ping" | "snapshot" | "subscribe" | "refresh" })
   | (RequestBase & { action: "topic.create"; input: NewTopic })
   | (RequestBase & { action: "topic.rename"; topicId: string; name: string })
   | (RequestBase & {
@@ -212,6 +213,7 @@ export function parseRequest(text: string): WorkRequest {
     case "ping":
     case "snapshot":
     case "subscribe":
+    case "refresh":
       return { ...base, action: value["action"] };
     case "topic.create": {
       const topic = record(value["input"], id);

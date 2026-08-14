@@ -74,7 +74,7 @@ function snapshot(topics: readonly TopicManifest[] = []): DaemonSnapshot {
     baseCheckouts: Object.fromEntries(
       topics.map((item) => [item.id, `/base/${item.repository.split("/")[1]}`]),
     ),
-    daemon: { protocolVersion: 7, pid: 10, startedAt: "2026-01-01T00:00:00.000Z" },
+    daemon: { protocolVersion: 8, pid: 10, startedAt: "2026-01-01T00:00:00.000Z" },
   };
 }
 
@@ -594,6 +594,8 @@ class FakeDashboardClient implements DashboardClient {
   }> = [];
   confirmCalls: Array<{ token: string; requestId?: string }> = [];
   rejectCalls: Array<{ token: string; requestId?: string }> = [];
+  snapshotCalls = 0;
+  refreshCalls = 0;
   createResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
   retryResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
   renameResult: TopicMutationResult = { status: "renamed", topic: topic(ID_A, "Alpha") };
@@ -606,7 +608,13 @@ class FakeDashboardClient implements DashboardClient {
   }
 
   async snapshot(): Promise<DaemonSnapshot> {
+    this.snapshotCalls += 1;
     return snapshot(this.topics);
+  }
+
+  async refresh(): Promise<{ refreshed: boolean }> {
+    this.refreshCalls += 1;
+    return { refreshed: true };
   }
 
   async subscribe(handler: (event: WorkEvent) => void): Promise<void> {
@@ -938,13 +946,30 @@ describe("dashboard submission behavior", () => {
       const component = dashboardComponent(client);
       await Bun.sleep(0);
       component.handleInput("\r");
-      expect(component.render(80).join("\n")).toContain("Retry Setup (r)");
-      component.handleInput("r");
-      component.handleInput("r");
+      const rail = component.render(80).join("\n");
+      expect(rail).toContain("Retry Setup");
+      expect(rail).not.toContain("Retry Setup (r)");
+      // Actions: workspace, terminal, agent, reset-agent, rename, retry, delete.
+      for (let i = 0; i < 5; i += 1) component.handleInput("j");
+      expect(component.snapshotState().focusedAction).toBe(5);
+      component.handleInput("\r");
       await Bun.sleep(0);
       expect(client.retryCalls).toHaveLength(1);
       component.dispose();
     }
+  });
+
+  test("r forces a daemon pull request refresh instead of retrying", async () => {
+    const client = new FakeDashboardClient([topic(ID_A, "Alpha", "setup-failed")]);
+    const component = dashboardComponent(client);
+    await Bun.sleep(0);
+    const before = client.snapshotCalls;
+    component.handleInput("r");
+    await Bun.sleep(0);
+    expect(client.refreshCalls).toBe(1);
+    expect(client.snapshotCalls).toBe(before + 1);
+    expect(client.retryCalls).toHaveLength(0);
+    component.dispose();
   });
 
   test("renames a Topic through the actions prompt", async () => {

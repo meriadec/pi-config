@@ -16,6 +16,8 @@ import {
   hydrateDashboard,
   type DashboardAction,
   initialDashboardState,
+  advanceShimmer,
+  hasThinkingAgent,
   reduceDashboardEvent,
   renderDashboard,
   type DashboardState,
@@ -26,6 +28,7 @@ import {
 
 export interface DashboardClient {
   snapshot(timeoutMs?: number): Promise<DaemonSnapshot>;
+  refresh(timeoutMs?: number): Promise<{ refreshed: boolean }>;
   subscribe(
     handler: (event: WorkEvent) => void,
     timeoutMs?: number,
@@ -97,6 +100,7 @@ export class WorkDashboardComponent implements Component, Focusable {
   private readonly options: DashboardComponentOptions;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectDelayMs = 100;
+  private shimmerTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: DashboardComponentOptions) {
     this.options = options;
@@ -154,6 +158,7 @@ export class WorkDashboardComponent implements Component, Focusable {
     this.syncWizardInput();
     this.syncRenameInput();
     if (result.action !== undefined) this.beginAction(result.action);
+    if (result.refresh === true) void this.forceRefresh();
     if (result.exit) {
       this.dispose();
       this.options.done();
@@ -177,6 +182,7 @@ export class WorkDashboardComponent implements Component, Focusable {
     this.client = undefined;
     if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
+    this.stopShimmer();
     client?.close();
   }
 
@@ -246,6 +252,7 @@ export class WorkDashboardComponent implements Component, Focusable {
       this.state = hydrateDashboard(this.state, snapshot);
       baselineApplied = true;
       for (const event of pendingEvents) this.receive(event);
+      this.syncShimmer();
       this.hasConnected = true;
       this.reconnectDelayMs = 100;
       this.options.tui.requestRender();
@@ -356,6 +363,7 @@ export class WorkDashboardComponent implements Component, Focusable {
   private receive(event: WorkEvent): void {
     if (this.disposed) return;
     this.state = reduceDashboardEvent(this.state, event);
+    this.syncShimmer();
     this.options.tui.requestRender();
     if (event.type === "snapshot-changed") void this.refresh();
     if (event.type === "daemon-stopping") {
@@ -375,11 +383,59 @@ export class WorkDashboardComponent implements Component, Focusable {
       const snapshot = await client.snapshot();
       if (!this.disposed && this.client === client) {
         this.state = hydrateDashboard(this.state, snapshot);
+        this.syncShimmer();
         this.options.tui.requestRender();
       }
     } catch {
       // The disconnect callback owns reconnect state and retry.
     }
+  }
+
+  /** Forces the daemon to re-poll pull request state now, then re-hydrates from the snapshot. */
+  private async forceRefresh(): Promise<void> {
+    const client = this.client;
+    if (client === undefined) {
+      this.state = { ...this.state, message: "workd is not connected." };
+      this.options.tui.requestRender();
+      return;
+    }
+    this.state = { ...this.state, message: "Refreshing pull request state…" };
+    this.options.tui.requestRender();
+    try {
+      await client.refresh();
+    } catch {
+      // The disconnect callback owns reconnect state and retry.
+    }
+    if (this.disposed || this.client !== client) return;
+    await this.refresh();
+    if (!this.disposed && this.client === client) {
+      this.state = { ...this.state, message: "Pull request state refreshed." };
+      this.options.tui.requestRender();
+    }
+  }
+
+  // A single interval animates every thinking status; it runs only while one exists,
+  // so an idle dashboard draws zero extra frames.
+  private syncShimmer(): void {
+    if (this.disposed) {
+      this.stopShimmer();
+      return;
+    }
+    if (hasThinkingAgent(this.state)) {
+      if (this.shimmerTimer !== undefined) return;
+      this.shimmerTimer = setInterval(() => {
+        this.state = advanceShimmer(this.state);
+        this.options.tui.requestRender();
+      }, SHIMMER_INTERVAL_MS);
+    } else {
+      this.stopShimmer();
+    }
+  }
+
+  private stopShimmer(): void {
+    if (this.shimmerTimer === undefined) return;
+    clearInterval(this.shimmerTimer);
+    this.shimmerTimer = undefined;
   }
 }
 
@@ -389,6 +445,9 @@ interface PendingMutation {
 }
 
 const MUTATION_TIMEOUT_MS = 10 * 60_000;
+
+// Shimmer step cadence: ~12 frames per second, still well under the TUI's 16 ms frame floor.
+const SHIMMER_INTERVAL_MS = 80;
 
 function requestMutation(
   client: DashboardClient,

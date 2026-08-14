@@ -24,7 +24,7 @@ The `pi-workd` daemon runs `gh` for repository clone and pull request discovery.
 2. Run `/work`.
 3. Set `WORK_BASE` if requested.
 4. Press `a` to add a Topic. Enter its name, `owner/repository`, and Branch. Wizard fields support paste and standard text editing.
-5. Select a Topic to open the action rail. The first available action has focus. Press `m` from the Topic list to open or focus its resumable Main Agent directly. Press `o` from the Topic list to focus its i3 workspace directly. Press `p` from the Topic list to open its pull request in a browser.
+5. Select a Topic to open the action rail. The first available action has focus. Press `m` from the Topic list to open or focus its resumable Main Agent directly. Press `o` from the Topic list to focus its i3 workspace directly. Press `p` from the Topic list to open its pull request in a browser. Press `r` to refresh pull request state now, ahead of the daemon poll cadence.
 6. Use the action rail to access the workspace, open a terminal, or select **Start New Main Agent**. A new Main Agent gets an empty Pi session. Its previous session file is kept. When a Topic branch has a pull request, the Topic list shows its number as an underlined `#<number>` link with a progressive status. The status shows the highest-signal condition first: `merged`, `closed`, `draft`, `ci-failing` (checks are red), `reviewing` (a requested reviewer such as Copilot has not submitted yet), `feedback` (an unresolved review thread or a changes-requested review), `checks` (CI still running), `approved`, and finally `clear` (CI is green, no review is pending, and no thread is unresolved). The `PR` column and the **Open Pull Request in Browser** action are present only while a pull request exists.
 7. You can also rename the Topic, retry setup, or delete only the Topic record from the action rail. **Rename Topic** opens a prompt for a new display name; it changes only the Topic name, never its Branch, Worktree, or repository.
 
@@ -72,6 +72,26 @@ Worktree, with the daemon environment. Each command has a 5-minute deadline and 
 captured output. The list view shows a live `setup N/M` phase while the Recipe runs. The
 `topic.run-setup` Action gates the Recipe through the usual `allow` / `ask` / `deny`
 policy (default `allow`).
+
+### Base checkout override
+
+By default a repository's Base checkout lives at `WORK_BASE/<repo-name>`. To keep a
+repository outside `WORK_BASE` — for example to work on an existing local clone such as
+`~/.pi` — declare an absolute `basePath` in the same repository entry:
+
+```json
+{
+  "version": 1,
+  "repositories": {
+    "meriadec/pi-config": { "basePath": "/home/you/.pi" }
+  }
+}
+```
+
+With `basePath` set, the daemon uses that checkout as the Base checkout for every Topic of
+`meriadec/pi-config`. When the path already holds a matching clone, the daemon adopts it
+and does not clone. `setupCommands` is optional in an entry that only overrides the
+location. The path must be absolute and its Git origin must match the Topic's `owner/repo`.
 
 The Main Agent starts inside your interactive login shell (`os.userInfo().shell`, or `PI_WORK_SHELL`). Thus your shell aliases load, and job control works: press `Ctrl-Z` to suspend Pi to the shell, then `fg` to resume it. For zsh and bash, the window runs Pi from a private, per-Topic startup file under `$XDG_RUNTIME_DIR/pi-work-shell/` so that a suspend drops to an interactive prompt in the same window instead of closing it. Other shells fall back to a `-c` launch that does not keep job control.
 

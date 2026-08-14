@@ -285,6 +285,7 @@ export interface DashboardInputResult {
   state: DashboardState;
   exit: boolean;
   action?: DashboardAction;
+  refresh?: boolean;
 }
 
 export function handleDashboardInput(state: DashboardState, data: string): DashboardInputResult {
@@ -303,18 +304,7 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
     };
   }
   if (data === "r" && state.submissionInFlight === undefined) {
-    const topic = state.topics.find((item) => item.id === state.selectedTopicId);
-    if (topic?.setup.state === "setup-failed" || topic?.setup.state === "provisioning") {
-      return {
-        state: {
-          ...state,
-          submissionInFlight: "retry",
-          message: "Retrying Topic setup…",
-        },
-        exit: false,
-        action: { type: "retry", topicId: topic.id },
-      };
-    }
+    return { state, exit: false, refresh: true };
   }
   if (data === "m" && state.focus === "list" && state.submissionInFlight === undefined) {
     const action = topicActions(state).find((item) => item.id === "agent");
@@ -663,7 +653,7 @@ function renderList(state: DashboardState, width: number, height: number): strin
   lines.push(truncateToWidth(status, width));
   lines.push(
     truncateToWidth(
-      "a Add · j/k or ↑/↓ move · enter actions · o workspace · t terminal · m Main Agent · p PR · r retry · esc quit",
+      "a Add · j/k or ↑/↓ move · enter actions · o workspace · t terminal · m Main Agent · p PR · r refresh · esc quit",
       width,
     ),
   );
@@ -990,7 +980,7 @@ function topicActions(
   if (topic.setup.state === "setup-failed" || topic.setup.state === "provisioning") {
     actions.push({
       id: "retry",
-      label: "Retry Setup (r)",
+      label: "Retry Setup",
       unavailable: denied.includes("retry"),
     });
   }

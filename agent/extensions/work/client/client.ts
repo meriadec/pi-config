@@ -83,6 +83,10 @@ export class WorkClient {
     return this.request("snapshot", {}, timeoutMs) as Promise<DaemonSnapshot>;
   }
 
+  refresh(timeoutMs?: number): Promise<{ refreshed: boolean }> {
+    return this.request("refresh", {}, timeoutMs) as Promise<{ refreshed: boolean }>;
+  }
+
   createTopic(
     input: NewTopic,
     requestId?: string,

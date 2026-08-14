@@ -226,6 +226,11 @@ export class TopicService {
     return topic;
   }
 
+  /** Forces an immediate re-poll of every Topic's pull request, outside the timer cadence. */
+  async refreshPullRequests(): Promise<void> {
+    await this.refreshAllPullRequests();
+  }
+
   private async refreshAllPullRequests(): Promise<void> {
     for (const topicId of Array.from(this.topicById.keys())) {
       await this.refreshPullRequest(topicId);

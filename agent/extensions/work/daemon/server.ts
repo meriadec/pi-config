@@ -205,6 +205,10 @@ export class WorkDaemon {
         case "snapshot":
           result = this.snapshot();
           break;
+        case "refresh":
+          await this.requireTopicService().refreshPullRequests();
+          result = { refreshed: true };
+          break;
         case "subscribe":
           // Install the subscription and take its baseline in one synchronous turn. Events
           // written after this response always have a later revision than the snapshot.
