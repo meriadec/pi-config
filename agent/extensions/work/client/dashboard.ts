@@ -1,4 +1,11 @@
-import { Key, matchesKey, truncateToWidth, visibleWidth, hyperlink } from "@earendil-works/pi-tui";
+import {
+  Key,
+  matchesKey,
+  truncateToWidth,
+  visibleWidth,
+  hyperlink,
+  fuzzyFilter,
+} from "@earendil-works/pi-tui";
 import type { DaemonSnapshot, WorkEvent } from "../daemon/protocol.ts";
 import type { MainAgentLease } from "../daemon/main-agent.ts";
 import type { TopicOperation } from "../daemon/topic-service.ts";
@@ -22,6 +29,8 @@ export interface TopicWizardState {
   name: string;
   branch: string;
   repository: string;
+  /** Highlighted row in the Known repository completion list, or undefined when none is. */
+  repositoryHighlight?: number;
   error?: string;
 }
 
@@ -59,6 +68,8 @@ export interface DashboardState {
   focusedAction: number;
   workspaces: Readonly<Record<string, number>>;
   baseCheckouts: Readonly<Record<string, string>>;
+  /** Sorted `owner/repo` completions offered in the add-topic repository stage. */
+  knownRepositories: readonly string[];
   pullRequests: Readonly<Record<string, PullRequestRef>>;
   unavailableActions: Readonly<Record<string, readonly TopicActionId[]>>;
   /** Animation cursor for the thinking-status shimmer. Advanced by a UI timer only. */
@@ -104,6 +115,7 @@ export function initialDashboardState(): DashboardState {
     focusedAction: 0,
     workspaces: {},
     baseCheckouts: {},
+    knownRepositories: [],
     pullRequests: {},
     unavailableActions: {},
     shimmerPhase: 0,
@@ -155,6 +167,9 @@ export function hydrateDashboard(state: DashboardState, snapshot: DaemonSnapshot
     operations: [...snapshot.operations],
     mainAgents: [...snapshot.mainAgents],
     baseCheckouts: { ...(snapshot.baseCheckouts ?? state.baseCheckouts) },
+    knownRepositories: snapshot.knownRepositories
+      ? [...snapshot.knownRepositories]
+      : state.knownRepositories,
     pullRequests: { ...(snapshot.pullRequests ?? state.pullRequests) },
     unavailableActions: snapshot.deniedActions
       ? Object.fromEntries(
@@ -457,7 +472,7 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
   else if (isPrintableInput(data)) next += data;
   else return { state, exit: false };
   return {
-    state: { ...state, wizard: clearWizardError({ ...wizard, [field]: next }) },
+    state: updateWizardField(state, next),
     exit: false,
   };
 }
@@ -465,9 +480,71 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
 export function updateWizardField(state: DashboardState, value: string): DashboardState {
   const wizard = state.wizard;
   if (wizard === undefined || wizard.stage === "review") return state;
+  const updated = clearWizardError({ ...wizard, [wizard.stage]: value });
+  if (wizard.stage === "repository") {
+    const highlight = defaultRepositoryHighlight(value, state.knownRepositories);
+    if (highlight === undefined) delete updated.repositoryHighlight;
+    else updated.repositoryHighlight = highlight;
+  }
+  return { ...state, wizard: updated };
+}
+
+/** Known repositories that fuzzy-match the current repository input (all of them when empty). */
+export function filteredRepositories(
+  repository: string,
+  knownRepositories: readonly string[],
+): readonly string[] {
+  const query = repository.trim();
+  if (query.length === 0) return knownRepositories;
+  return fuzzyFilter([...knownRepositories], query, (entry) => entry);
+}
+
+// Empty input highlights nothing; any matching input highlights the best (top) match.
+function defaultRepositoryHighlight(
+  repository: string,
+  knownRepositories: readonly string[],
+): number | undefined {
+  if (repository.trim().length === 0) return undefined;
+  return filteredRepositories(repository, knownRepositories).length > 0 ? 0 : undefined;
+}
+
+/** Moves the completion highlight; down-arrow from no highlight lands on the first row. */
+export function moveRepositoryHighlight(state: DashboardState, delta: number): DashboardState {
+  const wizard = state.wizard;
+  if (wizard === undefined || wizard.stage !== "repository") return state;
+  const matches = filteredRepositories(wizard.repository, state.knownRepositories);
+  if (matches.length === 0) return state;
+  const base = wizard.repositoryHighlight ?? -1;
+  const next = Math.max(0, Math.min(matches.length - 1, base + delta));
+  return { ...state, wizard: { ...wizard, repositoryHighlight: next } };
+}
+
+/**
+ * Writes the highlighted Known repository into the input, staying on the repository stage.
+ * A no-op when nothing is highlighted. Returns the new input value so the caller can sync
+ * its text widget.
+ */
+export function applyRepositoryCompletion(state: DashboardState): {
+  state: DashboardState;
+  value?: string;
+} {
+  const wizard = state.wizard;
+  if (wizard === undefined || wizard.stage !== "repository") return { state };
+  const highlight = wizard.repositoryHighlight;
+  if (highlight === undefined) return { state };
+  const matches = filteredRepositories(wizard.repository, state.knownRepositories);
+  const chosen = matches[highlight];
+  if (chosen === undefined) return { state };
   return {
-    ...state,
-    wizard: clearWizardError({ ...wizard, [wizard.stage]: value }),
+    state: {
+      ...state,
+      wizard: clearWizardError({
+        ...wizard,
+        repository: chosen,
+        repositoryHighlight: 0,
+      }),
+    },
+    value: chosen,
   };
 }
 
@@ -599,7 +676,13 @@ export function renderDashboard(
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
   if (state.wizard !== undefined) {
-    return renderWizard(state.wizard, safeWidth, safeHeight, wizardInputLine);
+    return renderWizard(
+      state.wizard,
+      safeWidth,
+      safeHeight,
+      state.knownRepositories,
+      wizardInputLine,
+    );
   }
   if (state.rename !== undefined) {
     return renderRename(state.rename, safeWidth, safeHeight, wizardInputLine);
@@ -838,6 +921,7 @@ function renderWizard(
   wizard: TopicWizardState,
   width: number,
   height: number,
+  knownRepositories: readonly string[],
   inputLine?: string,
 ): string[] {
   const field = wizard.stage === "review" ? undefined : wizard.stage;
@@ -850,6 +934,9 @@ function renderWizard(
       repository: "Repository (owner/repo)",
     } as const;
     lines.push(labels[field], inputLine ?? `> ${wizard[field]}`);
+    if (field === "repository") {
+      lines.push(...renderRepositoryCompletions(wizard, knownRepositories, width));
+    }
   } else {
     lines.push("Review the exact provisioning subject:", "", `Name: ${wizard.name}`);
     lines.push(`Repository: ${wizard.repository}`, `Branch: ${wizard.branch}`);
@@ -857,10 +944,46 @@ function renderWizard(
   if (wizard.error !== undefined) lines.push("", `! ${wizard.error}`);
   lines.push(
     "",
-    wizard.stage === "review" ? "enter submit · esc cancel" : "enter next · esc cancel",
+    wizard.stage === "review"
+      ? "enter submit · esc cancel"
+      : wizard.stage === "repository"
+        ? "enter next · ↑/↓ highlight · tab complete · esc cancel"
+        : "enter next · esc cancel",
   );
   return fitLines(lines, width, height);
 }
+
+// Caps the visible completion window so the wizard footprint stays bounded, and scrolls it
+// to keep the highlighted Known repository in view.
+function renderRepositoryCompletions(
+  wizard: TopicWizardState,
+  knownRepositories: readonly string[],
+  width: number,
+): string[] {
+  const matches = filteredRepositories(wizard.repository, knownRepositories);
+  if (matches.length === 0) {
+    return ["", knownRepositories.length === 0 ? "  (no known repositories)" : "  (no matches)"];
+  }
+  const highlight = wizard.repositoryHighlight;
+  const start =
+    highlight === undefined
+      ? 0
+      : Math.max(
+          0,
+          Math.min(highlight - REPOSITORY_WINDOW + 1, matches.length - REPOSITORY_WINDOW),
+        );
+  const window = matches.slice(Math.max(0, start), Math.max(0, start) + REPOSITORY_WINDOW);
+  const lines = [""];
+  window.forEach((entry, offset) => {
+    const index = Math.max(0, start) + offset;
+    const marker = index === highlight ? "›" : " ";
+    lines.push(truncateToWidth(`${marker} ${entry}`, width));
+  });
+  if (matches.length > window.length) lines.push(`  … ${matches.length} matches`);
+  return lines;
+}
+
+const REPOSITORY_WINDOW = 8;
 
 function renderRename(
   rename: TopicRenameState,

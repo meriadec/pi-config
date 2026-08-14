@@ -32,3 +32,9 @@ One line of a Repository Recipe. A full shell line (with arguments) run in the W
 **Action policy**:
 The `allow` / `ask` / `deny` decision that gates a sensitive Action (clone, worktree creation,
 etc.), resolved from defaults plus per-repository and per-Topic overrides.
+
+**Known repository**:
+An `owner/repo` repository already declared in `~/work/config.json` (a key of the Repository
+Recipe map). The set of Known repositories is offered as fuzzy-matched completions when you name a
+Topic's repository in the add-topic wizard.
+_Avoid_: saved repo, configured repo.

@@ -77,6 +77,8 @@ export interface DaemonSnapshot {
   diagnostics: readonly TopicDiagnostic[];
   operations: readonly TopicOperation[];
   mainAgents: readonly MainAgentLease[];
+  /** Sorted `owner/repo` keys declared in config, offered as add-topic completions. */
+  knownRepositories?: readonly string[];
   baseCheckouts?: Readonly<Record<string, string>>;
   deniedActions?: Readonly<Record<string, readonly ActionId[]>>;
   pullRequests?: Readonly<Record<string, PullRequestRef>>;

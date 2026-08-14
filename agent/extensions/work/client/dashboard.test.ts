@@ -21,7 +21,12 @@ import {
   renderDashboard,
   defaultBranchForTopicName,
   isValidRepositoryInput,
+  filteredRepositories,
+  updateWizardField,
+  moveRepositoryHighlight,
+  applyRepositoryCompletion,
 } from "./dashboard.ts";
+import type { DashboardState } from "./dashboard.ts";
 import { completeWorkBaseSetup, defaultWorkConfig, validateWorkBase } from "./setup.ts";
 
 const roots: string[] = [];
@@ -59,12 +64,16 @@ function topic(id: string, name: string, setup: TopicManifest["setup"]["state"] 
   } satisfies TopicManifest;
 }
 
-function snapshot(topics: readonly TopicManifest[] = []): DaemonSnapshot {
+function snapshot(
+  topics: readonly TopicManifest[] = [],
+  knownRepositories: readonly string[] = [],
+): DaemonSnapshot {
   return {
     revision: 0,
     topics,
     diagnostics: [],
     operations: [],
+    knownRepositories,
     mainAgents: topics.map((item) => ({
       topicId: item.id,
       sessionId: item.id,
@@ -278,6 +287,96 @@ describe("Topic creation wizard", () => {
       type: "create",
       input: { name: "Alpha", branch: "alpha-edited", repository: "owner/repo" },
     });
+  });
+});
+
+describe("Known repository completion", () => {
+  const known = ["LedgerHQ/app-bitcoin", "LedgerHQ/ledger-live", "owner/repo"] as const;
+
+  function repositoryStage(input = ""): DashboardState {
+    let state = handleDashboardInput(initialDashboardState(), "a").state;
+    state = handleDashboardInput(state, "Alpha").state;
+    state = handleDashboardInput(state, "\r").state;
+    state = { ...state, knownRepositories: [...known] };
+    return input.length === 0 ? state : updateWizardField(state, input);
+  }
+
+  test("lists every known repository with no highlight for empty input", () => {
+    const state = repositoryStage();
+    expect(filteredRepositories("", known)).toEqual([...known]);
+    expect(state.wizard?.repositoryHighlight).toBeUndefined();
+    const lines = renderDashboard(state, 80, 24).join("\n");
+    expect(lines).toContain("LedgerHQ/ledger-live");
+    expect(lines).toContain("tab complete");
+  });
+
+  test("highlights the best match on typing and resets to the top on further edits", () => {
+    let state = repositoryStage("ledger");
+    expect(state.wizard?.repositoryHighlight).toBe(0);
+    state = moveRepositoryHighlight(state, 1);
+    expect(state.wizard?.repositoryHighlight).toBe(1);
+    // A further keystroke resets the highlight back to the best match.
+    state = updateWizardField(state, "ledger-l");
+    expect(state.wizard?.repositoryHighlight).toBe(0);
+  });
+
+  test("clears the highlight when the input matches nothing", () => {
+    const state = repositoryStage("zzz-nomatch");
+    expect(filteredRepositories("zzz-nomatch", known)).toEqual([]);
+    expect(state.wizard?.repositoryHighlight).toBeUndefined();
+  });
+
+  test("down-arrow from no highlight lands on the first row", () => {
+    let state = repositoryStage();
+    state = moveRepositoryHighlight(state, 1);
+    expect(state.wizard?.repositoryHighlight).toBe(0);
+    state = moveRepositoryHighlight(state, -1);
+    expect(state.wizard?.repositoryHighlight).toBe(0);
+  });
+
+  test("tab writes the highlighted repository and stays on the stage", () => {
+    const state = repositoryStage("ledger");
+    const completed = applyRepositoryCompletion(state);
+    expect(completed.value).toBe("LedgerHQ/app-bitcoin");
+    expect(completed.state.wizard).toMatchObject({
+      stage: "repository",
+      repository: "LedgerHQ/app-bitcoin",
+    });
+  });
+
+  test("tab is a no-op while nothing is highlighted", () => {
+    const state = repositoryStage();
+    const completed = applyRepositoryCompletion(state);
+    expect(completed.value).toBeUndefined();
+    expect(completed.state).toBe(state);
+  });
+
+  test("enter submits the typed text, never the highlight", () => {
+    const state = repositoryStage("owner/repo");
+    expect(state.wizard?.repositoryHighlight).toBe(0);
+    const advanced = handleDashboardInput(state, "\r").state;
+    expect(advanced.wizard).toMatchObject({ stage: "branch", repository: "owner/repo" });
+  });
+
+  test("completes through the component with down-arrow then tab, then submits", async () => {
+    const client = new FakeDashboardClient([]);
+    client.knownRepositories = [...known];
+    const component = dashboardComponent(client);
+    await Bun.sleep(0);
+    component.handleInput("a");
+    component.handleInput("Alpha");
+    component.handleInput("\r");
+    component.handleInput("ledger");
+    // Best match is highlighted on typing; down-arrow moves to the next row, tab adopts it.
+    component.handleInput("\x1b[B");
+    component.handleInput("\t");
+    expect(component.snapshotState().wizard).toMatchObject({
+      stage: "repository",
+      repository: "LedgerHQ/ledger-live",
+    });
+    component.handleInput("\r");
+    expect(component.snapshotState().wizard?.stage).toBe("branch");
+    component.dispose();
   });
 });
 
@@ -602,6 +701,7 @@ class FakeDashboardClient implements DashboardClient {
   confirmResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
   rejectResult: TopicMutationResult = { status: "rejected", topicId: ID_A };
   private readonly topics: readonly TopicManifest[];
+  knownRepositories: readonly string[] = [];
 
   constructor(topics: readonly TopicManifest[] = [topic(ID_A, "Alpha")]) {
     this.topics = topics;
@@ -609,7 +709,7 @@ class FakeDashboardClient implements DashboardClient {
 
   async snapshot(): Promise<DaemonSnapshot> {
     this.snapshotCalls += 1;
-    return snapshot(this.topics);
+    return snapshot(this.topics, this.knownRepositories);
   }
 
   async refresh(): Promise<{ refreshed: boolean }> {

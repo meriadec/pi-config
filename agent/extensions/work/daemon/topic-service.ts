@@ -51,6 +51,8 @@ export interface TopicServiceSnapshot {
   topics: readonly TopicManifest[];
   diagnostics: readonly TopicDiagnostic[];
   operations: readonly TopicOperation[];
+  /** Sorted `owner/repo` keys declared in config, offered as add-topic completions. */
+  knownRepositories: readonly string[];
   baseCheckouts: Readonly<Record<string, string>>;
   deniedActions: Readonly<Record<string, readonly ActionId[]>>;
   pullRequests: Readonly<Record<string, PullRequestRef>>;
@@ -197,6 +199,8 @@ export class TopicService {
       ),
       diagnostics: [...this.diagnostics],
       operations: [...this.operations.values()],
+      knownRepositories:
+        this.config === null ? [] : Object.keys(this.config.repositories).toSorted(),
       baseCheckouts: Object.fromEntries(
         [...this.topicById.values()].map((topic) => [
           topic.id,

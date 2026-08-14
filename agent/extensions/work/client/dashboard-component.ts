@@ -20,6 +20,8 @@ import {
   hasThinkingAgent,
   reduceDashboardEvent,
   renderDashboard,
+  moveRepositoryHighlight,
+  applyRepositoryCompletion,
   type DashboardState,
   type TopicWizardStage,
   updateWizardField,
@@ -125,6 +127,20 @@ export class WorkDashboardComponent implements Component, Focusable {
 
   handleInput(data: string): void {
     const wizard = this.state.wizard;
+    if (wizard !== undefined && wizard.stage === "repository") {
+      if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
+        this.state = moveRepositoryHighlight(this.state, matchesKey(data, Key.up) ? -1 : 1);
+        this.options.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, Key.tab)) {
+        const result = applyRepositoryCompletion(this.state);
+        this.state = result.state;
+        if (result.value !== undefined) this.wizardInput?.setValue(result.value);
+        this.options.tui.requestRender();
+        return;
+      }
+    }
     if (wizard !== undefined && wizard.stage !== "review") {
       if (!matchesKey(data, Key.enter) && !matchesKey(data, Key.escape)) {
         this.wizardInput?.handleInput(data);
