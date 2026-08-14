@@ -705,7 +705,8 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
       `${prefix}${topic.name}${setupSegment} · ${agentCell}${link}`,
       width,
     );
-    return inactive ? dim(row) : row;
+    const styled = inactive ? dim(row) : row;
+    return selected ? highlight(styled, width) : styled;
   }
   const nameWidth = Math.max(12, Math.floor(width * 0.25));
   const repoWidth = Math.max(18, Math.floor(width * 0.3));
@@ -713,12 +714,22 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
     `${prefix}${pad(topic.name, nameWidth)} ${pad(topic.repository, repoWidth)} ${pad(pullRequestCell(pullRequest), 18)} ${pad(setupCell, 14)} ${agentCell}`,
     width,
   );
-  return inactive ? dim(row) : row;
+  const styled = inactive ? dim(row) : row;
+  return selected ? highlight(styled, width) : styled;
 }
 
 /** Wraps a fully truncated line in the terminal faint (dim) attribute. */
 function dim(text: string): string {
   return `\x1b[2m${text}\x1b[22m`;
+}
+
+// A subtle row highlight one shade lighter than the terminal background. The value is
+// Nord1 (#3B4252, one step up from the Nord0 background), the palette's natural
+// "current line" tint. The row is padded to the full list width first so the highlight
+// spans the whole line, then closed with a background reset.
+function highlight(row: string, width: number): string {
+  const padded = row + " ".repeat(Math.max(0, width - visibleWidth(row)));
+  return `\x1b[48;2;59;66;82m${padded}\x1b[49m`;
 }
 
 /** Colours a status word yellow. */
