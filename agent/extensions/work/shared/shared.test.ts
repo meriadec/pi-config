@@ -16,6 +16,7 @@ import {
   parseTopicManifest,
   parseWorkConfig,
   resolveActionPolicy,
+  resolveBaseCheckout,
 } from "./index.ts";
 import type { TopicManifest, WorkConfig } from "./index.ts";
 
@@ -135,9 +136,36 @@ describe("domain validation", () => {
       { "LedgerHQ/revault": { setupCommands: "pnpm install" } },
       { "LedgerHQ/revault": { setupCommands: [""] } },
       { "LedgerHQ/revault": { setupCommands: [42] } },
+      { "LedgerHQ/revault": { basePath: "relative/path" } },
+      { "LedgerHQ/revault": { basePath: 42 } },
     ]) {
       expect(() => parseWorkConfig({ ...config(), repositories: bad })).toThrow(WorkDataError);
     }
+  });
+
+  test("resolves a Base checkout location, honoring a per-repository basePath override", () => {
+    const withOverride = parseWorkConfig({
+      ...config(),
+      workBase: "/home/user/work",
+      repositories: {
+        "LedgerHQ/revault": { setupCommands: [] },
+        "meriadec/pi-config": { basePath: "/home/user/.pi" },
+      },
+    });
+    // A declared basePath overrides the WORK_BASE/<name> default and needs no setupCommands.
+    expect(withOverride.repositories["meriadec/pi-config"]?.basePath).toBe("/home/user/.pi");
+    expect(resolveBaseCheckout(withOverride, "meriadec/pi-config")).toBe("/home/user/.pi");
+    expect(resolveBaseCheckout(withOverride, "LedgerHQ/revault")).toBe("/home/user/work/revault");
+    // Without a global workBase and without an override, the location is unknown.
+    expect(resolveBaseCheckout({ repositories: {} }, "LedgerHQ/revault")).toBeUndefined();
+    expect(
+      resolveBaseCheckout(
+        {
+          repositories: { "meriadec/pi-config": { setupCommands: [], basePath: "/home/user/.pi" } },
+        },
+        "meriadec/pi-config",
+      ),
+    ).toBe("/home/user/.pi");
   });
 });
 

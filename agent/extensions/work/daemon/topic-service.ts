@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 import {
   WorkDataError,
   boundMessage,
   isValidBranchName,
   parseRepository,
   resolveActionPolicy,
+  resolveBaseCheckout,
 } from "../shared/index.ts";
 import type {
   ActionId,
@@ -199,9 +200,9 @@ export class TopicService {
       baseCheckouts: Object.fromEntries(
         [...this.topicById.values()].map((topic) => [
           topic.id,
-          this.config?.workBase === undefined
+          this.config === null
             ? "not configured"
-            : join(this.config.workBase, parseRepository(topic.repository).name),
+            : (resolveBaseCheckout(this.config, topic.repository) ?? "not configured"),
         ]),
       ),
       deniedActions: Object.fromEntries(
@@ -587,6 +588,8 @@ export class TopicService {
     const repository = this.topicById.get(topicId)?.repository;
     const recipe =
       repository === undefined ? [] : (config.repositories[repository]?.setupCommands ?? []);
+    const baseCheckout =
+      repository === undefined ? undefined : resolveBaseCheckout(config, repository);
     const request: ProvisionRequest = {
       topicId,
       workBase: config.workBase!,
@@ -601,6 +604,7 @@ export class TopicService {
           detail: `setup ${progress.index + 1}/${progress.total}`,
         }),
     };
+    if (baseCheckout !== undefined) request.baseCheckout = baseCheckout;
     let result: ProvisionResult;
     try {
       result = await this.options.provisioner.provision(request);

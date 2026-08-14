@@ -205,6 +205,24 @@ describe("repository provisioning", () => {
     });
   });
 
+  test("uses a per-repository basePath override instead of the WORK_BASE default", async () => {
+    const item = await world();
+    const override = join(item.root, "external", "pi-config");
+    await mkdir(join(override, ".git"), { recursive: true });
+    item.runner.base = override;
+    const result = await item.provisioner.provision({
+      topicId: ID,
+      workBase: item.workBase,
+      baseCheckout: override,
+      policies: policies(),
+    });
+    expect(result.status).toBe("ready");
+    // The existing checkout is adopted: no clone, and the WORK_BASE/<name> path is never inspected.
+    expect(item.runner.requests.some((request) => request.command === "gh")).toBeFalse();
+    expect(item.runner.requests.some((request) => request.cwd === item.base)).toBeFalse();
+    expect(item.runner.requests.some((request) => request.cwd === override)).toBeTrue();
+  });
+
   test("returns explicit clone failure and timeout results", async () => {
     const failed = await world({ repositoryExists: false });
     failed.runner.onClone = undefined;

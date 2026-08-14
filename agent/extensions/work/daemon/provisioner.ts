@@ -38,6 +38,12 @@ export interface SetupProgress {
 export interface ProvisionRequest {
   topicId: string;
   workBase: string;
+  /**
+   * Resolved Base checkout location for this Topic's repository. When omitted, it
+   * defaults to `WORK_BASE/<repo-name>`; a per-repository `basePath` override sets it
+   * to a checkout outside `WORK_BASE`.
+   */
+  baseCheckout?: string;
   policies: WorkPolicies;
   /** The repository's Repository Recipe, run only when a fresh Worktree is created. */
   recipe?: readonly string[];
@@ -108,7 +114,7 @@ export class TopicProvisioner {
         "Configured workBase does not exist or is not a directory.",
       );
       const repository = parseRepository(topic.repository);
-      const baseCheckout = join(request.workBase, repository.name);
+      const baseCheckout = request.baseCheckout ?? join(request.workBase, repository.name);
 
       if (await pathExists(baseCheckout)) {
         await this.validateBaseCheckout(baseCheckout, repository.fullName, request.signal);

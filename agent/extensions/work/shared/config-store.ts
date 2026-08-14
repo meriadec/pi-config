@@ -93,13 +93,18 @@ function mergeConfig(
 
 function mergeRecipes(
   raw: Record<string, unknown>,
-  current: Record<string, { setupCommands: string[] }>,
+  current: Record<string, { setupCommands: string[]; basePath?: string }>,
 ): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(current).map(([key, recipe]) => [
-      key,
-      { ...record(raw[key]), setupCommands: [...recipe.setupCommands] },
-    ]),
+    Object.entries(current).map(([key, recipe]) => {
+      const merged: Record<string, unknown> = {
+        ...record(raw[key]),
+        setupCommands: [...recipe.setupCommands],
+      };
+      if (recipe.basePath === undefined) delete merged["basePath"];
+      else merged["basePath"] = recipe.basePath;
+      return [key, merged];
+    }),
   );
 }
 

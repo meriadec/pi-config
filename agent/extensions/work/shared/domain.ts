@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 export const WORK_DATA_VERSION = 1 as const;
 
@@ -30,6 +30,12 @@ export interface WorkPolicies {
 /** The ordered Setup commands declared for one repository, run to prepare a fresh Worktree. */
 export interface RepositoryRecipe {
   setupCommands: string[];
+  /**
+   * Absolute override for this repository's Base checkout location. When set, the
+   * repository's single clone lives at this path instead of `WORK_BASE/<repo-name>`,
+   * so a Topic can adopt an existing checkout outside `WORK_BASE` (for example `~/.pi`).
+   */
+  basePath?: string;
 }
 
 export interface WorkConfig {
@@ -293,7 +299,14 @@ function parseRepositoryRecipes(input: unknown): Record<string, RepositoryRecipe
 
 function parseRepositoryRecipe(input: unknown): RepositoryRecipe {
   const value = object(input, "A repository recipe must be an object.");
-  const commands = value["setupCommands"];
+  const basePath = value["basePath"];
+  if (basePath !== undefined && (typeof basePath !== "string" || !isAbsolute(basePath))) {
+    throw new WorkDataError(
+      "invalid-config",
+      "A repository recipe basePath must be an absolute path.",
+    );
+  }
+  const commands = value["setupCommands"] ?? [];
   if (!Array.isArray(commands)) {
     throw new WorkDataError(
       "invalid-config",
@@ -312,7 +325,24 @@ function parseRepositoryRecipe(input: unknown): RepositoryRecipe {
     }
     return command;
   });
-  return { setupCommands };
+  const recipe: RepositoryRecipe = { setupCommands };
+  if (basePath !== undefined) recipe.basePath = basePath;
+  return recipe;
+}
+
+/**
+ * The Base checkout location of a repository: the per-repository `basePath` override
+ * when declared, otherwise `WORK_BASE/<repo-name>`. Returns undefined only when no
+ * override exists and no global `workBase` is configured yet.
+ */
+export function resolveBaseCheckout(
+  config: Pick<WorkConfig, "workBase" | "repositories">,
+  repository: string,
+): string | undefined {
+  const override = config.repositories[repository]?.basePath;
+  if (override !== undefined) return override;
+  if (config.workBase === undefined) return undefined;
+  return join(config.workBase, parseRepository(repository).name);
 }
 
 export function parseTopicManifest(input: unknown, expectedId?: string): TopicManifest {

@@ -10,7 +10,10 @@ A durable unit of work bound to one `owner/repo` repository and one Branch, with
 and Main Agent. Stored as a manifest under `~/work/topics/<topic-id>/topic.json`.
 
 **Base checkout**:
-The single clone of a repository under `WORK_BASE`, shared by all Topics of that repository.
+The single clone of a repository, shared by all Topics of that repository. By default it lives
+at `WORK_BASE/<repo-name>`. A **Base checkout override** (`basePath` in a repository entry of
+`~/work/config.json`) puts it at a fixed absolute path outside `WORK_BASE` instead, so a Topic can
+adopt an existing checkout (for example `~/.pi`).
 
 **Worktree**:
 The per-Topic Git worktree, created from the Base checkout for the Topic Branch. The Topic's own
