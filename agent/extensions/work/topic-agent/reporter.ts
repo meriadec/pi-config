@@ -56,6 +56,14 @@ export class TopicAgentReporter {
       }
     | undefined;
   private shuttingDown = false;
+  /**
+   * The last activity this reporter told workd, so it can be re-asserted after
+   * a reconnect. Every (re)registration resets the daemon lease to idle, and a
+   * long thinking turn (for example a Ralph Loop issue driven by follow-up
+   * continuations) emits no new agent_start to restore it, which would strand
+   * the lease at idle while the agent is still working.
+   */
+  private lastActivity: "thinking" | "waiting" | undefined;
   private readonly connect: (socketPath: string) => Promise<AgentClient>;
   private readonly setSessionName: ((name: string) => void) | undefined;
   private readonly log: (message: string) => void;
@@ -82,7 +90,7 @@ export class TopicAgentReporter {
     return this.environment !== undefined;
   }
 
-  async sessionStart(ctx: Pick<ExtensionContext, "sessionManager">): Promise<void> {
+  async sessionStart(ctx: Pick<ExtensionContext, "sessionManager" | "isIdle">): Promise<void> {
     const environment = this.environment;
     if (environment === undefined) return;
     // Clean up the previous session's timer and connection first so a /new
@@ -137,10 +145,17 @@ export class TopicAgentReporter {
           this.heartbeatPending = false;
         });
     }, this.heartbeatMs);
+    // A /fork pre-fills the editor, so the human can submit before this async
+    // registration finishes. That agent_start's thinking() lands while the
+    // client is still undefined and is dropped, then registration sets the
+    // lease idle. Reconcile the just-registered lease with real activity so a
+    // running turn is never left showing idle.
+    if (!ctx.isIdle()) await this.thinking();
   }
 
   async thinking(): Promise<void> {
     this.clearSettleTimer();
+    this.lastActivity = "thinking";
     await this.client?.reportMainAgent("thinking");
   }
 
@@ -154,6 +169,7 @@ export class TopicAgentReporter {
 
   async waiting(): Promise<void> {
     this.clearSettleTimer();
+    this.lastActivity = "waiting";
     await this.client?.reportMainAgent("waiting");
   }
 
@@ -175,6 +191,12 @@ export class TopicAgentReporter {
         return;
       }
       this.client = client;
+      // A fresh registration resets the daemon lease to idle. Re-assert the
+      // activity in flight so a reconnect during a long thinking turn does not
+      // strand the lease at idle until the next agent_start.
+      if (this.lastActivity !== undefined) {
+        await client.reportMainAgent(this.lastActivity).catch(() => undefined);
+      }
     } catch (error) {
       // workd will report failed if the bounded heartbeat deadline expires.
       // Surface the reason so a restart re-attach failure is not silent.
@@ -184,6 +206,7 @@ export class TopicAgentReporter {
 
   private async close(reportStopped: boolean): Promise<void> {
     this.clearSettleTimer();
+    this.lastActivity = undefined;
     if (this.timer !== undefined) {
       this.stopTimer(this.timer);
       this.timer = undefined;

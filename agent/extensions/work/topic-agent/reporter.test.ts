@@ -38,13 +38,15 @@ function context(
   sessionId = "session-id",
   sessionFile: string | undefined = "/tmp/session.jsonl",
   ephemeral = false,
+  idle = true,
 ) {
   return {
     sessionManager: {
       getSessionId: () => sessionId,
       getSessionFile: () => (ephemeral ? undefined : sessionFile),
     },
-  } as unknown as Pick<ExtensionContext, "sessionManager">;
+    isIdle: () => idle,
+  } as unknown as Pick<ExtensionContext, "sessionManager" | "isIdle">;
 }
 
 describe("Topic Agent telemetry", () => {
@@ -197,7 +199,8 @@ describe("Topic Agent telemetry", () => {
           getSessionFile: () => "/tmp/session.jsonl",
           getSessionName: () => currentName,
         },
-      }) as unknown as Pick<ExtensionContext, "sessionManager">;
+        isIdle: () => true,
+      }) as unknown as Pick<ExtensionContext, "sessionManager" | "isIdle">;
     // The launched session already carries the --name label, so no reset.
     currentName = "Work: VG-123";
     await reporter.sessionStart(ctx("launched-session"));
@@ -224,5 +227,72 @@ describe("Topic Agent telemetry", () => {
     });
     await reporter.sessionStart(context("adopted-session", "/tmp/adopted.jsonl"));
     expect(connects).toBe(0);
+  });
+
+  test("reconciles a forked session that is already thinking to thinking, not idle", async () => {
+    const client = new FakeClient();
+    const reporter = new TopicAgentReporter({
+      environment: {
+        PI_WORK_TOPIC_ID: "topic",
+        PI_WORK_SOCKET: "/tmp/socket",
+        PI_WORK_REGISTRATION_TOKEN: "token",
+        PI_WORK_SESSION_ID: "launched-session",
+        PI_WORK_AFFILIATION: "window-affiliation",
+      },
+      connect: async () => client,
+      setInterval: ((_callback: () => void) => 1) as typeof setInterval,
+      clearInterval: (() => undefined) as typeof clearInterval,
+    });
+    // The /fork pre-fills the editor and the human submits before this async
+    // registration finishes, so the racing agent_start thinking() is dropped.
+    // The adopted session is no longer idle when registration completes.
+    await reporter.sessionStart(context("forked-session", "/tmp/forked.jsonl", false, false));
+    await reporter.shutdown();
+    expect(client.calls).toEqual(["idle", "thinking", "stopped"]);
+  });
+
+  test("re-asserts thinking after a reconnect so a long turn is not stranded idle", async () => {
+    const clients: FakeClient[] = [];
+    let failNextHeartbeat = false;
+    let heartbeat = (): void => undefined;
+    class ReconnectingClient extends FakeClient {
+      override async heartbeatMainAgent() {
+        if (failNextHeartbeat) {
+          failNextHeartbeat = false;
+          throw new Error("connection reset");
+        }
+        return super.heartbeatMainAgent();
+      }
+    }
+    const reporter = new TopicAgentReporter({
+      environment: {
+        PI_WORK_TOPIC_ID: "topic",
+        PI_WORK_SOCKET: "/tmp/socket",
+        PI_WORK_REGISTRATION_TOKEN: "token",
+        PI_WORK_SESSION_ID: "session-id",
+      },
+      connect: async () => {
+        const client = new ReconnectingClient();
+        clients.push(client);
+        return client;
+      },
+      setInterval: ((callback: () => void) => {
+        heartbeat = callback;
+        return 1;
+      }) as typeof setInterval,
+      clearInterval: (() => undefined) as typeof clearInterval,
+    });
+    await reporter.sessionStart(context());
+    // The agent starts a long thinking turn (for example a Ralph Loop issue).
+    await reporter.thinking();
+    // The heartbeat connection drops mid-turn and the reporter reconnects.
+    failNextHeartbeat = true;
+    heartbeat();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await reporter.shutdown();
+    // The reconnected client re-registers (idle) then re-asserts the in-flight
+    // thinking, instead of stranding the lease at idle until the next turn.
+    expect(clients[0]!.calls).toEqual(["idle", "thinking"]);
+    expect(clients[1]!.calls).toEqual(["idle", "thinking", "stopped"]);
   });
 });
