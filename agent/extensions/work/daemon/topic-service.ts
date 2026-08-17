@@ -82,6 +82,7 @@ export interface ConfirmationRequirement {
 export type TopicMutationResult =
   | { status: "ready"; topic: TopicManifest }
   | { status: "renamed"; topic: TopicManifest }
+  | { status: "refocused"; topic: TopicManifest }
   | { status: "deleted"; topicId: string }
   | { status: "rejected"; topicId: string }
   | { status: "denied" | "failed" | "timeout" | "cancelled"; reason: string; topic: TopicManifest }
@@ -322,6 +323,24 @@ export class TopicService {
   delete(clientId: string, requestId: string, topicId: string): Promise<TopicMutationResult> {
     return this.deduplicate(clientId, requestId, `delete:${topicId}`, () =>
       this.requestDeletion(topicId, clientId, this.requestKey(clientId, requestId)),
+    ) as Promise<TopicMutationResult>;
+  }
+
+  setFocus(
+    clientId: string,
+    requestId: string,
+    topicId: string,
+    focused: boolean,
+  ): Promise<TopicMutationResult> {
+    return this.deduplicate(clientId, requestId, `set-focus:${topicId}:${focused}`, () =>
+      this.serializeTopic(topicId, async () => {
+        const topic = await this.options.topics.update(topicId, (current) =>
+          current.focused === focused ? current : { ...current, focused },
+        );
+        this.topicById.set(topic.id, topic);
+        this.emit({ type: "topic-changed", topic });
+        return { status: "refocused", topic };
+      }),
     ) as Promise<TopicMutationResult>;
   }
 

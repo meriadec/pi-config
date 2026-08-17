@@ -77,18 +77,14 @@ export interface DashboardState {
   wizard?: TopicWizardState;
   rename?: TopicRenameState;
   confirmation?: DashboardConfirmation;
-  submissionInFlight?:
-    | "create"
-    | "retry"
-    | "rename"
-    | "confirm"
-    | "reject"
-    | "workspace"
-    | "terminal"
-    | "agent"
-    | "reset-agent"
-    | "pull-request"
-    | "delete";
+  /**
+   * In-flight client submissions keyed by submission key: a Topic id for a
+   * Topic-scoped action, `"create"` for the add-topic wizard, and
+   * `"confirm:<token>"` for a confirmation. Keying the map per Topic lets
+   * independent Topics run actions at the same time, so a long provisioning
+   * run on one Topic never blocks actions on the others.
+   */
+  submissions: Readonly<Record<string, SubmissionAction>>;
   message?: string;
 }
 
@@ -119,6 +115,7 @@ export function initialDashboardState(): DashboardState {
     pullRequests: {},
     unavailableActions: {},
     shimmerPhase: 0,
+    submissions: {},
   };
 }
 
@@ -293,8 +290,34 @@ export type DashboardAction =
       topicId: string;
     }
   | { type: "rename"; topicId: string; name: string }
+  | { type: "set-focus"; topicId: string; focused: boolean }
   | { type: "confirm"; token: string }
   | { type: "reject"; token: string };
+
+export type SubmissionAction = DashboardAction["type"];
+
+/** The submission-map key that a client action occupies while it is in flight. */
+export function submissionKey(action: DashboardAction): string {
+  switch (action.type) {
+    case "create":
+      return "create";
+    case "set-focus":
+      // Key by target state so a rapid Unfocus then Focus of one Topic never coalesce.
+      return `focus:${action.topicId}:${action.focused}`;
+    case "confirm":
+    case "reject":
+      return `confirm:${action.token}`;
+    default:
+      return action.topicId;
+  }
+}
+
+/** True while the selected Topic already has an in-flight submission. */
+function isSelectedTopicBusy(state: DashboardState): boolean {
+  return (
+    state.selectedTopicId !== undefined && state.submissions[state.selectedTopicId] !== undefined
+  );
+}
 
 export interface DashboardInputResult {
   state: DashboardState;
@@ -307,7 +330,7 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
   if (state.confirmation !== undefined) return handleConfirmationInput(state, data);
   if (state.rename !== undefined) return handleRenameInput(state, data);
   if (state.wizard !== undefined) return handleWizardInput(state, data);
-  if ((data === "a" || data === "A") && state.submissionInFlight === undefined) {
+  if ((data === "a" || data === "A") && state.submissions["create"] === undefined) {
     return {
       state: {
         ...state,
@@ -318,22 +341,25 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
       exit: false,
     };
   }
-  if (data === "r" && state.submissionInFlight === undefined) {
+  if (data === "r") {
     return { state, exit: false, refresh: true };
   }
-  if (data === "m" && state.focus === "list" && state.submissionInFlight === undefined) {
+  if ((data === "J" || data === "K") && state.focus === "list") {
+    return setSelectedTopicFocus(state, data === "K");
+  }
+  if (data === "m" && state.focus === "list" && !isSelectedTopicBusy(state)) {
     const action = topicActions(state).find((item) => item.id === "agent");
     if (action !== undefined && !action.unavailable) return invokeTopicAction(state, action);
   }
-  if (data === "o" && state.focus === "list" && state.submissionInFlight === undefined) {
+  if (data === "o" && state.focus === "list" && !isSelectedTopicBusy(state)) {
     const action = topicActions(state).find((item) => item.id === "workspace");
     if (action !== undefined && !action.unavailable) return invokeTopicAction(state, action);
   }
-  if (data === "p" && state.focus === "list" && state.submissionInFlight === undefined) {
+  if (data === "p" && state.focus === "list" && !isSelectedTopicBusy(state)) {
     const action = topicActions(state).find((item) => item.id === "pull-request");
     if (action !== undefined && !action.unavailable) return invokeTopicAction(state, action);
   }
-  if (data === "t" && state.focus === "list" && state.submissionInFlight === undefined) {
+  if (data === "t" && state.focus === "list" && !isSelectedTopicBusy(state)) {
     const action = topicActions(state).find((item) => item.id === "terminal");
     if (action !== undefined && !action.unavailable) return invokeTopicAction(state, action);
   }
@@ -353,7 +379,7 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
   if (matchesKey(data, Key.right) || data === "l") return moveFocus(state, 1);
   if (matchesKey(data, Key.left) || data === "h") return moveFocus(state, -1);
   if (matchesKey(data, Key.enter) && state.selectedTopicId !== undefined) {
-    if (state.focus === "actions" && state.submissionInFlight === undefined) {
+    if (state.focus === "actions" && !isSelectedTopicBusy(state)) {
       const action = topicActions(state)[state.focusedAction];
       if (action === undefined || action.unavailable) return { state, exit: false };
       if (action.id === "rename") return openRenamePrompt(state);
@@ -445,12 +471,12 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
         exit: false,
       };
     }
-    if (state.submissionInFlight !== undefined) return { state, exit: false };
+    if (state.submissions["create"] !== undefined) return { state, exit: false };
     const { wizard: _wizard, ...rest } = state;
     return {
       state: {
         ...rest,
-        submissionInFlight: "create",
+        submissions: { ...rest.submissions, create: "create" },
         message: `Creating ${wizard.repository} · ${wizard.branch}…`,
       },
       exit: false,
@@ -564,7 +590,7 @@ function handleRenameInput(state: DashboardState, data: string): DashboardInputR
     return { state: { ...rest, message: "Rename cancelled." }, exit: false };
   }
   if (matchesKey(data, Key.enter)) {
-    if (state.submissionInFlight !== undefined) return { state, exit: false };
+    if (state.submissions[rename.topicId] !== undefined) return { state, exit: false };
     const name = rename.name.trim();
     if (name.length === 0) {
       return {
@@ -581,7 +607,7 @@ function handleRenameInput(state: DashboardState, data: string): DashboardInputR
     return {
       state: {
         ...rest,
-        submissionInFlight: "rename",
+        submissions: { ...rest.submissions, [rename.topicId]: "rename" },
         message: `Renaming Topic to ${name}…`,
       },
       exit: false,
@@ -605,13 +631,14 @@ export function updateRenameField(state: DashboardState, value: string): Dashboa
 }
 
 function handleConfirmationInput(state: DashboardState, data: string): DashboardInputResult {
-  if (state.submissionInFlight !== undefined) return { state, exit: false };
   const confirmation = state.confirmation!;
+  const key = `confirm:${confirmation.token}`;
+  if (state.submissions[key] !== undefined) return { state, exit: false };
   if (data === "y" || data === "Y" || matchesKey(data, Key.enter)) {
     return {
       state: {
         ...state,
-        submissionInFlight: "confirm",
+        submissions: { ...state.submissions, [key]: "confirm" },
         message: `Confirming ${confirmation.action}…`,
       },
       exit: false,
@@ -622,7 +649,7 @@ function handleConfirmationInput(state: DashboardState, data: string): Dashboard
     return {
       state: {
         ...state,
-        submissionInFlight: "reject",
+        submissions: { ...state.submissions, [key]: "reject" },
         message: `Rejecting ${confirmation.action}…`,
       },
       exit: false,
@@ -719,9 +746,17 @@ function renderList(state: DashboardState, width: number, height: number): strin
       lines.push("", truncateToWidth("No Topics yet.", width));
     } else {
       // Render only the visible window. A large Topic store must not create an unbounded frame.
-      const capacity = Math.max(1, height - lines.length - 5);
+      // A blank separator splits the Focused (hot) part from the Unfocused part; it appears
+      // only at the transition inside the window, so one blank line of capacity is reserved
+      // when both parts exist.
+      const focusedCount = view.topics.filter((topic) => topic.focused).length;
+      const bothParts = focusedCount > 0 && focusedCount < view.topics.length;
+      const capacity = Math.max(1, height - lines.length - 5 - (bothParts ? 1 : 0));
+      let previousFocused: boolean | undefined;
       for (const topic of visibleTopics(view.topics, state.selectedTopicId, capacity)) {
+        if (previousFocused === true && !topic.focused) lines.push("");
         lines.push(renderTopicRow(state, topic, width));
+        previousFocused = topic.focused;
       }
     }
     for (const diagnostic of state.diagnostics.slice(0, 3)) {
@@ -736,7 +771,7 @@ function renderList(state: DashboardState, width: number, height: number): strin
   lines.push(truncateToWidth(status, width));
   lines.push(
     truncateToWidth(
-      "a Add · j/k or ↑/↓ move · enter actions · o workspace · t terminal · m Main Agent · p PR · r refresh · esc quit",
+      "a Add · j/k or ↑/↓ move · ⇧J/⇧K focus · enter actions · o workspace · t terminal · m Main Agent · p PR · r refresh · esc quit",
       width,
     ),
   );
@@ -1030,6 +1065,25 @@ function moveSelection(state: DashboardState, delta: number): DashboardInputResu
   };
 }
 
+/**
+ * Sets the selected Topic's Focus. Idempotent: a no-op when it already has that Focus.
+ * Updates optimistically and re-sorts so the Topic visibly crosses the separator; the
+ * daemon `topic-changed` event later reconciles. Selection follows the moved Topic.
+ */
+function setSelectedTopicFocus(state: DashboardState, focused: boolean): DashboardInputResult {
+  const topic = state.topics.find((item) => item.id === state.selectedTopicId);
+  if (topic === undefined || topic.focused === focused) return { state, exit: false };
+  const topics = sortTopics(
+    state.topics.map((item) => (item.id === topic.id ? { ...item, focused } : item)),
+    state.mainAgents,
+  );
+  return {
+    state: { ...state, topics },
+    exit: false,
+    action: { type: "set-focus", topicId: topic.id, focused },
+  };
+}
+
 function moveActionFocus(state: DashboardState, delta: number): DashboardInputResult {
   const actions = topicActions(state);
   if (actions.length === 0) return { state, exit: false };
@@ -1158,7 +1212,7 @@ function invokeTopicAction(
   return {
     state: {
       ...state,
-      submissionInFlight: action.id,
+      submissions: { ...state.submissions, [state.selectedTopicId]: action.id },
       message: `${action.label}…`,
     },
     exit: false,
@@ -1186,7 +1240,7 @@ function isMainAgentRunning(state: MainAgentState): boolean {
   return state !== "stopped" && state !== "failed";
 }
 
-/** Sorts by name, then bubbles active Topics (running Main Agent) above inactive ones. */
+/** Sorts by Focus (Focused first), then bubbles active Topics above inactive ones, then name. */
 function sortTopics(
   topics: readonly TopicManifest[],
   mainAgents: readonly MainAgentLease[],
@@ -1195,6 +1249,7 @@ function sortTopics(
     mainAgents.filter((agent) => isMainAgentRunning(agent.state)).map((agent) => agent.topicId),
   );
   return [...topics].toSorted((left, right) => {
+    if (left.focused !== right.focused) return left.focused ? -1 : 1;
     const leftActive = active.has(left.id);
     const rightActive = active.has(right.id);
     if (leftActive !== rightActive) return leftActive ? -1 : 1;

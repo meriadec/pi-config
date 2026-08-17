@@ -20,6 +20,7 @@ import {
   hasThinkingAgent,
   reduceDashboardEvent,
   renderDashboard,
+  submissionKey,
   moveRepositoryHighlight,
   applyRepositoryCompletion,
   type DashboardState,
@@ -44,6 +45,12 @@ export interface DashboardClient {
   renameTopic(
     topicId: string,
     name: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult>;
+  setTopicFocus(
+    topicId: string,
+    focused: boolean,
     requestId?: string,
     timeoutMs?: number,
   ): Promise<TopicMutationResult>;
@@ -98,7 +105,7 @@ export class WorkDashboardComponent implements Component, Focusable {
   private disposed = false;
   private connecting = false;
   private hasConnected = false;
-  private mutation: PendingMutation | undefined;
+  private readonly mutations = new Map<string, PendingMutation>();
   private readonly options: DashboardComponentOptions;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectDelayMs = 100;
@@ -272,7 +279,9 @@ export class WorkDashboardComponent implements Component, Focusable {
       this.hasConnected = true;
       this.reconnectDelayMs = 100;
       this.options.tui.requestRender();
-      if (this.mutation !== undefined) void this.executeMutation(this.mutation, client);
+      if (this.mutations.size > 0) {
+        for (const mutation of this.mutations.values()) void this.executeMutation(mutation, client);
+      }
     } catch (error) {
       candidate?.close();
       this.client?.close();
@@ -317,43 +326,48 @@ export class WorkDashboardComponent implements Component, Focusable {
   }
 
   private beginAction(action: DashboardAction): void {
-    if (this.mutation !== undefined) return;
+    const key = submissionKey(action);
+    if (this.mutations.has(key)) return;
     if (this.client === undefined) {
-      this.state = withoutSubmission(this.state, "workd is not connected.");
+      this.state = withoutSubmission(this.state, key, "workd is not connected.");
       this.options.tui.requestRender();
       return;
     }
-    const mutation: PendingMutation = { action, requestId: randomUUID() };
-    this.mutation = mutation;
+    const mutation: PendingMutation = { action, requestId: randomUUID(), key };
+    this.mutations.set(key, mutation);
     void this.executeMutation(mutation, this.client);
   }
 
   private async executeMutation(mutation: PendingMutation, client: DashboardClient): Promise<void> {
     try {
       const result = await requestMutation(client, mutation);
-      if (this.disposed || this.mutation !== mutation) return;
-      this.mutation = undefined;
-      this.applyMutationResult(result, mutation.action);
+      if (this.disposed || this.mutations.get(mutation.key) !== mutation) return;
+      this.mutations.delete(mutation.key);
+      this.applyMutationResult(result, mutation.action, mutation.key);
     } catch (error) {
-      if (this.disposed || this.mutation !== mutation) return;
+      if (this.disposed || this.mutations.get(mutation.key) !== mutation) return;
       // A replacement client retries the same request and client IDs after transport loss.
       if (this.client !== client) return;
-      this.mutation = undefined;
-      this.state = withoutSubmission(this.state, errorMessage(error));
+      this.mutations.delete(mutation.key);
+      this.state = withoutSubmission(this.state, mutation.key, errorMessage(error));
       this.options.tui.requestRender();
     }
   }
 
-  private applyMutationResult(result: WorkActionResult, action: DashboardAction): void {
+  private applyMutationResult(
+    result: WorkActionResult,
+    action: DashboardAction,
+    key: string,
+  ): void {
     if ("status" in result && result.status === "confirmation-required") {
       this.state = {
-        ...withoutSubmission(this.state),
+        ...withoutSubmission(this.state, key),
         confirmation: { token: result.token, action: result.action, text: result.text },
         message: result.text,
       };
     } else {
       const message = actionResultMessage(result);
-      const { confirmation: _confirmation, ...state } = withoutSubmission(this.state);
+      const { confirmation: _confirmation, ...state } = withoutSubmission(this.state, key);
       if (
         "status" in result &&
         result.status === "denied" &&
@@ -458,6 +472,7 @@ export class WorkDashboardComponent implements Component, Focusable {
 interface PendingMutation {
   action: DashboardAction;
   requestId: string;
+  key: string;
 }
 
 const MUTATION_TIMEOUT_MS = 10 * 60_000;
@@ -482,6 +497,13 @@ function requestMutation(
         mutation.requestId,
         MUTATION_TIMEOUT_MS,
       );
+    case "set-focus":
+      return client.setTopicFocus(
+        action.topicId,
+        action.focused,
+        mutation.requestId,
+        MUTATION_TIMEOUT_MS,
+      );
     case "workspace":
       return client.accessWorkspace(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
     case "terminal":
@@ -501,9 +523,10 @@ function requestMutation(
   }
 }
 
-function withoutSubmission(state: DashboardState, message?: string): DashboardState {
-  const { submissionInFlight: _submission, message: _message, ...rest } = state;
-  return message === undefined ? rest : { ...rest, message };
+function withoutSubmission(state: DashboardState, key: string, message?: string): DashboardState {
+  const { [key]: _removed, ...submissions } = state.submissions;
+  const { message: _message, ...rest } = state;
+  return message === undefined ? { ...rest, submissions } : { ...rest, submissions, message };
 }
 
 function actionResultMessage(result: WorkActionResult): string {
@@ -513,6 +536,10 @@ function actionResultMessage(result: WorkActionResult): string {
       return `Topic ${result.topic.name} is ready.`;
     case "renamed":
       return `Topic renamed to ${result.topic.name}.`;
+    case "refocused":
+      return result.topic.focused
+        ? `Focused Topic ${result.topic.name}.`
+        : `Unfocused Topic ${result.topic.name}.`;
     case "deleted":
       return "Topic deleted.";
     case "rejected":

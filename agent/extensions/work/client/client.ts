@@ -127,6 +127,20 @@ export class WorkClient {
     ) as Promise<TopicMutationResult>;
   }
 
+  setTopicFocus(
+    topicId: string,
+    focused: boolean,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
+    return this.request(
+      "topic.set-focus",
+      { topicId, focused },
+      timeoutMs,
+      requestId,
+    ) as Promise<TopicMutationResult>;
+  }
+
   deleteTopic(
     topicId: string,
     requestId?: string,

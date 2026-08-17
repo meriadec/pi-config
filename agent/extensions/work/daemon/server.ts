@@ -237,6 +237,14 @@ export class WorkDaemon {
             request.name,
           );
           break;
+        case "topic.set-focus":
+          result = await this.requireTopicService().setFocus(
+            request.clientId,
+            request.id,
+            request.topicId,
+            request.focused,
+          );
+          break;
         case "topic.delete":
           result = await this.requireTopicService().delete(
             request.clientId,

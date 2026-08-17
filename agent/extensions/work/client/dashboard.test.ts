@@ -43,7 +43,12 @@ async function temporaryRoot(): Promise<string> {
   return root;
 }
 
-function topic(id: string, name: string, setup: TopicManifest["setup"]["state"] = "ready") {
+function topic(
+  id: string,
+  name: string,
+  setup: TopicManifest["setup"]["state"] = "ready",
+  focused = true,
+) {
   return {
     version: 1,
     id,
@@ -58,6 +63,7 @@ function topic(id: string, name: string, setup: TopicManifest["setup"]["state"] 
       ...(setup === "setup-failed" ? { reason: "wt failed" } : {}),
     },
     worktreePath: setup === "ready" ? `/work/${name}` : null,
+    focused,
     mainAgent: { sessionId: id, sessionFile: null },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
@@ -83,7 +89,7 @@ function snapshot(
     baseCheckouts: Object.fromEntries(
       topics.map((item) => [item.id, `/base/${item.repository.split("/")[1]}`]),
     ),
-    daemon: { protocolVersion: 8, pid: 10, startedAt: "2026-01-01T00:00:00.000Z" },
+    daemon: { protocolVersion: 9, pid: 10, startedAt: "2026-01-01T00:00:00.000Z" },
   };
 }
 
@@ -454,6 +460,62 @@ describe("dashboard state and navigation", () => {
     expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B]);
   });
 
+  test("Focus partitions the list above active-agent bubbling, then Focused sort holds", () => {
+    let state = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([topic(ID_A, "Alpha", "ready", true), topic(ID_B, "Beta", "ready", false)]),
+    );
+    // Beta is Unfocused, so even a running Main Agent keeps it below the Focused Alpha.
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_B, sessionId: ID_B, state: "thinking", connected: true },
+    });
+    expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B]);
+  });
+
+  test("Shift+J Unfocuses and Shift+K Focuses the selection, following the moved Topic", () => {
+    let state = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([topic(ID_A, "Alpha"), topic(ID_B, "Beta")]),
+    );
+    // Unfocus Alpha: it sinks below Beta, selection follows, and an action is dispatched.
+    const down = handleDashboardInput(state, "J");
+    expect(down.action).toEqual({ type: "set-focus", topicId: ID_A, focused: false });
+    state = down.state;
+    expect(state.topics.map((item) => item.id)).toEqual([ID_B, ID_A]);
+    expect(state.selectedTopicId).toBe(ID_A);
+    expect(state.topics.find((item) => item.id === ID_A)?.focused).toBe(false);
+    // Shift+J again is an idempotent no-op: no further action.
+    expect(handleDashboardInput(state, "J").action).toBeUndefined();
+    // Refocus Alpha: it rises back above Beta.
+    const up = handleDashboardInput(state, "K");
+    expect(up.action).toEqual({ type: "set-focus", topicId: ID_A, focused: true });
+    state = up.state;
+    expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B]);
+  });
+
+  test("renders a blank separator only between a non-empty Focused and Unfocused part", () => {
+    const both = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([topic(ID_A, "Alpha", "ready", true), topic(ID_B, "Beta", "ready", false)]),
+    );
+    const rendered = renderDashboard(both, 100, 24);
+    const alphaRow = rendered.findIndex((line) => line.includes("Alpha"));
+    const betaRow = rendered.findIndex((line) => line.includes("Beta"));
+    expect(rendered[betaRow - 1]?.trim()).toBe("");
+    expect(betaRow).toBe(alphaRow + 2);
+
+    // All Focused: no separator between the two rows.
+    const allFocused = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([topic(ID_A, "Alpha"), topic(ID_B, "Beta")]),
+    );
+    const rows = renderDashboard(allFocused, 100, 24);
+    const a = rows.findIndex((line) => line.includes("Alpha"));
+    const b = rows.findIndex((line) => line.includes("Beta"));
+    expect(b).toBe(a + 1);
+  });
+
   test("keeps the ambient style across the truncation ellipsis on a narrow, selected row", () => {
     // A long name at a narrow width forces truncateToWidth to insert an ellipsis. The
     // library emits a bare SGR reset (\x1b[0m) around that ellipsis, which would cancel
@@ -551,9 +613,29 @@ describe("dashboard state and navigation", () => {
     expect(result.state).toMatchObject({
       focus: "list",
       sidebarOpen: false,
-      submissionInFlight: "agent",
+      submissions: { [ID_A]: "agent" },
       message: "Open Main Agent…",
     });
+  });
+
+  test("lets another Topic open its Main Agent while one Topic is provisioning", () => {
+    let state = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([topic(ID_A, "Alpha"), topic(ID_B, "Beta", "provisioning")]),
+    );
+    // A create/retry submission for Beta occupies only its own key.
+    state = { ...state, selectedTopicId: ID_A, submissions: { [ID_B]: "retry" } };
+
+    const result = handleDashboardInput(state, "m");
+
+    expect(result.action).toEqual({ type: "agent", topicId: ID_A });
+  });
+
+  test("blocks a second action on the same Topic while one is in flight", () => {
+    let state = hydrateDashboard(initialDashboardState(), snapshot([topic(ID_A, "Alpha")]));
+    state = { ...state, selectedTopicId: ID_A, submissions: { [ID_A]: "terminal" } };
+
+    expect(handleDashboardInput(state, "m").action).toBeUndefined();
   });
 
   test("offers a new Main Agent action in the action rail", () => {
@@ -586,7 +668,7 @@ describe("dashboard state and navigation", () => {
     expect(result.state).toMatchObject({
       focus: "list",
       sidebarOpen: false,
-      submissionInFlight: "workspace",
+      submissions: { [ID_A]: "workspace" },
       message: "Access Topic Workspace…",
     });
   });
@@ -607,7 +689,7 @@ describe("dashboard state and navigation", () => {
     const terminal = handleDashboardInput(state, "\r");
     expect(terminal.action).toEqual({ type: "terminal", topicId: ID_A });
 
-    const { submissionInFlight: _submission, ...readyState } = terminal.state;
+    const readyState = { ...terminal.state, submissions: {} };
     state = handleDashboardInput(readyState, "\x1b[A").state;
     expect(state.focusedAction).toBe(0);
     expect(handleDashboardInput(state, "\r").action).toEqual({
@@ -686,6 +768,7 @@ class FakeDashboardClient implements DashboardClient {
   createCalls: Array<{ input: NewTopic; requestId?: string }> = [];
   retryCalls: Array<{ topicId: string; requestId?: string }> = [];
   renameCalls: Array<{ topicId: string; name: string; requestId?: string }> = [];
+  setFocusCalls: Array<{ topicId: string; focused: boolean; requestId?: string }> = [];
   actionCalls: Array<{
     type: "delete" | "workspace" | "terminal" | "agent" | "reset-agent" | "pull-request";
     topicId: string;
@@ -738,6 +821,19 @@ class FakeDashboardClient implements DashboardClient {
   ): Promise<TopicMutationResult> {
     this.renameCalls.push({ topicId, name, ...(requestId === undefined ? {} : { requestId }) });
     return this.renameResult;
+  }
+
+  async setTopicFocus(
+    topicId: string,
+    focused: boolean,
+    requestId?: string,
+  ): Promise<TopicMutationResult> {
+    this.setFocusCalls.push({
+      topicId,
+      focused,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    return { status: "refocused", topic: { ...topic(topicId, "Alpha"), focused } };
   }
 
   async deleteTopic(topicId: string, requestId?: string): Promise<TopicMutationResult> {
@@ -861,7 +957,7 @@ describe("dashboard submission behavior", () => {
     expect(failedDetails).toContain("wt failed");
     finish({ status: "failed", reason: "wt failed", topic: topic(ID_B, "Beta", "setup-failed") });
     await Bun.sleep(0);
-    expect(component.snapshotState().submissionInFlight).toBeUndefined();
+    expect(component.snapshotState().submissions).toEqual({});
     component.dispose();
   });
 

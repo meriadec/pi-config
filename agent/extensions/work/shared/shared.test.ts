@@ -63,6 +63,7 @@ function manifest(id = ID_A): TopicManifest {
       setupCommandsRun: false,
     },
     worktreePath: null,
+    focused: true,
     mainAgent: { sessionId: id, sessionFile: null },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",

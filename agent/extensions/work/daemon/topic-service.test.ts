@@ -405,6 +405,27 @@ describe("Topic Service daemon integration", () => {
     await expect(item.client.renameTopic(topic.id, "   ")).rejects.toThrow();
   });
 
+  test("sets and clears Topic Focus, persisting the durable flag", async () => {
+    const item = await world();
+    const created = await item.client.createTopic({
+      name: "Hot topic",
+      branch: "feat-focus",
+      repository: "LedgerHQ/revault",
+    });
+    expect(created.status).toBe("ready");
+    const topic = (await item.client.snapshot()).topics[0]!;
+    // New Topics are born Focused.
+    expect(topic.focused).toBe(true);
+
+    const unfocused = await item.client.setTopicFocus(topic.id, false);
+    expect(unfocused.status).toBe("refocused");
+    expect((await item.client.snapshot()).topics[0]!.focused).toBe(false);
+
+    const refocused = await item.client.setTopicFocus(topic.id, true);
+    expect(refocused.status).toBe("refocused");
+    expect((await item.client.snapshot()).topics[0]!.focused).toBe(true);
+  });
+
   test("runs independent Topic creation concurrently", async () => {
     const item = await world();
     let release = (): void => undefined;

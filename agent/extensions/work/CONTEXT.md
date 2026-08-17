@@ -33,6 +33,16 @@ One line of a Repository Recipe. A full shell line (with arguments) run in the W
 The `allow` / `ask` / `deny` decision that gates a sensitive Action (clone, worktree creation,
 etc.), resolved from defaults plus per-repository and per-Topic overrides.
 
+**Focus**:
+The durable follow-state of a Topic: **Focused** (the hot list, on top) or **Unfocused** (the
+secondary list, below a blank separator). A per-Topic attribute, not a container — the two on-screen
+lists are only a rendering of this one state. Focus is the dominant sort key: the list splits into
+the Focused part and the Unfocused part, and today's sort (active Main Agent first, then name) runs
+inside each part. Toggled from the list with Shift+K (Focus) and Shift+J (Unfocus), each an
+idempotent state-set; selection follows the moved Topic. A Topic with no recorded state is Focused,
+so new Topics and Topics from older manifests start Focused.
+_Avoid_: hot list, pinned, archived, two lists.
+
 **Known repository**:
 An `owner/repo` repository already declared in `~/work/config.json` (a key of the Repository
 Recipe map). The set of Known repositories is offered as fuzzy-matched completions when you name a

@@ -132,6 +132,7 @@ export function createTopicStore(paths: WorkPaths, options: TopicStoreOptions = 
               setupCommandsRun: false,
             },
             worktreePath: null,
+            focused: true,
             mainAgent: { sessionId: id, sessionFile: null },
             createdAt: timestamp,
             updatedAt: timestamp,

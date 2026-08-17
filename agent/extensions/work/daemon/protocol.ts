@@ -4,7 +4,7 @@ import type { TopicDiagnostic } from "../shared/topic-store.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 8 as const;
+export const WORK_PROTOCOL_VERSION = 9 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 
@@ -16,6 +16,7 @@ export type RequestAction =
   | "topic.create"
   | "topic.retry"
   | "topic.rename"
+  | "topic.set-focus"
   | "topic.delete"
   | "workspace.access"
   | "terminal.open"
@@ -41,6 +42,7 @@ export type WorkRequest =
   | (RequestBase & { action: "ping" | "snapshot" | "subscribe" | "refresh" })
   | (RequestBase & { action: "topic.create"; input: NewTopic })
   | (RequestBase & { action: "topic.rename"; topicId: string; name: string })
+  | (RequestBase & { action: "topic.set-focus"; topicId: string; focused: boolean })
   | (RequestBase & {
       action:
         | "topic.retry"
@@ -245,6 +247,16 @@ export function parseRequest(text: string): WorkRequest {
         action: "topic.rename",
         topicId: shortString(value["topicId"], "invalid-arguments", "Topic id is required.", id),
         name: shortString(value["name"], "invalid-arguments", "Topic name is required.", id),
+      };
+    case "topic.set-focus":
+      if (typeof value["focused"] !== "boolean") {
+        throw new ProtocolError("invalid-arguments", "Focused must be a boolean.", id);
+      }
+      return {
+        ...base,
+        action: "topic.set-focus",
+        topicId: shortString(value["topicId"], "invalid-arguments", "Topic id is required.", id),
+        focused: value["focused"],
       };
     case "topic.retry":
     case "topic.delete":
