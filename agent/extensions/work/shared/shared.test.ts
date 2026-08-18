@@ -12,13 +12,14 @@ import {
   parseActionPolicy,
   parseMainAgentState,
   parseRepository,
+  pullRequestStatus,
   parseSetupState,
   parseTopicManifest,
   parseWorkConfig,
   resolveActionPolicy,
   resolveBaseCheckout,
 } from "./index.ts";
-import type { TopicManifest, WorkConfig } from "./index.ts";
+import type { PullRequestRef, TopicManifest, WorkConfig } from "./index.ts";
 
 const roots: string[] = [];
 const ID_A = "123e4567-e89b-42d3-a456-426614174000";
@@ -95,6 +96,23 @@ describe("domain validation", () => {
     expect(() => parseActionPolicy("prompt")).toThrow(WorkDataError);
     expect(() => parseSetupState("done")).toThrow(WorkDataError);
     expect(() => parseMainAgentState("running")).toThrow(WorkDataError);
+  });
+
+  test("shows approved for a formally approved pull request", () => {
+    const approved: PullRequestRef = {
+      number: 7,
+      url: "https://github.com/LedgerHQ/revault/pull/7",
+      state: "open",
+      draft: false,
+      ci: "passing",
+      reviewPending: true,
+      copilotReviewed: true,
+      changesRequested: false,
+      approved: true,
+      unresolvedThreads: 0,
+    };
+
+    expect(pullRequestStatus(approved)).toBe("approved");
   });
 
   test("accepts valid topics and rejects unsafe topic data", () => {

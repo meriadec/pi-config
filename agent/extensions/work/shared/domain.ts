@@ -124,10 +124,11 @@ export function pullRequestStatus(ref: PullRequestRef): PullRequestStatus {
   if (ref.ci === "failing") return "ci-failing";
   if (ref.changesRequested || ref.unresolvedThreads > 0) return "feedback";
   if (ref.ci === "pending") return "checks";
+  // Formal approval takes precedence over reviewer-specific progress signals.
+  if (ref.approved) return "approved";
   // Copilot review is done and every thread resolved, even while other reviewers are still requested.
   if (ref.copilotReviewed) return "ready";
   if (ref.reviewPending) return "reviewing";
-  if (ref.approved) return "approved";
   return "clear";
 }
 
