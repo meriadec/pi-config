@@ -816,9 +816,11 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
       ? dim(agent)
       : agent === "waiting-for-human"
         ? yellow(agent)
-        : agent === "thinking"
-          ? shimmer(agent, state.shimmerPhase)
-          : agent;
+        : agent === "tracking-pr"
+          ? purple(agent)
+          : agent === "thinking"
+            ? shimmer(agent, state.shimmerPhase)
+            : agent;
   const pullRequest = state.pullRequests[topic.id];
   // A live Repository Recipe phase (setup N/M) replaces the durable setup state.
   // A settled "ready" Topic shows a blank cell; only intermediate states matter.
@@ -935,7 +937,13 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
         : [`Pull Request: ${pullRequestCell(state.pullRequests[topic.id])}`]),
       `Worktree: ${topic.worktreePath ?? "not ready"}`,
       `Setup: ${setupDetail ?? topic.setup.state}`,
-      `Main Agent: ${agent?.state === "thinking" ? shimmer(agent.state, state.shimmerPhase) : (agent?.state ?? "stopped")}`,
+      `Main Agent: ${
+        agent?.state === "thinking"
+          ? shimmer(agent.state, state.shimmerPhase)
+          : agent?.state === "tracking-pr"
+            ? purple(agent.state)
+            : (agent?.state ?? "stopped")
+      }`,
       `Workspace: ${state.workspaces[topic.id] ?? "not observable"}`,
       ...(diagnostic === undefined ? [] : [`Diagnostic: ${diagnostic}`]),
       "",

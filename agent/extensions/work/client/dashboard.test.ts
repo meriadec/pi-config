@@ -3,7 +3,7 @@ import { access, mkdtemp, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import type { DaemonSnapshot, WorkEvent } from "../daemon/protocol.ts";
+import { WORK_PROTOCOL_VERSION, type DaemonSnapshot, type WorkEvent } from "../daemon/protocol.ts";
 import type { TopicMutationResult, WorkActionResult } from "../daemon/topic-service.ts";
 import type { MainAgentActionResult, WorkspaceActionResult } from "../daemon/desktop.ts";
 import type { NewTopic, TopicManifest } from "../shared/domain.ts";
@@ -89,7 +89,11 @@ function snapshot(
     baseCheckouts: Object.fromEntries(
       topics.map((item) => [item.id, `/base/${item.repository.split("/")[1]}`]),
     ),
-    daemon: { protocolVersion: 9, pid: 10, startedAt: "2026-01-01T00:00:00.000Z" },
+    daemon: {
+      protocolVersion: WORK_PROTOCOL_VERSION,
+      pid: 10,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
   };
 }
 
@@ -731,6 +735,14 @@ describe("dashboard state and navigation", () => {
     // A thinking Main Agent shimmers, so the label is a per-letter colour sweep, not plain text.
     expect(detail).toContain("Main Agent: \x1b[38;5;231mt\x1b[39m");
     expect(detail).toContain("Workspace: 4");
+
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_A, sessionId: ID_A, state: "tracking-pr", connected: true },
+    });
+    expect(renderDashboard(state, 100, 24).join("\n")).toContain(
+      "Main Agent: \x1b[38;5;183mtracking-pr\x1b[39m",
+    );
 
     for (const agentState of ["waiting-for-human", "stopped"] as const) {
       state = reduceDashboardEvent(state, {

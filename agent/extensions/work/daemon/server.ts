@@ -306,6 +306,9 @@ export class WorkDaemon {
         case "agent.thinking":
           result = this.requireMainAgent().transition(client.connectionId, "thinking");
           break;
+        case "agent.tracking-pr":
+          result = this.requireMainAgent().transition(client.connectionId, "tracking-pr");
+          break;
         case "agent.waiting":
           result = this.requireMainAgent().transition(client.connectionId, "waiting-for-human");
           break;

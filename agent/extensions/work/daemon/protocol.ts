@@ -4,7 +4,7 @@ import type { TopicDiagnostic } from "../shared/topic-store.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 9 as const;
+export const WORK_PROTOCOL_VERSION = 10 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 
@@ -26,6 +26,7 @@ export type RequestAction =
   | "agent.register"
   | "agent.heartbeat"
   | "agent.thinking"
+  | "agent.tracking-pr"
   | "agent.waiting"
   | "agent.stopped"
   | "action.confirm"
@@ -63,7 +64,12 @@ export type WorkRequest =
       affiliationToken?: string;
     })
   | (RequestBase & {
-      action: "agent.heartbeat" | "agent.thinking" | "agent.waiting" | "agent.stopped";
+      action:
+        | "agent.heartbeat"
+        | "agent.thinking"
+        | "agent.tracking-pr"
+        | "agent.waiting"
+        | "agent.stopped";
     })
   | (RequestBase & { action: "action.confirm" | "action.reject"; token: string });
 
@@ -301,6 +307,7 @@ export function parseRequest(text: string): WorkRequest {
       };
     case "agent.heartbeat":
     case "agent.thinking":
+    case "agent.tracking-pr":
     case "agent.waiting":
     case "agent.stopped":
       return { ...base, action: value["action"] };

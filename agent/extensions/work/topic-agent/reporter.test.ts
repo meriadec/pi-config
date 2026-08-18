@@ -25,7 +25,7 @@ class FakeClient {
     this.calls.push("heartbeat");
   }
 
-  async reportMainAgent(state: "thinking" | "waiting" | "stopped") {
+  async reportMainAgent(state: "thinking" | "tracking-pr" | "waiting" | "stopped") {
     this.calls.push(state);
   }
 
@@ -113,6 +113,35 @@ describe("Topic Agent telemetry", () => {
     expect(client.calls).toEqual(["idle", "thinking", "waiting", "heartbeat", "stopped"]);
     expect(timerClears).toBe(1);
     expect(client.closed).toBe(true);
+  });
+
+  test("keeps Tracking PR visible when an agent turn settles", async () => {
+    const client = new FakeClient();
+    const reporter = new TopicAgentReporter({
+      environment: {
+        PI_WORK_TOPIC_ID: "topic",
+        PI_WORK_SOCKET: "/tmp/socket",
+        PI_WORK_REGISTRATION_TOKEN: "token",
+        PI_WORK_SESSION_ID: "session-id",
+      },
+      connect: async () => client,
+      setInterval: ((_callback: () => void) => 1) as typeof setInterval,
+      clearInterval: (() => undefined) as typeof clearInterval,
+    });
+    await reporter.sessionStart(context());
+    await reporter.trackingPr(true);
+    await reporter.thinking();
+    await reporter.waiting();
+    await reporter.trackingPr(false);
+    await reporter.shutdown();
+    expect(client.calls).toEqual([
+      "idle",
+      "tracking-pr",
+      "thinking",
+      "tracking-pr",
+      "waiting",
+      "stopped",
+    ]);
   });
 
   test("does not register a mismatched or ephemeral Pi session", async () => {

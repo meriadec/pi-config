@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { WorkClient } from "../client/client.ts";
+import { TRACK_PR_ACTIVITY_EVENT, isTrackPrActivityEvent } from "../shared/activity-events.ts";
 
 const DEFAULT_HEARTBEAT_MS = 5_000;
 
@@ -21,7 +22,7 @@ interface AgentClient {
     affiliationToken?: string;
   }): Promise<unknown>;
   heartbeatMainAgent(): Promise<unknown>;
-  reportMainAgent(state: "thinking" | "waiting" | "stopped"): Promise<unknown>;
+  reportMainAgent(state: "thinking" | "tracking-pr" | "waiting" | "stopped"): Promise<unknown>;
   close(): void;
 }
 
@@ -63,7 +64,9 @@ export class TopicAgentReporter {
    * continuations) emits no new agent_start to restore it, which would strand
    * the lease at idle while the agent is still working.
    */
-  private lastActivity: "thinking" | "waiting" | undefined;
+  private lastActivity: "thinking" | "tracking-pr" | "waiting" | undefined;
+  /** True while `/track-pr` owns a live polling job in this Pi session. */
+  private trackingPrActive = false;
   private readonly connect: (socketPath: string) => Promise<AgentClient>;
   private readonly setSessionName: ((name: string) => void) | undefined;
   private readonly log: (message: string) => void;
@@ -155,8 +158,17 @@ export class TopicAgentReporter {
 
   async thinking(): Promise<void> {
     this.clearSettleTimer();
-    this.lastActivity = "thinking";
-    await this.client?.reportMainAgent("thinking");
+    await this.reportActivity("thinking");
+  }
+
+  /** Records Tracking PR activity without overriding a live agent turn. */
+  async trackingPr(active: boolean): Promise<void> {
+    this.trackingPrActive = active;
+    if (active) {
+      if (this.lastActivity !== "thinking") await this.reportActivity("tracking-pr");
+      return;
+    }
+    if (this.lastActivity === "tracking-pr") await this.reportActivity("waiting");
   }
 
   settleWhenIdle(isIdle: () => boolean): void {
@@ -169,8 +181,7 @@ export class TopicAgentReporter {
 
   async waiting(): Promise<void> {
     this.clearSettleTimer();
-    this.lastActivity = "waiting";
-    await this.client?.reportMainAgent("waiting");
+    await this.reportActivity(this.trackingPrActive ? "tracking-pr" : "waiting");
   }
 
   async shutdown(): Promise<void> {
@@ -207,6 +218,7 @@ export class TopicAgentReporter {
   private async close(reportStopped: boolean): Promise<void> {
     this.clearSettleTimer();
     this.lastActivity = undefined;
+    this.trackingPrActive = false;
     if (this.timer !== undefined) {
       this.stopTimer(this.timer);
       this.timer = undefined;
@@ -216,6 +228,11 @@ export class TopicAgentReporter {
     if (client === undefined) return;
     if (reportStopped) await client.reportMainAgent("stopped").catch(() => undefined);
     client.close();
+  }
+
+  private async reportActivity(activity: "thinking" | "tracking-pr" | "waiting"): Promise<void> {
+    this.lastActivity = activity;
+    await this.client?.reportMainAgent(activity);
   }
 
   private clearSettleTimer(): void {
@@ -262,6 +279,9 @@ export function registerTopicAgentTelemetry(
   pi: ExtensionAPI,
   reporter = new TopicAgentReporter({ setSessionName: (name) => pi.setSessionName(name) }),
 ): void {
+  const stopTrackingPrEvents = pi.events.on(TRACK_PR_ACTIVITY_EVENT, (data) => {
+    if (isTrackPrActivityEvent(data)) void reporter.trackingPr(data.active);
+  });
   pi.on("session_start", async (_event, ctx) => reporter.sessionStart(ctx));
   pi.on("agent_start", async () => reporter.thinking());
   // agent_settled exists at runtime in Pi 0.80, but its published ExtensionAPI type omits it.
@@ -271,5 +291,8 @@ export function registerTopicAgentTelemetry(
   lifecycle.on("agent_settled", async () => reporter.waiting());
   // Pi 0.80 runtimes without agent_settled use this idle-checked fallback.
   pi.on("agent_end", async (_event, ctx) => reporter.settleWhenIdle(() => ctx.isIdle()));
-  pi.on("session_shutdown", async () => reporter.shutdown());
+  pi.on("session_shutdown", async () => {
+    stopTrackingPrEvents();
+    await reporter.shutdown();
+  });
 }

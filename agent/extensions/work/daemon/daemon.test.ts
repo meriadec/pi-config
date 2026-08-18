@@ -59,13 +59,13 @@ describe("work daemon", () => {
     const { socket } = await startDaemon();
     const raw = await connectRaw(socket);
     raw.write(
-      '{"version":9,"kind":"request","id":"a","action":"ping"}\n' +
-        '{"version":9,"kind":"request","id":"b","action":"not-real"}\n',
+      `{"version":${WORK_PROTOCOL_VERSION},"kind":"request","id":"a","action":"ping"}\n` +
+        `{"version":${WORK_PROTOCOL_VERSION},"kind":"request","id":"b","action":"not-real"}\n`,
     );
     const messages = await readMessages(raw, 2);
     expect(messages[0]).toMatchObject({ id: "a", ok: true });
     expect(messages[1]).toEqual({
-      version: 9,
+      version: WORK_PROTOCOL_VERSION,
       kind: "response",
       id: "b",
       ok: false,

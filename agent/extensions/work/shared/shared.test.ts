@@ -92,6 +92,7 @@ describe("domain validation", () => {
   test("validates action, setup, and main-agent states", () => {
     expect(parseActionPolicy("ask")).toBe("ask");
     expect(parseSetupState("ready")).toBe("ready");
+    expect(parseMainAgentState("tracking-pr")).toBe("tracking-pr");
     expect(parseMainAgentState("waiting-for-human")).toBe("waiting-for-human");
     expect(() => parseActionPolicy("prompt")).toThrow(WorkDataError);
     expect(() => parseSetupState("done")).toThrow(WorkDataError);

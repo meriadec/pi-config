@@ -48,3 +48,9 @@ An `owner/repo` repository already declared in `~/work/config.json` (a key of th
 Recipe map). The set of Known repositories is offered as fuzzy-matched completions when you name a
 Topic's repository in the add-topic wizard.
 _Avoid_: saved repo, configured repo.
+
+**Tracking PR**:
+The live Main Agent activity while `/track-pr` polls one pull request in the background. Thinking
+has display precedence over Tracking PR; when the agent turn settles, Tracking PR becomes visible
+again until polling completes, fails, or is cancelled.
+_Avoid_: waiting for human, reviewing PR.

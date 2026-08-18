@@ -56,6 +56,7 @@ export type MainAgentState =
   | "starting"
   | "thinking"
   | "idle"
+  | "tracking-pr"
   | "waiting-for-human"
   | "stopped"
   | "failed";
@@ -171,6 +172,7 @@ const MAIN_AGENT_STATE_SET = new Set<string>([
   "starting",
   "thinking",
   "idle",
+  "tracking-pr",
   "waiting-for-human",
   "stopped",
   "failed",

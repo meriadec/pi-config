@@ -1,5 +1,9 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
+import {
+  TRACK_PR_ACTIVITY_EVENT,
+  type TrackPrActivityEvent,
+} from "./work/shared/activity-events.ts";
 
 const POLL_INTERVAL_MS = 60_000;
 const DEFAULT_TIMEOUT_MS = 60 * 60_000;
@@ -23,6 +27,8 @@ type CopilotStatus = {
 
 type TrackJob = {
   cancelled: boolean;
+  pr: PullRequestRef;
+  activityPublished: boolean;
   pollTimer?: NodeJS.Timeout | undefined;
   spinnerTimer?: NodeJS.Timeout | undefined;
   spinnerFrame: number;
@@ -265,6 +271,16 @@ function startSpinner(ctx: ExtensionCommandContext, job: TrackJob) {
   job.spinnerTimer = setInterval(() => updateSpinnerStatus(ctx, job), SPINNER_INTERVAL_MS);
 }
 
+function publishTrackingActivity(pi: ExtensionAPI, job: TrackJob, active: boolean): void {
+  if (job.activityPublished === active) return;
+  job.activityPublished = active;
+  const event: TrackPrActivityEvent = {
+    active,
+    pullRequest: { number: job.pr.number, url: job.pr.url },
+  };
+  pi.events.emit(TRACK_PR_ACTIVITY_EVENT, event);
+}
+
 function clearSpinner(ctx?: ExtensionCommandContext) {
   if (activeJob?.spinnerTimer) {
     clearInterval(activeJob.spinnerTimer);
@@ -330,21 +346,24 @@ async function trackPr(
       "error",
     );
   } finally {
+    publishTrackingActivity(pi, job, false);
     if (activeJob === job) activeJob = undefined;
     clearSpinner(ctx);
   }
 }
 
-function cancelActiveJob(ctx?: ExtensionCommandContext) {
+function cancelActiveJob(pi: ExtensionAPI, ctx?: ExtensionCommandContext) {
   if (!activeJob) {
     ctx?.ui.notify("No active track-pr job.", "info");
     return;
   }
 
-  activeJob.cancelled = true;
-  if (activeJob.pollTimer) clearTimeout(activeJob.pollTimer);
+  const job = activeJob;
+  job.cancelled = true;
+  if (job.pollTimer) clearTimeout(job.pollTimer);
+  publishTrackingActivity(pi, job, false);
   clearSpinner(ctx);
-  activeJob.wake?.();
+  job.wake?.();
   activeJob = undefined;
   ctx?.ui.notify("Cancelled track-pr polling.", "info");
 }
@@ -360,7 +379,7 @@ export default function trackPrExtension(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       if (trimmed === "cancel") {
-        cancelActiveJob(ctx);
+        cancelActiveJob(pi, ctx);
         return;
       }
 
@@ -383,16 +402,19 @@ export default function trackPrExtension(pi: ExtensionAPI) {
 
       const job: TrackJob = {
         cancelled: false,
+        pr,
+        activityPublished: false,
         spinnerFrame: 0,
         statusText: "Copilot PR review: starting",
       };
       activeJob = job;
+      publishTrackingActivity(pi, job, true);
 
       void trackPr(pr, ctx, pi, job);
     },
   });
 
   pi.on("session_shutdown", async () => {
-    cancelActiveJob();
+    cancelActiveJob(pi);
   });
 }

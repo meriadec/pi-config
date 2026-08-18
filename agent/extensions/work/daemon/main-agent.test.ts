@@ -204,6 +204,10 @@ describe("Main Agent lease", () => {
           token: "registration-token",
         }),
       ).toMatchObject({ state: "idle", connected: true });
+      expect(await client.reportMainAgent("tracking-pr")).toMatchObject({
+        state: "tracking-pr",
+        connected: true,
+      });
     } finally {
       client.close();
       await daemon.stop();
@@ -238,7 +242,7 @@ describe("Main Agent lease", () => {
     }
   });
 
-  test("rejects invalid tokens and transitions through thinking, waiting, and stopped", async () => {
+  test("rejects invalid tokens and transitions through thinking, Tracking PR, waiting, and stopped", async () => {
     const item = await world();
     await item.manager.open(item.topic);
     await expect(
@@ -252,6 +256,7 @@ describe("Main Agent lease", () => {
     ).rejects.toMatchObject({ code: "invalid-registration" });
     await register(item);
     expect(item.manager.transition("connection-1", "thinking").state).toBe("thinking");
+    expect(item.manager.transition("connection-1", "tracking-pr").state).toBe("tracking-pr");
     expect(item.manager.transition("connection-1", "waiting-for-human").state).toBe(
       "waiting-for-human",
     );
