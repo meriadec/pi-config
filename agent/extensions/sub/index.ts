@@ -6,11 +6,13 @@ import {
   type ContextPacket,
   type DelegationJobRecord,
   type DelegationResultRecord,
+  type DelegationJobStatusRecord,
   SUB_CUSTOM_JOB,
   SUB_CUSTOM_RESULT,
   atomicWriteFile,
   buildJobId,
   childPromptPath,
+  completeDelegationJob,
   contextPath,
   ensureSubRootIgnored,
   getJobDir,
@@ -18,9 +20,11 @@ import {
   readTextFile,
   requestPath,
   resultPath,
-  statusPath,
+  transitionJobStatus,
+  writeJobStatus,
   writeJsonFile,
 } from "./mailbox.ts";
+import { ChildDelegationLifecycle, type ChildLifecycleWarning } from "./lifecycle.ts";
 import {
   buildChildCompletionMessage,
   buildChildSystemPrompt,
@@ -31,6 +35,7 @@ import {
 
 const WATCH_INTERVAL_MS = 2_000;
 const RESULT_CONTEXT_CAP_BYTES = 200 * 1024;
+const CHILD_WARNING_STATUS_KEY = "sub-delegation-result-warning";
 
 interface RuntimeState {
   watchers: Map<string, ReturnType<typeof setInterval>>;
@@ -85,6 +90,7 @@ const SubDoneParams = Type.Object({
 
 export default function subExtension(pi: ExtensionAPI): void {
   const state: RuntimeState = { watchers: new Map(), importedJobs: new Set() };
+  let childLifecycle: ChildDelegationLifecycle | undefined;
 
   pi.registerMessageRenderer(
     SUB_CUSTOM_RESULT,
@@ -155,6 +161,8 @@ export default function subExtension(pi: ExtensionAPI): void {
       if (!result) return;
 
       await completeChildJob(job.jobId, job.jobDir, result);
+      childLifecycle?.completed();
+      clearChildWarning(ctx);
       pi.sendMessage({
         customType: SUB_CUSTOM_RESULT,
         content: buildChildCompletionMessage(job.jobId, result),
@@ -182,11 +190,13 @@ export default function subExtension(pi: ExtensionAPI): void {
     renderResult(result, _options, theme) {
       return new SubAgentFinishedComponent(theme, getTextContent(result.content));
     },
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const job = getChildJobFromEnv();
       if (!job) throw new Error("sub_done is only available inside a /sub child Pi session");
 
       await completeChildJob(job.jobId, job.jobDir, params.result);
+      childLifecycle?.completed();
+      clearChildWarning(ctx);
       return {
         content: [{ type: "text", text: buildChildCompletionMessage(job.jobId, params.result) }],
         details: { jobId: job.jobId, jobDir: job.jobDir, result: params.result },
@@ -195,19 +205,40 @@ export default function subExtension(pi: ExtensionAPI): void {
     },
   });
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     configureSubDoneTool(pi);
-    if (getChildJobFromEnv()) return;
+    const childJob = getChildJobFromEnv();
+    if (childJob) {
+      childLifecycle = new ChildDelegationLifecycle(childJob, childWarning(ctx));
+      await childLifecycle.restore();
+      return;
+    }
     reconstructRuntimeState(pi, state, ctx.sessionManager.getBranch());
+  });
+
+  pi.on("agent_start", async (_event, ctx) => {
+    if (!childLifecycle) return;
+    await childLifecycle.agentStart();
+    clearChildWarning(ctx);
+  });
+
+  // agent_settled exists at runtime in Pi 0.80, but its published ExtensionAPI type omits it.
+  const lifecycle = pi as ExtensionAPI & {
+    on(event: "agent_settled", handler: () => Promise<void>): void;
+  };
+  lifecycle.on("agent_settled", async () => {
+    if (childLifecycle) await childLifecycle.agentSettled();
   });
 
   pi.on("context", (event) => ({
     messages: removeAnsweredDelegationResults(event.messages),
   }));
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
     for (const timer of state.watchers.values()) clearInterval(timer);
     state.watchers.clear();
+    childLifecycle = undefined;
+    clearChildWarning(ctx);
   });
 }
 
@@ -276,14 +307,17 @@ async function launchDelegationJob(
   await atomicWriteFile(requestPath(jobDir), `${options.prompt.trim()}\n`);
   await writeJsonFile(contextPath(jobDir), contextPacket);
   await atomicWriteFile(childPromptPath(jobDir), childSystemPrompt);
-  await writeJsonFile(statusPath(jobDir), {
+  const initialStatus: DelegationJobStatusRecord = {
     status: "created",
     jobId,
     createdAt,
-    parentSessionFile: ctx.sessionManager.getSessionFile(),
+    updatedAt: createdAt,
+    parentSessionFile: ctx.sessionManager.getSessionFile() ?? null,
     handoffMode: options.handoffMode,
-    skillName: options.skillName,
-  });
+    ...(options.skillName ? { skillName: options.skillName } : {}),
+    ...(options.forkSessionFile ? { forkSessionFile: options.forkSessionFile } : {}),
+  };
+  await writeJobStatus(jobDir, initialStatus);
 
   const record: DelegationJobRecord = {
     jobId,
@@ -304,15 +338,12 @@ async function launchDelegationJob(
       initialPrompt,
       ...(options.forkSessionFile ? { forkSessionFile: options.forkSessionFile } : {}),
     });
-    await writeJsonFile(statusPath(jobDir), {
-      status: "launched",
-      jobId,
-      launchedAt: new Date().toISOString(),
-      parentSessionFile: ctx.sessionManager.getSessionFile(),
-      handoffMode: options.handoffMode,
-      skillName: options.skillName,
-      forkSessionFile: options.forkSessionFile,
-    });
+    await transitionJobStatus(
+      jobDir,
+      "launched",
+      new Date(),
+      options.forkSessionFile ? { forkSessionFile: options.forkSessionFile } : {},
+    );
     pi.sendMessage({
       customType: SUB_CUSTOM_JOB,
       content: buildParentLaunchMessage(jobId, {
@@ -326,13 +357,8 @@ async function launchDelegationJob(
     ctx.ui.notify(`Launched sub-agent ${jobId}`, "info");
   } catch (error) {
     stopWatching(state, jobId);
-    await writeJsonFile(statusPath(jobDir), {
-      status: "launch_failed",
-      jobId,
-      failedAt: new Date().toISOString(),
+    await transitionJobStatus(jobDir, "launch-failed", new Date(), {
       error: error instanceof Error ? error.message : String(error),
-      handoffMode: options.handoffMode,
-      skillName: options.skillName,
     });
     ctx.ui.notify(`Failed to launch kitty for sub-agent ${jobId}: ${formatError(error)}`, "error");
   }
@@ -585,16 +611,32 @@ function stopWatching(state: RuntimeState, jobId: string): void {
 }
 
 async function completeChildJob(jobId: string, jobDir: string, result: string): Promise<void> {
-  const trimmed = result.trim();
-  if (!trimmed) throw new Error("Delegation Result cannot be empty");
+  await completeDelegationJob(jobId, jobDir, result);
+}
 
-  await atomicWriteFile(resultPath(jobDir), `${trimmed}\n`);
-  await writeJsonFile(statusPath(jobDir), {
-    status: "completed",
-    jobId,
-    completedAt: new Date().toISOString(),
-    resultPath: resultPath(jobDir),
-  });
+function childWarning(ctx: {
+  hasUI: boolean;
+  ui: {
+    theme: { fg(color: "warning", text: string): string };
+    setStatus(key: string, value: string | undefined): void;
+  };
+}): ChildLifecycleWarning {
+  return {
+    show(message) {
+      if (!ctx.hasUI) return;
+      ctx.ui.setStatus(
+        CHILD_WARNING_STATUS_KEY,
+        message ? ctx.ui.theme.fg("warning", message) : undefined,
+      );
+    },
+  };
+}
+
+function clearChildWarning(ctx: {
+  hasUI: boolean;
+  ui: { setStatus(key: string, value: string | undefined): void };
+}): void {
+  if (ctx.hasUI) ctx.ui.setStatus(CHILD_WARNING_STATUS_KEY, undefined);
 }
 
 export function isSubChildSessionEnv(

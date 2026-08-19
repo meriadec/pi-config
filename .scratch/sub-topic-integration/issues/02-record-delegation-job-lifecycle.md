@@ -1,6 +1,6 @@
 # 02 — Record observable Delegation Job lifecycle
 
-Status: ready-for-agent
+Status: done
 Type: feature
 Blocked by: 01
 Affected extension: `sub`
