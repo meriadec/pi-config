@@ -25,7 +25,9 @@ class FakeClient {
     this.calls.push("heartbeat");
   }
 
-  async reportMainAgent(state: "thinking" | "tracking-pr" | "waiting" | "stopped") {
+  async reportMainAgent(
+    state: "thinking" | "thinking-sub" | "tracking-pr" | "waiting" | "stopped",
+  ) {
     this.calls.push(state);
   }
 
@@ -127,6 +129,43 @@ describe("Topic Agent telemetry", () => {
     expect(client.calls).toEqual(["idle", "thinking", "waiting", "heartbeat", "stopped"]);
     expect(timerClears).toBe(1);
     expect(client.closed).toBe(true);
+  });
+
+  test("applies Main Agent, Delegation Job, and Tracking PR precedence", async () => {
+    const client = new FakeClient();
+    const reporter = new TopicAgentReporter({
+      environment: {
+        PI_WORK_TOPIC_ID: "topic",
+        PI_WORK_SOCKET: "/tmp/socket",
+        PI_WORK_REGISTRATION_TOKEN: "token",
+        PI_WORK_SESSION_ID: "session-id",
+      },
+      connect: async () => client,
+      setInterval: ((_callback: () => void) => 1) as typeof setInterval,
+      clearInterval: (() => undefined) as typeof clearInterval,
+    });
+
+    await reporter.sessionStart(context());
+    await reporter.trackingPr(true);
+    await reporter.delegationActivity(true);
+    await reporter.thinking();
+    await reporter.delegationActivity(false);
+    await reporter.delegationActivity(true);
+    await reporter.waiting();
+    await reporter.delegationActivity(false);
+    await reporter.trackingPr(false);
+    await reporter.shutdown();
+
+    expect(client.calls).toEqual([
+      "idle",
+      "tracking-pr",
+      "thinking-sub",
+      "thinking",
+      "thinking-sub",
+      "tracking-pr",
+      "waiting",
+      "stopped",
+    ]);
   });
 
   test("keeps Tracking PR visible when an agent turn settles", async () => {
@@ -292,6 +331,48 @@ describe("Topic Agent telemetry", () => {
     await reporter.sessionStart(context("forked-session", "/tmp/forked.jsonl", false, false));
     await reporter.shutdown();
     expect(client.calls).toEqual(["idle", "thinking", "stopped"]);
+  });
+
+  test("re-asserts Delegation Job activity after a reconnect", async () => {
+    const clients: FakeClient[] = [];
+    let failNextHeartbeat = false;
+    let heartbeat = (): void => undefined;
+    class ReconnectingClient extends FakeClient {
+      override async heartbeatMainAgent() {
+        if (failNextHeartbeat) {
+          failNextHeartbeat = false;
+          throw new Error("connection reset");
+        }
+        return super.heartbeatMainAgent();
+      }
+    }
+    const reporter = new TopicAgentReporter({
+      environment: {
+        PI_WORK_TOPIC_ID: "topic",
+        PI_WORK_SOCKET: "/tmp/socket",
+        PI_WORK_REGISTRATION_TOKEN: "token",
+        PI_WORK_SESSION_ID: "session-id",
+      },
+      connect: async () => {
+        const client = new ReconnectingClient();
+        clients.push(client);
+        return client;
+      },
+      setInterval: ((callback: () => void) => {
+        heartbeat = callback;
+        return 1;
+      }) as typeof setInterval,
+      clearInterval: (() => undefined) as typeof clearInterval,
+    });
+    await reporter.sessionStart(context());
+    await reporter.delegationActivity(true);
+    failNextHeartbeat = true;
+    heartbeat();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await reporter.shutdown();
+
+    expect(clients[0]!.calls).toEqual(["idle", "thinking-sub"]);
+    expect(clients[1]!.calls).toEqual(["idle", "thinking-sub", "stopped"]);
   });
 
   test("re-asserts thinking after a reconnect so a long turn is not stranded idle", async () => {

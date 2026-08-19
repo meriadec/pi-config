@@ -1,6 +1,6 @@
 # 04 — Bridge Delegation Job activity to the Topic Agent reporter
 
-Status: ready-for-agent
+Status: done
 Type: feature
 Blocked by: 02
 Affected extensions: `sub`, `work`

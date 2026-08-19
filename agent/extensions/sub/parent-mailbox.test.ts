@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { DelegationJobRecord, DelegationResultRecord } from "./mailbox.ts";
+import type {
+  DelegationJobRecord,
+  DelegationJobStatus,
+  DelegationJobStatusRecord,
+  DelegationResultRecord,
+} from "./mailbox.ts";
 import { SUB_CUSTOM_JOB, SUB_CUSTOM_RESULT, resultPath } from "./mailbox.ts";
 import {
   ParentMailboxCoordinator,
@@ -65,11 +70,34 @@ async function writeResult(record: DelegationJobRecord, result = "Parser review 
   await fs.writeFile(resultPath(record.jobDir), result, "utf8");
 }
 
+function status(
+  record: DelegationJobRecord,
+  value: DelegationJobStatus,
+): DelegationJobStatusRecord {
+  const timestamp = "2026-07-03T10:00:00.000Z";
+  return {
+    status: value,
+    jobId: record.jobId,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    parentSessionFile: record.parentSessionFile ?? null,
+    handoffMode: "fresh",
+    ...(value === "launched" ? { launchedAt: timestamp } : {}),
+    ...(value === "thinking" ? { thinkingAt: timestamp } : {}),
+    ...(value === "waiting" ? { waitingAt: timestamp } : {}),
+    ...(value === "completed"
+      ? { completedAt: timestamp, resultPath: resultPath(record.jobDir) }
+      : {}),
+    ...(value === "launch-failed" ? { failedAt: timestamp, error: "launch failed" } : {}),
+  };
+}
+
 function harness(overrides: Partial<ParentMailboxDependencies> = {}) {
   const timers = new FakeTimers();
   const imports: DelegationResultRecord[] = [];
   const deliveries: Array<{ record: DelegationResultRecord; content: string }> = [];
   const diagnostics: string[] = [];
+  const activities: boolean[] = [];
   const dependencies: ParentMailboxDependencies = {
     identity: { sessionId: "parent-session", sessionFile: "/sessions/parent.jsonl" },
     appendImport: (record) => imports.push(record),
@@ -82,7 +110,9 @@ function harness(overrides: Partial<ParentMailboxDependencies> = {}) {
         throw error;
       }
     },
+    readStatus: async (record) => status(record, "created"),
     readLegacyParentSessionFile: async () => "/sessions/parent.jsonl",
+    publishActivity: (active) => activities.push(active),
     now: () => new Date("2026-07-03T10:01:00.000Z"),
     timers,
     diagnostic: (message) => diagnostics.push(message),
@@ -95,10 +125,54 @@ function harness(overrides: Partial<ParentMailboxDependencies> = {}) {
     imports,
     deliveries,
     diagnostics,
+    activities,
   };
 }
 
 describe("parent Job Mailbox coordinator", () => {
+  test("reconstructs aggregate activity from durable Job Mailbox states", async () => {
+    for (const [jobStatus, expected] of [
+      ["created", true],
+      ["launched", true],
+      ["thinking", true],
+      ["waiting", false],
+      ["completed", false],
+      ["launch-failed", false],
+    ] as const) {
+      const record = job({ jobId: `job-${jobStatus}` });
+      const testHarness = harness({
+        readStatus: async () => status(record, jobStatus),
+      });
+
+      await testHarness.coordinator.restore([jobEntry(record)]);
+
+      expect(testHarness.activities, jobStatus).toEqual([expected]);
+      testHarness.coordinator.stop();
+    }
+  });
+
+  test("keeps aggregate activity while any concurrent Delegation Job is active", async () => {
+    const first = job({ jobId: "job-first", jobDir: path.join(tempDir, "job-first") });
+    const second = job({ jobId: "job-second", jobDir: path.join(tempDir, "job-second") });
+    const states = new Map<string, DelegationJobStatus>([
+      [first.jobId, "thinking"],
+      [second.jobId, "thinking"],
+    ]);
+    const testHarness = harness({
+      readStatus: async (record) => status(record, states.get(record.jobId) ?? "waiting"),
+    });
+
+    await testHarness.coordinator.restore([jobEntry(first), jobEntry(second)]);
+    states.set(first.jobId, "waiting");
+    await testHarness.timers.tick();
+    states.set(second.jobId, "completed");
+    await testHarness.timers.tick();
+    states.set(first.jobId, "thinking");
+    await testHarness.timers.tick();
+
+    expect(testHarness.activities).toEqual([true, false, true]);
+  });
+
   test("delivers a completed result to an idle parent once and stops its timer", async () => {
     const record = job();
     await writeResult(record);

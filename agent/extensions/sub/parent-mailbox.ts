@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DELEGATION_ACTIVITY_EVENT_V1, delegationActivityEvent } from "./activity-events.ts";
 import {
   type DelegationJobRecord,
+  type DelegationJobStatusRecord,
   type DelegationResultRecord,
   SUB_CUSTOM_JOB,
   SUB_CUSTOM_RESULT,
@@ -29,7 +31,9 @@ export interface ParentMailboxDependencies {
   appendImport(record: DelegationResultRecord): void;
   deliverFollowUp(record: DelegationResultRecord, content: string): void;
   readResult(job: DelegationJobRecord): Promise<string | undefined>;
+  readStatus(job: DelegationJobRecord): Promise<DelegationJobStatusRecord>;
   readLegacyParentSessionFile(job: DelegationJobRecord): Promise<string | null>;
+  publishActivity(active: boolean): void;
   now(): Date;
   timers: ParentMailboxTimer;
   diagnostic(message: string): void;
@@ -45,6 +49,9 @@ export class ParentMailboxCoordinator {
   private readonly checkingJobs = new Set<string>();
   private readonly pendingOwnership = new Set<string>();
   private readonly diagnosticCounts = new Map<string, number>();
+  private readonly activeJobs = new Set<string>();
+  private lastPublishedActivity: boolean | undefined;
+  private restoring = false;
   private stopped = false;
 
   private readonly dependencies: ParentMailboxDependencies;
@@ -61,6 +68,9 @@ export class ParentMailboxCoordinator {
     this.checkingJobs.clear();
     this.pendingOwnership.clear();
     this.diagnosticCounts.clear();
+    this.activeJobs.clear();
+    this.lastPublishedActivity = undefined;
+    this.restoring = true;
 
     const jobs = new Map<string, DelegationJobRecord>();
     for (const entry of entries) {
@@ -81,8 +91,13 @@ export class ParentMailboxCoordinator {
       }
     }
 
-    for (const job of jobs.values()) {
-      if (!this.importedJobs.has(job.jobId)) await this.watch(job);
+    try {
+      for (const job of jobs.values()) {
+        if (!this.importedJobs.has(job.jobId)) await this.watch(job);
+      }
+    } finally {
+      this.restoring = false;
+      this.publishAggregateActivity();
     }
   }
 
@@ -116,6 +131,7 @@ export class ParentMailboxCoordinator {
     this.watchers.clear();
     this.jobsByWatcher.clear();
     this.pendingOwnership.clear();
+    this.activeJobs.clear();
   }
 
   private async pollWatchedJob(jobId: string): Promise<void> {
@@ -167,6 +183,13 @@ export class ParentMailboxCoordinator {
     this.jobsByWatcher.set(job.jobId, job);
     this.checkingJobs.add(job.jobId);
     try {
+      try {
+        const status = await this.dependencies.readStatus(job);
+        this.setJobActive(job.jobId, isActiveStatus(status.status));
+      } catch (error) {
+        this.report(job.jobId, "cannot read activity status; polling will retry", error);
+      }
+
       const delivered = this.deliveredRecords.get(job.jobId);
       if (delivered) {
         this.acceptImport(delivered);
@@ -209,6 +232,21 @@ export class ParentMailboxCoordinator {
     this.watchers.delete(jobId);
     this.jobsByWatcher.delete(jobId);
     this.pendingOwnership.delete(jobId);
+    this.setJobActive(jobId, false);
+  }
+
+  private setJobActive(jobId: string, active: boolean): void {
+    if (active) this.activeJobs.add(jobId);
+    else this.activeJobs.delete(jobId);
+    if (!this.restoring) this.publishAggregateActivity();
+  }
+
+  private publishAggregateActivity(): void {
+    if (this.stopped) return;
+    const active = this.activeJobs.size > 0;
+    if (active === this.lastPublishedActivity) return;
+    this.lastPublishedActivity = active;
+    this.dependencies.publishActivity(active);
   }
 
   private report(jobId: string, summary: string, error: unknown): void {
@@ -251,7 +289,10 @@ export function createParentMailboxCoordinator(
         throw error;
       }
     },
+    readStatus: async (job) => readJobStatus(job.jobDir),
     readLegacyParentSessionFile: async (job) => (await readJobStatus(job.jobDir)).parentSessionFile,
+    publishActivity: (active) =>
+      pi.events.emit(DELEGATION_ACTIVITY_EVENT_V1, delegationActivityEvent(active)),
     now: () => new Date(),
     timers: {
       setInterval: (handler, intervalMs) => setInterval(() => void handler(), intervalMs),
@@ -297,6 +338,10 @@ function parseDelegationResultRecord(value: unknown): DelegationResultRecord | u
     return undefined;
   }
   return value as unknown as DelegationResultRecord;
+}
+
+function isActiveStatus(status: DelegationJobStatusRecord["status"]): boolean {
+  return status === "created" || status === "launched" || status === "thinking";
 }
 
 function isFileNotFound(error: unknown): boolean {

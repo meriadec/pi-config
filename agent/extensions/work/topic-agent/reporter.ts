@@ -1,5 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { WorkClient } from "../client/client.ts";
+import {
+  DELEGATION_ACTIVITY_EVENT_V1,
+  isDelegationActivityEventV1,
+} from "../../sub/activity-events.ts";
 import { TRACK_PR_ACTIVITY_EVENT, isTrackPrActivityEvent } from "../shared/activity-events.ts";
 
 const DEFAULT_HEARTBEAT_MS = 5_000;
@@ -22,7 +26,9 @@ interface AgentClient {
     affiliationToken?: string;
   }): Promise<unknown>;
   heartbeatMainAgent(): Promise<unknown>;
-  reportMainAgent(state: "thinking" | "tracking-pr" | "waiting" | "stopped"): Promise<unknown>;
+  reportMainAgent(
+    state: "thinking" | "thinking-sub" | "tracking-pr" | "waiting" | "stopped",
+  ): Promise<unknown>;
   close(): void;
 }
 
@@ -64,7 +70,11 @@ export class TopicAgentReporter {
    * continuations) emits no new agent_start to restore it, which would strand
    * the lease at idle while the agent is still working.
    */
-  private lastActivity: "thinking" | "tracking-pr" | "waiting" | undefined;
+  private lastActivity: "thinking" | "thinking-sub" | "tracking-pr" | "waiting" | undefined;
+  /** True while the Main Agent owns a live turn in this Pi session. */
+  private mainAgentThinking = false;
+  /** True while at least one parent-owned Delegation Job is active. */
+  private delegationJobActive = false;
   /** True while `/track-pr` owns a live polling job in this Pi session. */
   private trackingPrActive = false;
   private readonly connect: (socketPath: string) => Promise<AgentClient>;
@@ -74,7 +84,9 @@ export class TopicAgentReporter {
 
   constructor(options: TopicAgentReporterOptions = {}) {
     this.environment = readTopicAgentEnvironment(options.environment ?? process.env);
-    this.connect = options.connect ?? ((path) => WorkClient.connect(path));
+    this.connect =
+      options.connect ??
+      (async (path) => (await WorkClient.connect(path)) as unknown as AgentClient);
     this.setSessionName = options.setSessionName;
     this.log = options.log ?? ((message) => console.error(`pi-work topic agent: ${message}`));
     this.heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
@@ -149,26 +161,29 @@ export class TopicAgentReporter {
         });
     }, this.heartbeatMs);
     // A /fork pre-fills the editor, so the human can submit before this async
-    // registration finishes. That agent_start's thinking() lands while the
-    // client is still undefined and is dropped, then registration sets the
-    // lease idle. Reconcile the just-registered lease with real activity so a
-    // running turn is never left showing idle.
-    if (!ctx.isIdle()) await this.thinking();
+    // registration finishes. Reconcile all semantic activity sources after
+    // registration; registration itself already represents the waiting state.
+    this.mainAgentThinking = !ctx.isIdle();
+    this.lastActivity = undefined;
+    await this.reportEffectiveActivity(false);
   }
 
   async thinking(): Promise<void> {
     this.clearSettleTimer();
-    await this.reportActivity("thinking");
+    this.mainAgentThinking = true;
+    await this.reportEffectiveActivity();
   }
 
-  /** Records Tracking PR activity without overriding a live agent turn. */
+  /** Records aggregate Delegation Job activity below a live Main Agent turn. */
+  async delegationActivity(active: boolean): Promise<void> {
+    this.delegationJobActive = active;
+    await this.reportEffectiveActivity();
+  }
+
+  /** Records Tracking PR activity below Main Agent and Delegation Job work. */
   async trackingPr(active: boolean): Promise<void> {
     this.trackingPrActive = active;
-    if (active) {
-      if (this.lastActivity !== "thinking") await this.reportActivity("tracking-pr");
-      return;
-    }
-    if (this.lastActivity === "tracking-pr") await this.reportActivity("waiting");
+    await this.reportEffectiveActivity();
   }
 
   settleWhenIdle(isIdle: () => boolean): void {
@@ -181,7 +196,8 @@ export class TopicAgentReporter {
 
   async waiting(): Promise<void> {
     this.clearSettleTimer();
-    await this.reportActivity(this.trackingPrActive ? "tracking-pr" : "waiting");
+    this.mainAgentThinking = false;
+    await this.reportEffectiveActivity();
   }
 
   async shutdown(): Promise<void> {
@@ -218,6 +234,7 @@ export class TopicAgentReporter {
   private async close(reportStopped: boolean): Promise<void> {
     this.clearSettleTimer();
     this.lastActivity = undefined;
+    this.mainAgentThinking = false;
     this.trackingPrActive = false;
     if (this.timer !== undefined) {
       this.stopTimer(this.timer);
@@ -230,8 +247,17 @@ export class TopicAgentReporter {
     client.close();
   }
 
-  private async reportActivity(activity: "thinking" | "tracking-pr" | "waiting"): Promise<void> {
+  private effectiveActivity(): "thinking" | "thinking-sub" | "tracking-pr" | "waiting" {
+    if (this.mainAgentThinking) return "thinking";
+    if (this.delegationJobActive) return "thinking-sub";
+    return this.trackingPrActive ? "tracking-pr" : "waiting";
+  }
+
+  private async reportEffectiveActivity(reportWaiting = true): Promise<void> {
+    const activity = this.effectiveActivity();
+    if (activity === this.lastActivity) return;
     this.lastActivity = activity;
+    if (activity === "waiting" && !reportWaiting) return;
     await this.client?.reportMainAgent(activity);
   }
 
@@ -284,6 +310,9 @@ export function registerTopicAgentTelemetry(
   const stopTrackingPrEvents = pi.events.on(TRACK_PR_ACTIVITY_EVENT, (data) => {
     if (isTrackPrActivityEvent(data)) void reporter.trackingPr(data.active);
   });
+  const stopDelegationEvents = pi.events.on(DELEGATION_ACTIVITY_EVENT_V1, (data) => {
+    if (isDelegationActivityEventV1(data)) void reporter.delegationActivity(data.active);
+  });
   pi.on("session_start", async (_event, ctx) => reporter.sessionStart(ctx));
   pi.on("agent_start", async () => reporter.thinking());
   // agent_settled exists at runtime in Pi 0.80, but its published ExtensionAPI type omits it.
@@ -295,6 +324,7 @@ export function registerTopicAgentTelemetry(
   pi.on("agent_end", async (_event, ctx) => reporter.settleWhenIdle(() => ctx.isIdle()));
   pi.on("session_shutdown", async () => {
     stopTrackingPrEvents();
+    stopDelegationEvents();
     await reporter.shutdown();
   });
 }
