@@ -1,6 +1,6 @@
 # 03 — Make parent Delegation Result import reliable
 
-Status: ready-for-agent
+Status: done
 Type: bug
 Blocked by: 01
 Affected extension: `sub`

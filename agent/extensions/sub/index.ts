@@ -5,7 +5,6 @@ import { launchKittyChildPi } from "./launcher.ts";
 import {
   type ContextPacket,
   type DelegationJobRecord,
-  type DelegationResultRecord,
   type DelegationJobStatusRecord,
   SUB_CUSTOM_JOB,
   SUB_CUSTOM_RESULT,
@@ -16,31 +15,22 @@ import {
   contextPath,
   ensureSubRootIgnored,
   getJobDir,
-  pathExists,
-  readTextFile,
   requestPath,
-  resultPath,
   transitionJobStatus,
   writeJobStatus,
   writeJsonFile,
 } from "./mailbox.ts";
 import { ChildDelegationLifecycle, type ChildLifecycleWarning } from "./lifecycle.ts";
+import { createParentMailboxCoordinator, type ParentMailboxCoordinator } from "./parent-mailbox.ts";
 import {
   buildChildCompletionMessage,
   buildChildSystemPrompt,
   buildInitialChildPrompt,
-  buildParentFollowUp,
   buildParentLaunchMessage,
 } from "./prompts.ts";
 
-const WATCH_INTERVAL_MS = 2_000;
 const RESULT_CONTEXT_CAP_BYTES = 200 * 1024;
 const CHILD_WARNING_STATUS_KEY = "sub-delegation-result-warning";
-
-interface RuntimeState {
-  watchers: Map<string, ReturnType<typeof setInterval>>;
-  importedJobs: Set<string>;
-}
 
 interface LaunchDelegationJobOptions {
   prompt: string;
@@ -89,7 +79,7 @@ const SubDoneParams = Type.Object({
 });
 
 export default function subExtension(pi: ExtensionAPI): void {
-  const state: RuntimeState = { watchers: new Map(), importedJobs: new Set() };
+  let parentMailbox: ParentMailboxCoordinator | undefined;
   let childLifecycle: ChildDelegationLifecycle | undefined;
 
   pi.registerMessageRenderer(
@@ -135,7 +125,8 @@ export default function subExtension(pi: ExtensionAPI): void {
           : `/skill:${parsed.skillName}`
         : prompt;
 
-      await launchDelegationJob(pi, state, ctx, {
+      if (!parentMailbox) throw new Error("Parent Job Mailbox is not ready");
+      await launchDelegationJob(pi, parentMailbox, ctx, {
         prompt: childPrompt,
         displayPrompt: prompt,
         initialPrompt: parsed.skillName
@@ -213,7 +204,21 @@ export default function subExtension(pi: ExtensionAPI): void {
       await childLifecycle.restore();
       return;
     }
-    reconstructRuntimeState(pi, state, ctx.sessionManager.getBranch());
+    parentMailbox = createParentMailboxCoordinator(
+      pi,
+      {
+        sessionId: ctx.sessionManager.getSessionId(),
+        sessionFile: ctx.sessionManager.getSessionFile() ?? null,
+      },
+      {
+        diagnostic: (message) => {
+          if (ctx.hasUI) ctx.ui.notify(message, "warning");
+          else console.error(message);
+        },
+        truncateResult: truncateResultForContext,
+      },
+    );
+    await parentMailbox.restore(ctx.sessionManager.getBranch());
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -235,8 +240,8 @@ export default function subExtension(pi: ExtensionAPI): void {
   }));
 
   pi.on("session_shutdown", (_event, ctx) => {
-    for (const timer of state.watchers.values()) clearInterval(timer);
-    state.watchers.clear();
+    parentMailbox?.stop();
+    parentMailbox = undefined;
     childLifecycle = undefined;
     clearChildWarning(ctx);
   });
@@ -290,7 +295,7 @@ async function getDelegationResult(
 
 async function launchDelegationJob(
   pi: ExtensionAPI,
-  state: RuntimeState,
+  parentMailbox: ParentMailboxCoordinator,
   ctx: any,
   options: LaunchDelegationJobOptions,
 ): Promise<void> {
@@ -325,9 +330,11 @@ async function launchDelegationJob(
     prompt: options.prompt,
     cwd: ctx.cwd,
     createdAt,
+    parentSessionId: ctx.sessionManager.getSessionId(),
+    parentSessionFile: ctx.sessionManager.getSessionFile() ?? null,
   };
   pi.appendEntry(SUB_CUSTOM_JOB, record);
-  watchJobResult(pi, state, record);
+  await parentMailbox.watch(record);
 
   try {
     await launchKittyChildPi({
@@ -356,7 +363,7 @@ async function launchDelegationJob(
     });
     ctx.ui.notify(`Launched sub-agent ${jobId}`, "info");
   } catch (error) {
-    stopWatching(state, jobId);
+    parentMailbox.stopJob(jobId);
     await transitionJobStatus(jobDir, "launch-failed", new Date(), {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -537,79 +544,6 @@ function configureSubDoneTool(pi: ExtensionAPI): void {
   }
 }
 
-function reconstructRuntimeState(pi: ExtensionAPI, state: RuntimeState, entries: unknown[]): void {
-  state.importedJobs.clear();
-  const jobs = new Map<string, DelegationJobRecord>();
-
-  for (const entry of entries) {
-    if (!isObject(entry) || entry["type"] !== "custom") continue;
-    if (entry["customType"] === SUB_CUSTOM_RESULT && isDelegationResultRecord(entry["data"])) {
-      state.importedJobs.add(entry["data"].jobId);
-    }
-    if (entry["customType"] === SUB_CUSTOM_JOB && isDelegationJobRecord(entry["data"])) {
-      jobs.set(entry["data"].jobId, entry["data"]);
-    }
-  }
-
-  for (const job of jobs.values()) {
-    if (!state.importedJobs.has(job.jobId)) watchJobResult(pi, state, job);
-  }
-}
-
-function watchJobResult(pi: ExtensionAPI, state: RuntimeState, job: DelegationJobRecord): void {
-  if (getChildJobFromEnv()) return;
-  if (state.watchers.has(job.jobId) || state.importedJobs.has(job.jobId)) return;
-
-  const check = async () => {
-    if (state.importedJobs.has(job.jobId)) {
-      stopWatching(state, job.jobId);
-      return;
-    }
-
-    const filePath = resultPath(job.jobDir);
-    if (!(await pathExists(filePath))) return;
-
-    const rawResult = (await readTextFile(filePath)).trim();
-    if (!rawResult) return;
-
-    const result = truncateResultForContext(rawResult, filePath);
-    const importedAt = new Date().toISOString();
-    const record: DelegationResultRecord = {
-      jobId: job.jobId,
-      jobDir: job.jobDir,
-      importedAt,
-      resultPreview: result.slice(0, 1_000),
-    };
-
-    state.importedJobs.add(job.jobId);
-    stopWatching(state, job.jobId);
-    pi.appendEntry(SUB_CUSTOM_RESULT, record);
-    pi.sendMessage(
-      {
-        customType: SUB_CUSTOM_RESULT,
-        content: buildParentFollowUp(job.jobId, result),
-        display: false,
-        details: record,
-      },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
-  };
-
-  const timer = setInterval(() => {
-    void check().catch(() => {
-      // Keep polling; transient reads can happen while the child is writing atomically.
-    });
-  }, WATCH_INTERVAL_MS);
-  state.watchers.set(job.jobId, timer);
-  void check();
-}
-
-function stopWatching(state: RuntimeState, jobId: string): void {
-  const timer = state.watchers.get(jobId);
-  if (timer) clearInterval(timer);
-  state.watchers.delete(jobId);
-}
-
 async function completeChildJob(jobId: string, jobDir: string, result: string): Promise<void> {
   await completeDelegationJob(jobId, jobDir, result);
 }
@@ -744,27 +678,6 @@ function formatBytes(bytes: number): string {
   const kib = bytes / 1024;
   if (kib < 1024) return `${Math.round(kib)} KiB`;
   return `${(kib / 1024).toFixed(1)} MiB`;
-}
-
-function isDelegationJobRecord(value: unknown): value is DelegationJobRecord {
-  return (
-    isObject(value) &&
-    typeof value["jobId"] === "string" &&
-    typeof value["jobDir"] === "string" &&
-    typeof value["prompt"] === "string" &&
-    typeof value["cwd"] === "string" &&
-    typeof value["createdAt"] === "string"
-  );
-}
-
-function isDelegationResultRecord(value: unknown): value is DelegationResultRecord {
-  return (
-    isObject(value) &&
-    typeof value["jobId"] === "string" &&
-    typeof value["jobDir"] === "string" &&
-    typeof value["importedAt"] === "string" &&
-    typeof value["resultPreview"] === "string"
-  );
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

@@ -38,6 +38,10 @@ export interface DelegationJobRecord {
   prompt: string;
   cwd: string;
   createdAt: string;
+  /** Exact Pi session that owns result import. Missing only on legacy records. */
+  parentSessionId?: string;
+  /** Distinguishes forks and replacement sessions. Missing only on legacy records. */
+  parentSessionFile?: string | null;
 }
 
 export interface DelegationResultRecord {
