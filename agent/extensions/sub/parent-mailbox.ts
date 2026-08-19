@@ -183,18 +183,21 @@ export class ParentMailboxCoordinator {
     this.jobsByWatcher.set(job.jobId, job);
     this.checkingJobs.add(job.jobId);
     try {
-      try {
-        const status = await this.dependencies.readStatus(job);
-        this.setJobActive(job.jobId, isActiveStatus(status.status));
-      } catch (error) {
-        this.report(job.jobId, "cannot read activity status; polling will retry", error);
-      }
-
       const delivered = this.deliveredRecords.get(job.jobId);
       if (delivered) {
         this.acceptImport(delivered);
         return;
       }
+
+      let status: DelegationJobStatusRecord;
+      try {
+        status = await this.dependencies.readStatus(job);
+        this.setJobActive(job.jobId, isActiveStatus(status.status));
+      } catch (error) {
+        this.report(job.jobId, "cannot read activity status; polling will retry", error);
+        return;
+      }
+      if (status.status !== "completed") return;
 
       const rawResult = (await this.dependencies.readResult(job))?.trim();
       if (this.stopped || !rawResult) return;

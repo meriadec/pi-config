@@ -749,7 +749,7 @@ function renderList(state: DashboardState, width: number, height: number): strin
       lines.push("", truncateToWidth("No Topics yet.", width));
     } else {
       // Render only the visible window. A large Topic store must not create an unbounded frame.
-      // A blank separator splits the Focused (hot) part from the Unfocused part; it appears
+      // A blank separator splits the Focused part from the Unfocused part; it appears
       // only at the transition inside the window, so one blank line of capacity is reserved
       // when both parts exist.
       const focusedCount = view.topics.filter((topic) => topic.focused).length;
@@ -820,11 +820,7 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
       ? dim(agentLabel)
       : agent === "waiting-for-human"
         ? yellow(agentLabel)
-        : agent === "tracking-pr"
-          ? shimmer(agentLabel, state.shimmerPhase, TRACKING_PR_SHIMMER)
-          : agent === "thinking" || agent === "thinking-sub"
-            ? shimmer(agentLabel, state.shimmerPhase, THINKING_SHIMMER)
-            : agentLabel;
+        : renderMainAgentStatus(agent, state.shimmerPhase);
   const pullRequest = state.pullRequests[topic.id];
   // A live Repository Recipe phase (setup N/M) replaces the durable setup state.
   // A settled "ready" Topic shows a blank cell; only intermediate states matter.
@@ -912,6 +908,18 @@ export function mainAgentDisplayLabel(state: MainAgentState): string {
   return state === "thinking-sub" ? "thinking (sub)" : state;
 }
 
+/** Renders one Main Agent status with its shared label, palette, and animation rule. */
+function renderMainAgentStatus(state: MainAgentState, shimmerPhase: number): string {
+  const label = mainAgentDisplayLabel(state);
+  if (state === "thinking" || state === "thinking-sub") {
+    return shimmer(label, shimmerPhase, THINKING_SHIMMER);
+  }
+  if (state === "tracking-pr") {
+    return shimmer(label, shimmerPhase, TRACKING_PR_SHIMMER);
+  }
+  return label;
+}
+
 /** Sweeps a bright highlight across the letters of a status word for the given phase. */
 function shimmer(text: string, phase: number, palette: ShimmerPalette): string {
   const chars = [...text];
@@ -958,13 +966,7 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
         : [`Pull Request: ${pullRequestCell(state.pullRequests[topic.id])}`]),
       `Worktree: ${topic.worktreePath ?? "not ready"}`,
       `Setup: ${setupDetail ?? topic.setup.state}`,
-      `Main Agent: ${
-        agent?.state === "thinking" || agent?.state === "thinking-sub"
-          ? shimmer(mainAgentDisplayLabel(agent.state), state.shimmerPhase, THINKING_SHIMMER)
-          : agent?.state === "tracking-pr"
-            ? shimmer(mainAgentDisplayLabel(agent.state), state.shimmerPhase, TRACKING_PR_SHIMMER)
-            : mainAgentDisplayLabel(agent?.state ?? "stopped")
-      }`,
+      `Main Agent: ${renderMainAgentStatus(agent?.state ?? "stopped", state.shimmerPhase)}`,
       `Workspace: ${state.workspaces[topic.id] ?? "not observable"}`,
       ...(diagnostic === undefined ? [] : [`Diagnostic: ${diagnostic}`]),
       "",

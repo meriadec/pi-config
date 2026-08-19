@@ -144,7 +144,7 @@ export interface TopicManifest {
   worktreePath: string | null;
   mainAgent: MainAgentReference;
   /**
-   * Focus partition: Focused Topics render in the hot list on top, Unfocused ones
+   * Focus partition: Focused Topics render in the upper part, Unfocused ones
    * below the separator. A per-Topic attribute, not a container. Absent means Focused,
    * so new Topics and manifests predating Focus start Focused.
    */
@@ -415,7 +415,7 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
   if (focusedValue !== undefined && typeof focusedValue !== "boolean") {
     throw new WorkDataError("invalid-topic", "Topic focused must be boolean.");
   }
-  // A manifest predating Focus has no flag; it starts Focused in the hot list.
+  // A manifest predating Focus has no flag; it starts in the Focused part.
   const focused = focusedValue ?? true;
 
   return {

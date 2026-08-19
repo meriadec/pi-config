@@ -110,7 +110,7 @@ function harness(overrides: Partial<ParentMailboxDependencies> = {}) {
         throw error;
       }
     },
-    readStatus: async (record) => status(record, "created"),
+    readStatus: async (record) => status(record, "completed"),
     readLegacyParentSessionFile: async () => "/sessions/parent.jsonl",
     publishActivity: (active) => activities.push(active),
     now: () => new Date("2026-07-03T10:01:00.000Z"),
@@ -185,6 +185,47 @@ describe("parent Job Mailbox coordinator", () => {
     expect(testHarness.imports).toHaveLength(1);
     expect(testHarness.deliveries[0]?.content).toContain("Parser review complete.");
     expect(testHarness.timers.handlers.size).toBe(0);
+  });
+
+  test("does not import a result before its Job Mailbox status is completed", async () => {
+    const record = job();
+    await writeResult(record);
+    let jobStatus: DelegationJobStatus = "thinking";
+    const testHarness = harness({
+      readStatus: async () => status(record, jobStatus),
+    });
+
+    await testHarness.coordinator.restore([jobEntry(record)]);
+    expect(testHarness.deliveries).toHaveLength(0);
+    expect(testHarness.imports).toHaveLength(0);
+
+    jobStatus = "completed";
+    await testHarness.timers.tick();
+
+    expect(testHarness.deliveries).toHaveLength(1);
+    expect(testHarness.imports).toHaveLength(1);
+  });
+
+  test("retries status reads before it imports a completed result", async () => {
+    const record = job();
+    await writeResult(record);
+    let statusReads = 0;
+    const testHarness = harness({
+      readStatus: async () => {
+        statusReads++;
+        if (statusReads === 1) throw new Error("temporary status failure");
+        return status(record, "completed");
+      },
+    });
+
+    await testHarness.coordinator.restore([jobEntry(record)]);
+    expect(testHarness.deliveries).toHaveLength(0);
+    expect(testHarness.diagnostics).toHaveLength(1);
+
+    await testHarness.timers.tick();
+
+    expect(testHarness.deliveries).toHaveLength(1);
+    expect(testHarness.imports).toHaveLength(1);
   });
 
   test("queues one accepted follow-up while active and starts it after settle", async () => {
