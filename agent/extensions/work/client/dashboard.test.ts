@@ -16,6 +16,7 @@ import {
   initialDashboardState,
   advanceShimmer,
   hasShimmeringAgent,
+  mainAgentDisplayLabel,
   SHIMMER_PERIOD,
   reduceDashboardEvent,
   renderDashboard,
@@ -32,6 +33,18 @@ import { completeWorkBaseSetup, defaultWorkConfig, validateWorkBase } from "./se
 const roots: string[] = [];
 const ID_A = "123e4567-e89b-42d3-a456-426614174000";
 const ID_B = "123e4567-e89b-42d3-a456-426614174001";
+
+function stripSgr(text: string): string {
+  let visible = "";
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "\x1b" && text[index + 1] === "[") {
+      while (index < text.length && text[index] !== "m") index += 1;
+    } else {
+      visible += text[index];
+    }
+  }
+  return visible;
+}
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -567,9 +580,22 @@ describe("dashboard state and navigation", () => {
       type: "main-agent-changed",
       agent: { topicId: ID_A, sessionId: ID_A, state: "thinking-sub", connected: true },
     });
+    expect(mainAgentDisplayLabel("thinking-sub")).toBe("thinking (sub)");
     expect(hasShimmeringAgent(state)).toBeTrue();
-    const delegated = renderDashboard(state, 140, 24).find((line) => line.includes("Alpha"));
-    expect(delegated).not.toContain("thinking-sub\x1b");
+
+    const wideDelegated = renderDashboard(state, 140, 24).find((line) => line.includes("Alpha"));
+    const narrowDelegated = renderDashboard(state, 40, 24).find((line) => line.includes("Alpha"));
+    expect(stripSgr(wideDelegated!)).toContain("thinking (sub)");
+    expect(stripSgr(narrowDelegated!)).toContain("thinking (sub)");
+    expect(wideDelegated).toContain("\x1b[38;5;231m");
+    const advancedDelegated = renderDashboard(advanceShimmer(state), 140, 24).find((line) =>
+      line.includes("Alpha"),
+    );
+    expect(advancedDelegated).not.toEqual(wideDelegated);
+
+    const delegatedDetailState = handleDashboardInput(state, "\r").state;
+    const delegatedDetail = renderDashboard(delegatedDetailState, 100, 24).join("\n");
+    expect(stripSgr(delegatedDetail)).toContain("Main Agent: thinking (sub)");
 
     state = reduceDashboardEvent(state, {
       type: "main-agent-changed",
@@ -778,6 +804,10 @@ describe("dashboard state and navigation", () => {
         topic(ID_B, "Beta", "setup-failed"),
       ]),
     );
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_A, sessionId: ID_A, state: "thinking-sub", connected: true },
+    });
     state = handleDashboardInput(state, "\r").state;
     for (const [width, height] of [
       [28, 12],
@@ -1238,6 +1268,42 @@ describe("dashboard submission behavior", () => {
 });
 
 describe("dashboard subscription lifecycle", () => {
+  test("runs the single shimmer timer for delegated thinking and stops after settle", async () => {
+    const client = new FakeDashboardClient();
+    let shimmerTick: (() => void) | undefined;
+    let activeTimers = 0;
+    const component = new WorkDashboardComponent({
+      tui: { terminal: { rows: 20 }, requestRender: () => undefined } as never,
+      connect: async () => client,
+      done: () => undefined,
+      setInterval: ((handler: () => void) => {
+        shimmerTick = handler;
+        activeTimers += 1;
+        return 1;
+      }) as unknown as typeof setInterval,
+      clearInterval: (() => {
+        activeTimers -= 1;
+      }) as typeof clearInterval,
+    });
+    await Bun.sleep(0);
+
+    client.handler?.({
+      type: "main-agent-changed",
+      agent: { topicId: ID_A, sessionId: ID_A, state: "thinking-sub", connected: true },
+    });
+    expect(activeTimers).toBe(1);
+    const startedAt = component.snapshotState().shimmerPhase;
+    shimmerTick?.();
+    expect(component.snapshotState().shimmerPhase).toBe(startedAt + 1);
+
+    client.handler?.({
+      type: "main-agent-changed",
+      agent: { topicId: ID_A, sessionId: ID_A, state: "idle", connected: true },
+    });
+    expect(activeTimers).toBe(0);
+    component.dispose();
+  });
+
   test("closes the subscription after Escape and session-style disposal", async () => {
     const first = new FakeDashboardClient();
     let done = 0;

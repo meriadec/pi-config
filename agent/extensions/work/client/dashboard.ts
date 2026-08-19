@@ -811,19 +811,20 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
   const selected = topic.id === state.selectedTopicId;
   const prefix = selected ? (state.focus === "list" ? "> " : "* ") : "  ";
   const agent = state.mainAgents.find((item) => item.topicId === topic.id)?.state ?? "stopped";
+  const agentLabel = mainAgentDisplayLabel(agent);
   const inactive = !isMainAgentRunning(agent);
   // Dim only the status word for an idle Main Agent; the Topic stays active and bubbled up.
   // A Main Agent waiting for a human stands out in yellow.
   const agentCell =
     agent === "idle"
-      ? dim(agent)
+      ? dim(agentLabel)
       : agent === "waiting-for-human"
-        ? yellow(agent)
+        ? yellow(agentLabel)
         : agent === "tracking-pr"
-          ? shimmer(agent, state.shimmerPhase, TRACKING_PR_SHIMMER)
+          ? shimmer(agentLabel, state.shimmerPhase, TRACKING_PR_SHIMMER)
           : agent === "thinking" || agent === "thinking-sub"
-            ? shimmer(agent, state.shimmerPhase, THINKING_SHIMMER)
-            : agent;
+            ? shimmer(agentLabel, state.shimmerPhase, THINKING_SHIMMER)
+            : agentLabel;
   const pullRequest = state.pullRequests[topic.id];
   // A live Repository Recipe phase (setup N/M) replaces the durable setup state.
   // A settled "ready" Topic shows a blank cell; only intermediate states matter.
@@ -901,10 +902,15 @@ const TRACKING_PR_SHIMMER: ShimmerPalette = {
 // A trailing gap after each word makes each sweep restart after a clear pause.
 const SHIMMER_TRAIL = 4;
 
-// 240 is the least common multiple of the animation lengths: thinking (12),
-// thinking-sub (16), and tracking-pr (15). Wrapping lets all animations restart
+// 180 is the least common multiple of the animation lengths: thinking (12),
+// thinking (sub) (18), and tracking-pr (15). Wrapping lets all animations restart
 // without a visible jump.
-export const SHIMMER_PERIOD = 240;
+export const SHIMMER_PERIOD = 180;
+
+/** Maps control-plane state to the exact user-visible Main Agent label. */
+export function mainAgentDisplayLabel(state: MainAgentState): string {
+  return state === "thinking-sub" ? "thinking (sub)" : state;
+}
 
 /** Sweeps a bright highlight across the letters of a status word for the given phase. */
 function shimmer(text: string, phase: number, palette: ShimmerPalette): string {
@@ -954,10 +960,10 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
       `Setup: ${setupDetail ?? topic.setup.state}`,
       `Main Agent: ${
         agent?.state === "thinking" || agent?.state === "thinking-sub"
-          ? shimmer(agent.state, state.shimmerPhase, THINKING_SHIMMER)
+          ? shimmer(mainAgentDisplayLabel(agent.state), state.shimmerPhase, THINKING_SHIMMER)
           : agent?.state === "tracking-pr"
-            ? shimmer(agent.state, state.shimmerPhase, TRACKING_PR_SHIMMER)
-            : (agent?.state ?? "stopped")
+            ? shimmer(mainAgentDisplayLabel(agent.state), state.shimmerPhase, TRACKING_PR_SHIMMER)
+            : mainAgentDisplayLabel(agent?.state ?? "stopped")
       }`,
       `Workspace: ${state.workspaces[topic.id] ?? "not observable"}`,
       ...(diagnostic === undefined ? [] : [`Diagnostic: ${diagnostic}`]),

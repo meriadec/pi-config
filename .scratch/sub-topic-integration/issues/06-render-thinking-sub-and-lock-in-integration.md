@@ -1,6 +1,6 @@
 # 06 — Render `thinking (sub)` and lock in the Topic integration
 
-Status: ready-for-agent
+Status: done
 Type: feature
 Blocked by: 03, 04, 05
 Affected extensions: `sub`, `work`

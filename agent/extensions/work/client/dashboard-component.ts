@@ -90,6 +90,8 @@ export interface DashboardComponentOptions {
   tui: Pick<TUI, "requestRender" | "terminal">;
   connect: () => Promise<DashboardClient>;
   done: () => void;
+  setInterval?: typeof globalThis.setInterval;
+  clearInterval?: typeof globalThis.clearInterval;
 }
 
 /** Owns the dashboard client subscription for one full-screen /work view. */
@@ -453,7 +455,8 @@ export class WorkDashboardComponent implements Component, Focusable {
     }
     if (hasShimmeringAgent(this.state)) {
       if (this.shimmerTimer !== undefined) return;
-      this.shimmerTimer = setInterval(() => {
+      const start = this.options.setInterval ?? globalThis.setInterval;
+      this.shimmerTimer = start(() => {
         this.state = advanceShimmer(this.state);
         this.options.tui.requestRender();
       }, SHIMMER_INTERVAL_MS);
@@ -464,7 +467,7 @@ export class WorkDashboardComponent implements Component, Focusable {
 
   private stopShimmer(): void {
     if (this.shimmerTimer === undefined) return;
-    clearInterval(this.shimmerTimer);
+    (this.options.clearInterval ?? globalThis.clearInterval)(this.shimmerTimer);
     this.shimmerTimer = undefined;
   }
 }
