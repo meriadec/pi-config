@@ -84,6 +84,20 @@ describe("Topic Agent telemetry", () => {
     });
   });
 
+  test("rejects Topic Agent identity in a Delegation Job", () => {
+    expect(
+      readTopicAgentEnvironment({
+        PI_WORK_TOPIC_ID: "topic",
+        PI_WORK_SOCKET: "/tmp/socket",
+        PI_WORK_REGISTRATION_TOKEN: "token",
+        PI_WORK_SESSION_ID: "main-session",
+        PI_WORK_AFFILIATION: "window-affiliation",
+        PI_SUB_JOB_ID: "job-123",
+        PI_SUB_JOB_DIR: "/tmp/sub/job-123",
+      }),
+    ).toBeUndefined();
+  });
+
   test("reports lifecycle, sends heartbeat, and cleans up all session resources", async () => {
     const client = new FakeClient();
     let heartbeat = (): void => undefined;

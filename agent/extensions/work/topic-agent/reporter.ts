@@ -245,6 +245,8 @@ export class TopicAgentReporter {
 export function readTopicAgentEnvironment(
   env: NodeJS.ProcessEnv,
 ): TopicAgentEnvironment | undefined {
+  if (env["PI_SUB_JOB_ID"] && env["PI_SUB_JOB_DIR"]) return undefined;
+
   const topicId = env["PI_WORK_TOPIC_ID"];
   const socketPath = env["PI_WORK_SOCKET"];
   const registrationToken = env["PI_WORK_REGISTRATION_TOKEN"];

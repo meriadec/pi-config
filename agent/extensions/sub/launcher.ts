@@ -12,6 +12,28 @@ export interface LaunchChildOptions {
   forkSessionFile?: string;
 }
 
+const TOPIC_AGENT_IDENTITY_VARIABLES = [
+  "PI_WORK_TOPIC_ID",
+  "PI_WORK_SOCKET",
+  "PI_WORK_REGISTRATION_TOKEN",
+  "PI_WORK_SESSION_ID",
+  "PI_WORK_AFFILIATION",
+  "PI_WORK_TOPIC_NAME",
+] as const;
+
+/** Builds the isolated process environment for one Delegation Job. */
+export function buildChildEnvironment(
+  options: Pick<LaunchChildOptions, "cwd" | "jobId" | "jobDir">,
+  parentEnvironment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const environment = { ...parentEnvironment };
+  for (const variable of TOPIC_AGENT_IDENTITY_VARIABLES) delete environment[variable];
+  environment["PI_SUB_JOB_ID"] = options.jobId;
+  environment["PI_SUB_JOB_DIR"] = options.jobDir;
+  environment["PI_SUB_PARENT_CWD"] = options.cwd;
+  return environment;
+}
+
 export async function launchKittyChildPi(options: LaunchChildOptions): Promise<void> {
   const piArgs: string[] = [];
   if (options.forkSessionFile) piArgs.push("--fork", options.forkSessionFile);
@@ -46,6 +68,7 @@ export async function launchKittyChildPi(options: LaunchChildOptions): Promise<v
       cwd: options.cwd,
       detached: true,
       stdio: "ignore",
+      env: buildChildEnvironment(options),
     },
   );
 

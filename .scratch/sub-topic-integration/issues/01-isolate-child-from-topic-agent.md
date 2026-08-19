@@ -1,6 +1,6 @@
 # 01 — Isolate Delegation Jobs from Topic Agent identity
 
-Status: ready-for-agent
+Status: done
 Type: bug
 Blocked by: none
 Affected extensions: `sub`, `work`
