@@ -49,8 +49,16 @@ Recipe map). The set of Known repositories is offered as fuzzy-matched completio
 Topic's repository in the add-topic wizard.
 _Avoid_: saved repo, configured repo.
 
+**Delegated Thinking**:
+The live Main Agent activity while one or more parent-owned Delegation Jobs run for its Topic.
+Shown as `thinking-sub`. It stays on the parent Main Agent lease: a Delegation Job does not replace
+the Topic's Main Agent session ID or create a child lease. Thinking has display precedence over
+Delegated Thinking; Delegated Thinking has precedence over Tracking PR.
+_Avoid_: child agent lease, Main Agent adoption, delegated session
+
 **Tracking PR**:
-The live Main Agent activity while `/track-pr` polls one pull request in the background. Thinking
-has display precedence over Tracking PR; when the agent turn settles, Tracking PR becomes visible
-again until polling completes, fails, or is cancelled.
+The live Main Agent activity while `/track-pr` polls one pull request in the background. The display
+precedence is Thinking, then Delegated Thinking, then Tracking PR, then waiting for a human. When a
+higher-precedence activity settles, the next live activity becomes visible until it completes,
+fails, or is cancelled.
 _Avoid_: waiting for human, reviewing PR.

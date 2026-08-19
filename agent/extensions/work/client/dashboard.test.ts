@@ -444,9 +444,9 @@ describe("dashboard state and navigation", () => {
 
     state = reduceDashboardEvent(state, {
       type: "main-agent-changed",
-      agent: { topicId: ID_B, sessionId: ID_B, state: "thinking", connected: true },
+      agent: { topicId: ID_B, sessionId: ID_B, state: "thinking-sub", connected: true },
     });
-    // Beta now runs, so it bubbles above the inactive Alpha.
+    // Delegated thinking is active, so Beta bubbles above the inactive Alpha.
     expect(state.topics.map((item) => item.id)).toEqual([ID_B, ID_A]);
 
     const rendered = renderDashboard(state, 100, 24);
@@ -562,6 +562,14 @@ describe("dashboard state and navigation", () => {
     const advanced = advanceShimmer(state);
     const second = renderDashboard(advanced, 140, 24).find((line) => line.includes("Alpha"));
     expect(second).not.toEqual(thinking);
+
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_A, sessionId: ID_A, state: "thinking-sub", connected: true },
+    });
+    expect(hasShimmeringAgent(state)).toBeTrue();
+    const delegated = renderDashboard(state, 140, 24).find((line) => line.includes("Alpha"));
+    expect(delegated).not.toContain("thinking-sub\x1b");
 
     state = reduceDashboardEvent(state, {
       type: "main-agent-changed",

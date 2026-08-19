@@ -1,6 +1,6 @@
 # 05 — Add `thinking-sub` to the work control plane
 
-Status: ready-for-agent
+Status: done
 Type: feature
 Blocked by: none
 Affected extension: `work`

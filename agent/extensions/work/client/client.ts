@@ -227,7 +227,7 @@ export class WorkClient {
   }
 
   reportMainAgent(
-    state: "thinking" | "tracking-pr" | "waiting" | "stopped",
+    state: "thinking" | "thinking-sub" | "tracking-pr" | "waiting" | "stopped",
     timeoutMs?: number,
   ): Promise<MainAgentLease> {
     return this.request(

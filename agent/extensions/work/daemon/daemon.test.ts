@@ -4,7 +4,13 @@ import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkClient } from "../client/client.ts";
-import { MAX_FRAME_BYTES, NdjsonDecoder, WORK_PROTOCOL_VERSION } from "./protocol.ts";
+import {
+  MAX_FRAME_BYTES,
+  NdjsonDecoder,
+  ProtocolError,
+  WORK_PROTOCOL_VERSION,
+  parseRequest,
+} from "./protocol.ts";
 import { WorkDaemon } from "./server.ts";
 
 const temporaryDirectories: string[] = [];
@@ -55,6 +61,23 @@ describe("NDJSON framing", () => {
 });
 
 describe("work daemon", () => {
+  test("accepts only the exact delegated-thinking action", () => {
+    const request = (action: string): string =>
+      JSON.stringify({
+        version: WORK_PROTOCOL_VERSION,
+        kind: "request",
+        id: "delegation-state",
+        clientId: "topic-agent",
+        action,
+      });
+
+    expect(parseRequest(request("agent.thinking-sub"))).toMatchObject({
+      action: "agent.thinking-sub",
+    });
+    expect(() => parseRequest(request("agent.thinking_sub"))).toThrow(ProtocolError);
+    expect(() => parseRequest(request("agent.delegating"))).toThrow(ProtocolError);
+  });
+
   test("correlates requests and returns clear daemon errors", async () => {
     const { socket } = await startDaemon();
     const raw = await connectRaw(socket);

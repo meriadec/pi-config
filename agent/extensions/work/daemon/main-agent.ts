@@ -294,7 +294,7 @@ export class MainAgentManager {
 
   transition(
     connectionId: string,
-    state: "thinking" | "tracking-pr" | "waiting-for-human" | "stopped",
+    state: "thinking" | "thinking-sub" | "tracking-pr" | "waiting-for-human" | "stopped",
     reason?: string,
   ): MainAgentLease {
     const agent = this.requireConnection(connectionId);

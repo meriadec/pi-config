@@ -55,6 +55,7 @@ export type SetupState = "provisioning" | "ready" | "setup-failed";
 export type MainAgentState =
   | "starting"
   | "thinking"
+  | "thinking-sub"
   | "idle"
   | "tracking-pr"
   | "waiting-for-human"
@@ -171,6 +172,7 @@ const SETUP_STATE_SET = new Set<string>(["provisioning", "ready", "setup-failed"
 const MAIN_AGENT_STATE_SET = new Set<string>([
   "starting",
   "thinking",
+  "thinking-sub",
   "idle",
   "tracking-pr",
   "waiting-for-human",

@@ -122,7 +122,8 @@ export function initialDashboardState(): DashboardState {
 /** True while at least one Main Agent has an animated activity status. */
 export function hasShimmeringAgent(state: DashboardState): boolean {
   return state.mainAgents.some(
-    (agent) => agent.state === "thinking" || agent.state === "tracking-pr",
+    (agent) =>
+      agent.state === "thinking" || agent.state === "thinking-sub" || agent.state === "tracking-pr",
   );
 }
 
@@ -820,7 +821,7 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
         ? yellow(agent)
         : agent === "tracking-pr"
           ? shimmer(agent, state.shimmerPhase, TRACKING_PR_SHIMMER)
-          : agent === "thinking"
+          : agent === "thinking" || agent === "thinking-sub"
             ? shimmer(agent, state.shimmerPhase, THINKING_SHIMMER)
             : agent;
   const pullRequest = state.pullRequests[topic.id];
@@ -900,9 +901,10 @@ const TRACKING_PR_SHIMMER: ShimmerPalette = {
 // A trailing gap after each word makes each sweep restart after a clear pause.
 const SHIMMER_TRAIL = 4;
 
-// 60 is the least common multiple of the two animation lengths: thinking (12) and
-// tracking-pr (15). Wrapping here lets both animations restart without a visible jump.
-export const SHIMMER_PERIOD = 60;
+// 240 is the least common multiple of the animation lengths: thinking (12),
+// thinking-sub (16), and tracking-pr (15). Wrapping lets all animations restart
+// without a visible jump.
+export const SHIMMER_PERIOD = 240;
 
 /** Sweeps a bright highlight across the letters of a status word for the given phase. */
 function shimmer(text: string, phase: number, palette: ShimmerPalette): string {
@@ -951,7 +953,7 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
       `Worktree: ${topic.worktreePath ?? "not ready"}`,
       `Setup: ${setupDetail ?? topic.setup.state}`,
       `Main Agent: ${
-        agent?.state === "thinking"
+        agent?.state === "thinking" || agent?.state === "thinking-sub"
           ? shimmer(agent.state, state.shimmerPhase, THINKING_SHIMMER)
           : agent?.state === "tracking-pr"
             ? shimmer(agent.state, state.shimmerPhase, TRACKING_PR_SHIMMER)
