@@ -15,7 +15,7 @@ import {
   hydrateDashboard,
   initialDashboardState,
   advanceShimmer,
-  hasThinkingAgent,
+  hasShimmeringAgent,
   SHIMMER_PERIOD,
   reduceDashboardEvent,
   renderDashboard,
@@ -543,41 +543,50 @@ describe("dashboard state and navigation", () => {
     expect(segments.length).toBeGreaterThan(1);
   });
 
-  test("shimmers a thinking Main Agent status and advances the sweep across phases", () => {
+  test("shimmers active Main Agent statuses with distinct colours", () => {
     let state = hydrateDashboard(initialDashboardState(), snapshot([topic(ID_A, "Alpha")]));
-    expect(hasThinkingAgent(state)).toBeFalse();
+    expect(hasShimmeringAgent(state)).toBeFalse();
 
     state = reduceDashboardEvent(state, {
       type: "main-agent-changed",
       agent: { topicId: ID_A, sessionId: ID_A, state: "thinking", connected: true },
     });
-    expect(hasThinkingAgent(state)).toBeTrue();
+    expect(hasShimmeringAgent(state)).toBeTrue();
 
-    // The thinking word carries the brightest sweep cell (256-colour SGR), not a bare label.
-    const first = renderDashboard(state, 100, 24).find((line) => line.includes("Alpha"));
-    expect(first).toContain("\x1b[38;5;231m");
-    // The plain "thinking" run must be broken up into per-letter colour spans.
-    expect(first).not.toContain("thinking\x1b");
+    // Thinking has a violet-white sweep, split into per-letter colour spans.
+    const thinking = renderDashboard(state, 140, 24).find((line) => line.includes("Alpha"));
+    expect(thinking).toContain("\x1b[38;5;231m");
+    expect(thinking).not.toContain("thinking\x1b");
 
     // Advancing the phase moves the sweep, so the rendered row changes.
     const advanced = advanceShimmer(state);
-    const second = renderDashboard(advanced, 100, 24).find((line) => line.includes("Alpha"));
-    expect(second).not.toEqual(first);
+    const second = renderDashboard(advanced, 140, 24).find((line) => line.includes("Alpha"));
+    expect(second).not.toEqual(thinking);
 
-    // The wrap must land exactly on a loop boundary: stepping a full period returns the
-    // start frame, so there is no visible jump after a couple of loops.
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_A, sessionId: ID_A, state: "tracking-pr", connected: true },
+    });
+    expect(hasShimmeringAgent(state)).toBeTrue();
+    // Tracking PR keeps the animation but uses a distinct blue-cyan sweep.
+    const tracking = renderDashboard(state, 140, 24).find((line) => line.includes("Alpha"));
+    expect(tracking).toContain("\x1b[38;5;195m");
+    expect(tracking).not.toContain("tracking-pr\x1b");
+    expect(tracking).not.toEqual(thinking);
+
+    // The shared wrap lands on a loop boundary for both status-word lengths.
     let looped = state;
     for (let step = 0; step < SHIMMER_PERIOD; step += 1) looped = advanceShimmer(looped);
     expect(looped.shimmerPhase).toBe(state.shimmerPhase);
-    const wrapped = renderDashboard(looped, 100, 24).find((line) => line.includes("Alpha"));
-    expect(wrapped).toEqual(first);
+    const wrapped = renderDashboard(looped, 140, 24).find((line) => line.includes("Alpha"));
+    expect(wrapped).toEqual(tracking);
 
     // A settled (idle) Main Agent stops the shimmer and needs no timer.
     state = reduceDashboardEvent(state, {
       type: "main-agent-changed",
       agent: { topicId: ID_A, sessionId: ID_A, state: "idle", connected: true },
     });
-    expect(hasThinkingAgent(state)).toBeFalse();
+    expect(hasShimmeringAgent(state)).toBeFalse();
   });
 
   test("opens the action rail on its first available action and supports navigation", () => {
@@ -740,9 +749,9 @@ describe("dashboard state and navigation", () => {
       type: "main-agent-changed",
       agent: { topicId: ID_A, sessionId: ID_A, state: "tracking-pr", connected: true },
     });
-    expect(renderDashboard(state, 100, 24).join("\n")).toContain(
-      "Main Agent: \x1b[38;5;183mtracking-pr\x1b[39m",
-    );
+    const trackingDetail = renderDashboard(state, 100, 24).join("\n");
+    expect(trackingDetail).toContain("Main Agent: \x1b[38;5;195mt\x1b[39m");
+    expect(trackingDetail).not.toContain("tracking-pr\x1b");
 
     for (const agentState of ["waiting-for-human", "stopped"] as const) {
       state = reduceDashboardEvent(state, {

@@ -17,7 +17,7 @@ import {
   type DashboardAction,
   initialDashboardState,
   advanceShimmer,
-  hasThinkingAgent,
+  hasShimmeringAgent,
   reduceDashboardEvent,
   renderDashboard,
   submissionKey,
@@ -444,14 +444,14 @@ export class WorkDashboardComponent implements Component, Focusable {
     }
   }
 
-  // A single interval animates every thinking status; it runs only while one exists,
+  // A single interval animates all active statuses; it runs only while one exists,
   // so an idle dashboard draws zero extra frames.
   private syncShimmer(): void {
     if (this.disposed) {
       this.stopShimmer();
       return;
     }
-    if (hasThinkingAgent(this.state)) {
+    if (hasShimmeringAgent(this.state)) {
       if (this.shimmerTimer !== undefined) return;
       this.shimmerTimer = setInterval(() => {
         this.state = advanceShimmer(this.state);
