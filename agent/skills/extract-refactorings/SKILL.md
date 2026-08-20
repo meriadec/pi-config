@@ -1,56 +1,48 @@
 ---
 name: extract-refactorings
-description: Extract feature-independent preparation from selected commits and place it earlier in the branch history.
+description: Factor feature-independent preparation out of selected commits and place it before the feature history.
 argument-hint: "from commit <sha> | from the last <n> commits | from this branch"
 disable-model-invocation: true
 ---
 
 # Extract Refactorings
 
-Purify selected **source commits** by moving feature-independent changes into small preparation commits before the feature changes that need them. Preserve the final tree. Prefer a mostly additive source commit when that shape follows naturally; reviewability and truthful commit boundaries take priority over an additive diff.
+Perform **surgical factorization**: construct a small preparation stack on `main`, then replay the feature history with the selected **source commits** purified. Keep feature commit order, grouping, and intent stable. Preserve the final tree. A mostly additive source diff is a useful result, not an invariant.
 
 ## Steps
 
-1. **Resolve the source commits.**
-   - Require an empty `git status --porcelain`; stop and ask the user to clean or stash any tracked, staged, or untracked changes.
-   - Resolve the invocation to an ordered, contiguous set of commits reachable from `HEAD`. A specific SHA selects that commit; “the last N commits” selects the last N commits ending at `HEAD`.
-   - For “this branch,” select `main..HEAD` only when `main` is an ancestor of `HEAD`. If the branch is not directly based on `main`, stop and ask the user what history to use.
-   - Ask a focused question when the reference has more than one plausible meaning. Reject a selection that contains a merge commit.
-   - Record the original `HEAD` and final tree before changing history.
-   - Completion: one unambiguous, ordered source-commit set is known; the worktree is clean; the range has no merge commits; and the restore point and final tree are recorded.
+1. **Resolve the history.**
+   - Require an empty `git status --porcelain`; ask the user to clean or stash any tracked, staged, or untracked changes.
+   - Require `main` to be an ancestor of `HEAD`; ask for direction when the branch is not directly based on `main`.
+   - Resolve a SHA as that source commit, “the last N commits” as the N commits ending at `HEAD`, and “this branch” as `main..HEAD`. Require each source to belong to `main..HEAD`.
+   - Reject the operation when `main..HEAD` contains a merge commit. Record the original branch, `HEAD`, and `HEAD^{tree}`.
+   - Completion: the source commits and linear branch history are unambiguous, the worktree is clean, and the restore state is recorded.
 
-2. **Classify every changed hunk.**
-   - Inspect each source commit against its parent, with special attention to modified or deleted existing lines. Read enough surrounding code and later selected commits to understand why each hunk exists.
-   - Classify each hunk as:
-     - **Preparation**: a behavior-preserving rename, move, extraction, interface cleanup, generalization, or other feature-independent improvement that is useful and reviewable on the codebase before the feature exists.
-     - **Feature**: behavior, concepts, tests, or wiring that belong to the feature itself, including necessary edits to existing lines.
-     - **Entangled**: separation would introduce feature concepts early, break an intermediate commit, or make either commit misleading.
-   - Find preparation hunks from different source commits that form one coherent change. They may become one earlier commit when that commit can stand independently before the earliest source that needs it.
-   - Treat “mostly additive” as a direction, not an invariant. Leave entangled changes in their source commit.
-   - Completion: every changed hunk is accounted for exactly once, each proposed preparation commit is feature-independent, and its required position in the history is known.
+2. **Factor the transformations.**
+   - Inspect each source commit against its parent and read the surrounding implementation needed to understand its intent. Give special attention to modified and deleted existing code.
+   - Seek a feature-free intermediate implementation between the old implementation and the source result:
+     - **Preparation**: behavior-preserving movement, extraction, renaming, interface cleanup, generalization, or another change useful on `main` before the feature exists.
+     - **Feature**: behavior, concepts, tests, or wiring introduced for the feature.
+     - **Entangled**: a transformation whose separation would expose feature concepts, change behavior, break an intermediate commit, or misstate intent.
+   - Synthesize intermediate changes when factorization requires new hunks; preparation is not limited to moving original hunks.
+   - Combine related preparation found in several sources when it forms one small coherent commit. Each preparation commit must apply to `main` or to earlier preparation commits, never to feature history.
+   - Leave entangled transformations in their source commits. Keep unrelated and unselected commit intent unchanged.
+   - Completion: each proposed preparation commit is feature-independent and correctly ordered from `main`; every source transformation has a preparation, feature, or entangled explanation; and the target history is fully mapped.
 
-3. **Resolve doubtful boundaries.**
-   - Continue without interruption for obvious preparation and feature boundaries.
-   - When classification, grouping, placement, or behavior preservation is doubtful, show the smallest relevant proposed split and ask the user for confirmation before rewriting history.
-   - If no clean preparation exists for a source commit, keep it unchanged and record the reason.
-   - Completion: all material doubts have user decisions, and the extraction plan has no unresolved boundary.
+3. **Resolve doubtful seams.**
+   - Proceed directly when the factorization is clear.
+   - For doubtful behavior preservation, classification, grouping, or placement, show the smallest relevant before/preparation/feature transformation and ask the user to choose before rewriting history.
+   - Keep a source unchanged when no clean preparation exists, and record why.
+   - Completion: the factorization plan has no unresolved material decision.
 
-4. **Rebuild the history.**
-   - Rewrite the selected commits and any descendants needed to preserve branch order. Place each preparation commit before the earliest source commit that depends on it.
-   - Make preparation commits small, meaningful, behavior-preserving, and suitable for an independent PR to `main`. Use conventional commit messages that describe the preparation itself.
-   - Rebuild each source commit without the extracted hunks. Preserve feature changes and preserve unrelated commits. Refresh a source commit message when its new contents make the old message inaccurate.
-   - Use the repository’s normal commit path so configured signing and hooks run. Fix a failing intermediate commit before continuing.
-   - Completion: the planned preparation commits precede their dependent source commits, every rebuilt commit is coherent on its parent, and no change is lost or duplicated.
+4. **Reconstruct the branch.**
+   - Rebuild from `main`: create the preparation commits first, then reconstruct the original branch commits in order. Remove extracted transformations only from selected sources; replay other commits with the same intent.
+   - Create reconstructed commits through ordinary `git commit` so configured signing and hooks run. Use conventional subjects for preparation commits. Preserve source authors and messages; refresh a subject or body only when purification made it inaccurate.
+   - Fix any conflict or failing intermediate commit before continuing.
+   - Completion: the preparation stack precedes all feature history, source commits are purified as planned, and every reconstructed commit is coherent on its parent.
 
-5. **Verify the purified stack.**
-   - Confirm that the new `HEAD` tree equals the recorded final tree.
-   - Inspect every rewritten commit and its message. Confirm that preparation commits contain no feature dependency and source commits retain only feature work plus justified entangled edits.
-   - Use the repository’s established relevant checks when commit hooks do not provide enough evidence; keep validation proportional to the affected code.
-   - Confirm that the rewritten range has no merge commits and the worktree is clean.
-   - Completion: final-tree equality holds, every resulting commit is independently coherent and accurately named, checks pass, and the worktree is clean.
-
-6. **Report.**
-   - Show the new commits in order with short SHAs and subjects.
-   - Map each preparation commit to the source commit or commits it purified.
-   - Name source commits left unchanged, remaining non-additive edits, and the reason for each.
-   - Give the original `HEAD` as the restore point. Leave pushing to the user.
+5. **Verify and report.**
+   - Require the new `HEAD^{tree}` to equal the recorded tree and the worktree to be clean.
+   - Inspect every new preparation and reconstructed source commit. Confirm that preparation contains no feature dependency and that each remaining source edit is feature work or justified entanglement. Use established relevant checks when hooks provide insufficient evidence.
+   - Report the new ordered history with short SHAs, map preparation commits to their sources, and name unchanged sources or remaining non-additive edits with reasons. Give the original `HEAD` as the restore point. Leave pushing to the user.
+   - Completion: tree equality holds, the branch is coherent and accurately described, checks pass, and the user has the new history and restore point.
