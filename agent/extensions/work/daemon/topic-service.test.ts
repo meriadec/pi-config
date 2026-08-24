@@ -293,8 +293,14 @@ describe("Topic Service daemon integration", () => {
         return { kind: "opened" as const, message: "Opened the pull request in a browser." };
       },
     } as unknown as DesktopController;
+    const observedTargets: { knownPullRequestNumber?: number }[] = [];
     const observer = {
-      async discover(target: { branch: string; worktreePath: string }) {
+      async discover(target: {
+        branch: string;
+        worktreePath: string;
+        knownPullRequestNumber?: number;
+      }) {
+        observedTargets.push(target);
         return {
           number: 42,
           url: `https://github.com/LedgerHQ/revault/pull/42?b=${target.branch}`,
@@ -326,6 +332,9 @@ describe("Topic Service daemon integration", () => {
     expect(ready.status).toBe("ready");
     const topicId = (ready as { topic: TopicManifest }).topic.id;
     expect(await changed).toEqual({ topicId, number: 42 });
+    expect(observedTargets[0]?.knownPullRequestNumber).toBeUndefined();
+    await item.service.refreshPullRequests();
+    expect(observedTargets[1]?.knownPullRequestNumber).toBe(42);
 
     const snapshot = await item.client.snapshot();
     expect(snapshot.pullRequests?.[topicId]).toEqual({

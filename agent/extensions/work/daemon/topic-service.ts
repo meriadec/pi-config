@@ -248,13 +248,18 @@ export class TopicService {
     if (observer === undefined) return;
     const topic = this.topicById.get(topicId);
     const worktreePath = topic?.worktreePath ?? null;
+    const current = this.pullRequestById.get(topicId) ?? null;
     const next =
       topic === undefined || topic.setup.state !== "ready" || worktreePath === null
         ? null
         : await observer
-            .discover({ ...prTarget(topic.repository), branch: topic.branch, worktreePath })
+            .discover({
+              ...prTarget(topic.repository),
+              branch: topic.branch,
+              worktreePath,
+              ...(current === null ? {} : { knownPullRequestNumber: current.number }),
+            })
             .catch(() => null);
-    const current = this.pullRequestById.get(topicId) ?? null;
     if (samePullRequest(current, next)) return;
     if (next === null) this.pullRequestById.delete(topicId);
     else this.pullRequestById.set(topicId, next);

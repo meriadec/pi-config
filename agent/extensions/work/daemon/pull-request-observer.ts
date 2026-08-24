@@ -6,22 +6,31 @@ const PROCESS_TIMEOUT_MS = 15_000;
 const MAX_PROCESS_OUTPUT_BYTES = 64 * 1024;
 const MAX_REVIEW_THREADS = 100;
 
-/** Resolves the newest pull request for a branch and its lifecycle, CI, and review signals. */
-const PR_QUERY = `query($owner:String!,$repo:String!,$branch:String!){
+const PR_FIELDS = `
+  number
+  url
+  state
+  isDraft
+  reviewDecision
+  reviewRequests{totalCount}
+  latestReviews:latestReviews(first:${MAX_REVIEW_THREADS}){nodes{state author{login}}}
+  reviewThreads(first:${MAX_REVIEW_THREADS}){nodes{isResolved}}
+  commits(last:1){nodes{commit{statusCheckRollup{state}}}}
+`;
+
+/** Finds only an open PR when this Topic does not have a tracked PR identity yet. */
+const OPEN_PR_QUERY = `query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
-    pullRequests(headRefName:$branch,first:1,orderBy:{field:UPDATED_AT,direction:DESC}){
-      nodes{
-        number
-        url
-        state
-        isDraft
-        reviewDecision
-        reviewRequests{totalCount}
-        latestReviews:latestReviews(first:${MAX_REVIEW_THREADS}){nodes{state author{login}}}
-        reviewThreads(first:${MAX_REVIEW_THREADS}){nodes{isResolved}}
-        commits(last:1){nodes{commit{statusCheckRollup{state}}}}
-      }
+    pullRequests(headRefName:$branch,states:[OPEN],first:1,orderBy:{field:UPDATED_AT,direction:DESC}){
+      nodes{${PR_FIELDS}}
     }
+  }
+}`;
+
+/** Refreshes one already tracked PR by stable number, including its terminal lifecycle state. */
+const TRACKED_PR_QUERY = `query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){${PR_FIELDS}}
   }
 }`;
 
@@ -37,6 +46,8 @@ export interface PullRequestTarget {
   repo: string;
   branch: string;
   worktreePath: string;
+  /** Stable identity from a prior open-PR discovery. */
+  knownPullRequestNumber?: number;
 }
 
 /** Discovers the pull request for one Topic branch without owning Topic state. */
@@ -53,8 +64,13 @@ export class PullRequestObserver {
     this.maxProcessOutputBytes = options.maxProcessOutputBytes ?? MAX_PROCESS_OUTPUT_BYTES;
   }
 
-  /** Returns the pull request for the branch, or null when none is visible. */
+  /** Finds an open PR for a new Topic, or refreshes its previously tracked PR by number. */
   async discover(target: PullRequestTarget, signal?: AbortSignal): Promise<PullRequestRef | null> {
+    const tracked = target.knownPullRequestNumber !== undefined;
+    const query = tracked ? TRACKED_PR_QUERY : OPEN_PR_QUERY;
+    const selector = tracked
+      ? `number=${target.knownPullRequestNumber}`
+      : `branch=${target.branch}`;
     let result;
     try {
       result = await this.runner.run({
@@ -63,13 +79,13 @@ export class PullRequestObserver {
           "api",
           "graphql",
           "-f",
-          `query=${PR_QUERY}`,
+          `query=${query}`,
           "-f",
           `owner=${target.owner}`,
           "-f",
           `repo=${target.repo}`,
-          "-f",
-          `branch=${target.branch}`,
+          "-F",
+          selector,
         ],
         cwd: target.worktreePath,
         timeoutMs: this.processTimeoutMs,
@@ -82,7 +98,10 @@ export class PullRequestObserver {
     if (result.status !== "completed" || result.exitCode !== 0 || result.outputTruncated) {
       return null;
     }
-    return parsePullRequest(result.stdout);
+    const pullRequest = parsePullRequest(result.stdout);
+    // A closed PR found by branch text is stale. Terminal states belong only to a PR
+    // that this Topic first observed while it was open and now tracks by number.
+    return tracked || pullRequest?.state === "open" ? pullRequest : null;
   }
 }
 
@@ -126,9 +145,10 @@ export function parsePullRequest(stdout: string): PullRequestRef | null {
 }
 
 function pullRequestNode(value: unknown): Record<string, unknown> | null {
-  const nodes = record(record(record(record(value)?.["data"])?.["repository"])?.["pullRequests"])?.[
-    "nodes"
-  ];
+  const repository = record(record(record(value)?.["data"])?.["repository"]);
+  const tracked = record(repository?.["pullRequest"]);
+  if (tracked !== undefined) return tracked;
+  const nodes = record(repository?.["pullRequests"])?.["nodes"];
   if (!Array.isArray(nodes)) return null;
   return record(nodes[0]) ?? null;
 }

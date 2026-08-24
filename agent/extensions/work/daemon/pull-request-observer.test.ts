@@ -4,13 +4,13 @@ import type { ProcessRequest, ProcessResult, ProcessRunner } from "./process-run
 
 class StubRunner implements ProcessRunner {
   readonly calls: ProcessRequest[] = [];
-  private readonly result: ProcessResult | (() => Promise<ProcessResult>);
-  constructor(result: ProcessResult | (() => Promise<ProcessResult>)) {
+  private readonly result: ProcessResult | ((request: ProcessRequest) => Promise<ProcessResult>);
+  constructor(result: ProcessResult | ((request: ProcessRequest) => Promise<ProcessResult>)) {
     this.result = result;
   }
   run(request: ProcessRequest): Promise<ProcessResult> {
     this.calls.push(request);
-    return typeof this.result === "function" ? this.result() : Promise.resolve(this.result);
+    return typeof this.result === "function" ? this.result(request) : Promise.resolve(this.result);
   }
 }
 
@@ -69,6 +69,14 @@ function payload(node: NodeOverrides): string {
       },
     },
   });
+}
+
+function trackedPayload(node: NodeOverrides): string {
+  const value = JSON.parse(payload(node)) as {
+    data: { repository: { pullRequests: { nodes: unknown[] }; pullRequest?: unknown } };
+  };
+  value.data.repository.pullRequest = value.data.repository.pullRequests.nodes[0];
+  return JSON.stringify(value);
 }
 
 describe("pull request parsing", () => {
@@ -150,6 +158,41 @@ describe("pull request observer", () => {
     expect(call?.args).toContain("owner=owner");
     expect(call?.args).toContain("repo=repo");
     expect(call?.args).toContain("branch=feat-x");
+    expect(call?.args?.find((argument) => argument.startsWith("query="))).toContain(
+      "states:[OPEN]",
+    );
+  });
+
+  test("ignores an old merged pull request when a branch name is reused", async () => {
+    const observer = new PullRequestObserver({
+      runner: new StubRunner(completed(payload({ state: "MERGED" }))),
+    });
+
+    expect(
+      await observer.discover({
+        owner: "owner",
+        repo: "repo",
+        branch: "feat-x",
+        worktreePath: "/wt/x",
+      }),
+    ).toBeNull();
+  });
+
+  test("refreshes a known pull request by number and keeps its merged state", async () => {
+    const runner = new StubRunner(completed(trackedPayload({ number: 7, state: "MERGED" })));
+    const observer = new PullRequestObserver({ runner });
+
+    expect(
+      await observer.discover({
+        owner: "owner",
+        repo: "repo",
+        branch: "feat-x",
+        worktreePath: "/wt/x",
+        knownPullRequestNumber: 7,
+      }),
+    ).toMatchObject({ number: 7, state: "merged" });
+    expect(runner.calls[0]?.args).toContain("number=7");
+    expect(runner.calls[0]?.args).not.toContain("branch=feat-x");
   });
 
   test("returns null when gh exits non-zero or the process fails", async () => {
