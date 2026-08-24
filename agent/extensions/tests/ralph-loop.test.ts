@@ -243,7 +243,7 @@ describe("ralph-loop git commits", () => {
     }
   });
 
-  test("retries the issue when a pre-commit hook rejects the commit", async () => {
+  test("allows --no-verify after a pre-commit hook rejects the commit", async () => {
     const repoRoot = await mkdtemp(join(tmpdir(), "ralph-loop-test-"));
     const issueDir = join(repoRoot, ".scratch", "feature", "issues");
     await mkdir(issueDir, { recursive: true });
@@ -253,7 +253,7 @@ describe("ralph-loop git commits", () => {
     type RegisteredTool = {
       execute: (
         id: string,
-        params: { outcome: string; summary: string; commitMessage: string },
+        params: { outcome: string; summary: string; commitMessage: string; noVerify?: boolean },
         signal: AbortSignal | undefined,
         onUpdate: () => void,
         ctx: unknown,
@@ -263,6 +263,7 @@ describe("ralph-loop git commits", () => {
     const sentMessages: string[] = [];
     let statusCalls = 0;
     let commitCalls = 0;
+    const commitScripts: string[] = [];
     const pi = {
       registerCommand(
         name: string,
@@ -294,12 +295,16 @@ describe("ralph-loop git commits", () => {
         }
         if (command === "bash" && args[0] === "-lc" && args[1]?.includes("git -C")) {
           commitCalls += 1;
-          return {
-            stdout: "",
-            stderr: "pre-commit hook failed: typecheck error",
-            code: 1,
-            killed: false,
-          };
+          commitScripts.push(args[1]);
+          if (commitCalls === 1) {
+            return {
+              stdout: "",
+              stderr: "pre-commit hook failed: typecheck error",
+              code: 1,
+              killed: false,
+            };
+          }
+          return { stdout: "[main abc123] test: commit\n", stderr: "", code: 0, killed: false };
         }
         throw new Error(`Unexpected exec: ${command} ${args.join(" ")}`);
       },
@@ -336,6 +341,27 @@ describe("ralph-loop git commits", () => {
       const retryPrompt = sentMessages.at(-1)!;
       expect(retryPrompt).toContain("pre-commit hook");
       expect(retryPrompt).toContain("typecheck error");
+      expect(retryPrompt).toContain("noVerify=true");
+
+      const retryResult = (await tool!.execute(
+        "tool-call-retry",
+        {
+          outcome: "completed",
+          summary: "Checks pass, but the hook is broken outside this issue.",
+          commitMessage: "test: commit",
+          noVerify: true,
+        },
+        undefined,
+        () => {},
+        ctx,
+      )) as { content: Array<{ text: string }> };
+
+      expect(commitCalls).toBe(2);
+      expect(commitScripts[0]).not.toContain("--no-verify");
+      expect(commitScripts[1]).toContain(
+        `git -C '${repoRoot}' commit --no-verify -m 'test: commit'`,
+      );
+      expect(retryResult.content[0]!.text).toContain("Completed");
     } finally {
       await commands.get("ralph-loop")?.handler("stop", ctx);
       await rm(repoRoot, { recursive: true, force: true });

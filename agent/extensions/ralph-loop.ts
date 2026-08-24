@@ -466,6 +466,7 @@ async function commitCurrentIssue(
   state: LoopState,
   issue: IssueRef,
   commitMessage: string,
+  noVerify: boolean,
 ): Promise<{ ok: boolean; output: string }> {
   const add = (await pi.exec("git", gitArgs(state.repoRoot, ["add", "-A"]), {
     timeout: 60_000,
@@ -473,9 +474,10 @@ async function commitCurrentIssue(
   if (add.code !== 0) throw new Error(add.stderr.trim() || "git add failed");
 
   const agentGitConfig = agentGitConfigGlobal();
+  const noVerifyArg = noVerify ? " --no-verify" : "";
   const commitScript = [
     `export GIT_CONFIG_GLOBAL=${shellQuote(agentGitConfig)}`,
-    `git -C ${shellQuote(state.repoRoot)} commit -m ${shellQuote(commitMessage)}`,
+    `git -C ${shellQuote(state.repoRoot)} commit${noVerifyArg} -m ${shellQuote(commitMessage)}`,
   ].join("\n");
   const commit = (await pi.exec("bash", ["-lc", commitScript], {
     timeout: 120_000,
@@ -703,7 +705,7 @@ function issuePrompt(state: LoopState, issue: IssueRef, retryContext?: string): 
     `Selected issue ${state.startedIssues}/${state.maxIssues}; remaining after this: ${state.queue.length}`,
     "",
     retryContext
-      ? `The previous commit was rejected (normally by a pre-commit hook). Fix the reported problems before calling ralph_issue_result again.\n\n${retryContext}`
+      ? `The previous commit was rejected (normally by a pre-commit hook). Fix the reported problems before calling ralph_issue_result again. If the hook cannot be fixed in this issue's scope and you ran the relevant checks independently, you can set noVerify=true and explain why in the summary.\n\n${retryContext}`
       : undefined,
     "Rules:",
     "1. The issue file under .scratch/ is the source of truth for this task. Read it first.",
@@ -720,7 +722,7 @@ function issuePrompt(state: LoopState, issue: IssueRef, retryContext?: string): 
     "- outcome=needs_human if meaningful human judgment/input is required.",
     "- outcome=blocked if an unexpected/unfixable technical failure prevents progress.",
     "",
-    "For completed, include a concise conventional-commit commitMessage. The extension will mark the issue Status as done, stage all changes, and create a signed commit using the configured agent git identity. The commit runs the repo's pre-commit hooks; if they reject the change, you will be asked to fix it and retry.",
+    "For completed, include a concise conventional-commit commitMessage. The extension will mark the issue Status as done, stage all changes, and create a signed commit using the configured agent git identity. The first commit attempt runs the repo's pre-commit hooks. After a hook rejection, fix the problem and retry, or set noVerify=true only when the hook cannot be fixed in scope and the relevant checks pass independently.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -756,7 +758,7 @@ function startNextIssue(
 
 async function handleCompleted(
   pi: ExtensionAPI,
-  params: { summary: string; commitMessage?: string },
+  params: { summary: string; commitMessage?: string; noVerify?: boolean },
   ctx: {
     ui: {
       setStatus: (key: string, value: string | undefined) => void;
@@ -769,11 +771,15 @@ async function handleCompleted(
   const state = activeLoop;
   const issue = state?.current;
   if (!state || !issue) throw new Error("No active Ralph Loop issue.");
+  if (params.noVerify && state.currentAttempt === 1) {
+    throw new Error("noVerify is available only after a verified commit attempt is rejected.");
+  }
 
   appendState(pi, "issue-result", {
     issue: issue.relPath,
     outcome: "completed",
     summary: params.summary,
+    noVerify: params.noVerify ?? false,
   });
   updateStatus(ctx, state);
   await ensureNoMergeState(pi, state.repoRoot);
@@ -787,8 +793,12 @@ async function handleCompleted(
   await markIssueDone(issue);
 
   const message = safeCommitMessage(params.commitMessage, issue);
-  ctx.ui.notify?.(`Ralph Loop committing ${issue.relPath}`, "info");
-  const commit = await commitCurrentIssue(pi, state, issue, message);
+  const noVerify = params.noVerify ?? false;
+  ctx.ui.notify?.(
+    `Ralph Loop committing ${issue.relPath}${noVerify ? " with --no-verify" : ""}`,
+    noVerify ? "warning" : "info",
+  );
+  const commit = await commitCurrentIssue(pi, state, issue, message, noVerify);
   if (!commit.ok) {
     // The commit was rejected, normally by a pre-commit hook guarding quality.
     appendState(pi, "commit-rejected", {
@@ -817,6 +827,7 @@ async function handleCompleted(
   appendState(pi, "issue-committed", {
     issue: issue.relPath,
     commitMessage: message,
+    noVerify,
     commitOutput: commit.output,
   });
   updateStatus(ctx, state);
@@ -1048,6 +1059,12 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
         Type.String({
           description:
             "Required for completed: concise conventional-commit message for the signed commit.",
+        }),
+      ),
+      noVerify: Type.Optional(
+        Type.Boolean({
+          description:
+            "For completed retries only: commit with --no-verify when the rejected hook cannot be fixed in scope and relevant checks passed independently.",
         }),
       ),
     }),
