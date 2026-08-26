@@ -78,7 +78,7 @@ describe("work daemon", () => {
     expect(() => parseRequest(request("agent.delegating"))).toThrow(ProtocolError);
   });
 
-  test("validates the version 12 Topic creation contract", () => {
+  test("validates the version 13 Topic creation contract", () => {
     const request = (input: Record<string, unknown>) =>
       JSON.stringify({
         version: WORK_PROTOCOL_VERSION,

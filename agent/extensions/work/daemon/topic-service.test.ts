@@ -99,6 +99,8 @@ class FakeProvisioner {
         topic = await failed(this.topics, topic, "Setup failed safely.");
         return { status: "failed", reason: "Setup failed safely.", topic };
       }
+      const worktreePath = join(request.workBase, "wt-owned", topic.branch);
+      await mkdir(worktreePath, { recursive: true });
       topic = await this.topics.update(topic.id, (current) => ({
         ...current,
         setup: {
@@ -107,7 +109,7 @@ class FakeProvisioner {
           worktreeCreated: true,
           setupCommandsRun: true,
         },
-        worktreePath: join(request.workBase, "wt-owned", current.branch),
+        worktreePath,
       }));
       return { status: "ready", topic };
     } finally {
@@ -270,6 +272,34 @@ describe("Topic Service daemon integration", () => {
     expect(snapshot.topics).toHaveLength(1);
     expect(snapshot.diagnostics).toEqual([
       expect.objectContaining({ topicId: corruptId, code: "storage-error" }),
+    ]);
+  });
+
+  test("reports an Orphan Topic when its Worktree directory disappears", async () => {
+    const item = await world();
+    const created = await item.client.createTopic({
+      name: "Orphaned",
+      branch: "feat-orphaned",
+      repository: "LedgerHQ/revault",
+    });
+    if (created.status !== "ready") throw new Error("Expected a ready Topic.");
+    expect((await item.client.snapshot()).orphanedTopicIds).toEqual([]);
+
+    const events: Array<{
+      type: "worktree-presence-changed";
+      topicId: string;
+      orphaned: boolean;
+    }> = [];
+    const unsubscribe = item.service.subscribe((event) => {
+      if (event.type === "worktree-presence-changed") events.push(event);
+    });
+    await rm(created.topic.worktreePath!, { recursive: true });
+    await item.service.refreshWorktreePresence();
+    unsubscribe();
+
+    expect((await item.client.snapshot()).orphanedTopicIds).toEqual([created.topic.id]);
+    expect(events).toEqual([
+      { type: "worktree-presence-changed", topicId: created.topic.id, orphaned: true },
     ]);
   });
 

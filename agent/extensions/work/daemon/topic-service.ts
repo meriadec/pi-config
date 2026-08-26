@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import {
@@ -32,6 +33,7 @@ import type { ProvisionRequest, ProvisionResult, TopicProvisioner } from "./prov
 const CONFIRMATION_TTL_MS = 60_000;
 const MAX_DEDUPLICATED_REQUESTS = 1_000;
 const PULL_REQUEST_POLL_INTERVAL_MS = 60_000;
+const WORKTREE_POLL_INTERVAL_MS = 2_000;
 
 export interface TopicOperation {
   topicId: string;
@@ -56,6 +58,8 @@ export interface TopicServiceSnapshot {
   baseCheckouts: Readonly<Record<string, string>>;
   deniedActions: Readonly<Record<string, readonly ActionId[]>>;
   pullRequests: Readonly<Record<string, PullRequestRef>>;
+  /** Ready Topics whose recorded Worktree path is not an existing directory. */
+  orphanedTopicIds: readonly string[];
 }
 
 export type TopicServiceEvent =
@@ -68,6 +72,7 @@ export type TopicServiceEvent =
   | { type: "terminal-opened"; topicId: string; result: TerminalActionResult }
   | { type: "main-agent-opened"; topicId: string; result: MainAgentActionResult }
   | { type: "pull-request-changed"; topicId: string; pullRequest: PullRequestRef | null }
+  | { type: "worktree-presence-changed"; topicId: string; orphaned: boolean }
   | { type: "operation-changed"; topicId: string; operation: TopicOperation | null };
 
 export interface ConfirmationRequirement {
@@ -123,6 +128,8 @@ export interface TopicServiceOptions {
   confirmationTtlMs?: number;
   generateToken?: () => string;
   pullRequestPollIntervalMs?: number;
+  worktreePollIntervalMs?: number;
+  stat?: typeof stat;
   setInterval?: typeof globalThis.setInterval;
   clearInterval?: typeof globalThis.clearInterval;
 }
@@ -134,7 +141,9 @@ export class TopicService {
   private diagnostics: TopicDiagnostic[] = [];
   private readonly operations = new Map<string, TopicOperation>();
   private readonly pullRequestById = new Map<string, PullRequestRef>();
+  private readonly orphanedTopicIds = new Set<string>();
   private pullRequestTimer: ReturnType<typeof setInterval> | undefined;
+  private worktreeTimer: ReturnType<typeof setInterval> | undefined;
   private readonly topicQueues = new Map<string, Promise<void>>();
   private readonly creationQueues = new Map<string, Promise<void>>();
   private readonly confirmations = new Map<string, PendingConfirmation>();
@@ -149,6 +158,7 @@ export class TopicService {
   private readonly confirmationTtlMs: number;
   private readonly generateToken: () => string;
   private readonly pullRequestPollIntervalMs: number;
+  private readonly worktreePollIntervalMs: number;
 
   constructor(options: TopicServiceOptions) {
     this.options = options;
@@ -157,6 +167,7 @@ export class TopicService {
     this.generateToken = options.generateToken ?? randomUUID;
     this.pullRequestPollIntervalMs =
       options.pullRequestPollIntervalMs ?? PULL_REQUEST_POLL_INTERVAL_MS;
+    this.worktreePollIntervalMs = options.worktreePollIntervalMs ?? WORKTREE_POLL_INTERVAL_MS;
   }
 
   async start(): Promise<void> {
@@ -171,6 +182,13 @@ export class TopicService {
     this.diagnostics = [...hydration.diagnostics];
     for (const diagnostic of hydration.diagnostics) {
       this.emit({ type: "diagnostic-added", diagnostic });
+    }
+    await this.refreshWorktreePresence();
+    if (this.worktreeTimer === undefined) {
+      const start = this.options.setInterval ?? globalThis.setInterval;
+      this.worktreeTimer = start(() => {
+        void this.refreshWorktreePresence();
+      }, this.worktreePollIntervalMs);
     }
 
     if (config?.workBase !== undefined) {
@@ -196,6 +214,10 @@ export class TopicService {
     if (this.pullRequestTimer !== undefined) {
       (this.options.clearInterval ?? globalThis.clearInterval)(this.pullRequestTimer);
       this.pullRequestTimer = undefined;
+    }
+    if (this.worktreeTimer !== undefined) {
+      (this.options.clearInterval ?? globalThis.clearInterval)(this.worktreeTimer);
+      this.worktreeTimer = undefined;
     }
   }
 
@@ -224,6 +246,7 @@ export class TopicService {
         ]),
       ),
       pullRequests: Object.fromEntries(this.pullRequestById),
+      orphanedTopicIds: [...this.orphanedTopicIds].toSorted(),
     };
   }
 
@@ -236,12 +259,32 @@ export class TopicService {
     const topic = await this.options.topics.load(topicId);
     this.topicById.set(topic.id, topic);
     this.emit({ type: "topic-changed", topic });
+    await this.refreshTopicWorktreePresence(topic);
     return topic;
   }
 
   /** Forces an immediate re-poll of every Topic's pull request, outside the timer cadence. */
   async refreshPullRequests(): Promise<void> {
     await this.refreshAllPullRequests();
+  }
+
+  /** Re-checks recorded Worktree paths immediately, outside the poll cadence. */
+  async refreshWorktreePresence(): Promise<void> {
+    await Promise.all(
+      [...this.topicById.values()].map((topic) => this.refreshTopicWorktreePresence(topic)),
+    );
+  }
+
+  private async refreshTopicWorktreePresence(topic: TopicManifest): Promise<void> {
+    const wasOrphaned = this.orphanedTopicIds.has(topic.id);
+    const orphaned =
+      topic.setup.state === "ready" &&
+      topic.worktreePath !== null &&
+      !(await isDirectory(topic.worktreePath, this.options.stat ?? stat));
+    if (orphaned === wasOrphaned) return;
+    if (orphaned) this.orphanedTopicIds.add(topic.id);
+    else this.orphanedTopicIds.delete(topic.id);
+    this.emit({ type: "worktree-presence-changed", topicId: topic.id, orphaned });
   }
 
   private async refreshAllPullRequests(): Promise<void> {
@@ -692,6 +735,7 @@ export class TopicService {
     this.topicById.set(result.topic.id, result.topic);
     this.emit({ type: "setup-changed", topic: result.topic });
     this.emit({ type: "topic-changed", topic: result.topic });
+    await this.refreshTopicWorktreePresence(result.topic);
 
     if (result.status === "confirmation-required") {
       if (originalRequest === "startup") {
@@ -1007,6 +1051,14 @@ function validateCreationRequest(input: TopicCreationRequest): void {
     !isAbsolute(value["sourceCheckout"])
   ) {
     throw new WorkDataError("invalid-start-point", "Start Point is invalid.");
+  }
+}
+
+async function isDirectory(path: string, inspect: typeof stat): Promise<boolean> {
+  try {
+    return (await inspect(path)).isDirectory();
+  } catch {
+    return false;
   }
 }
 

@@ -206,7 +206,10 @@ export class WorkDaemon {
           result = this.snapshot();
           break;
         case "refresh":
-          await this.requireTopicService().refreshPullRequests();
+          await Promise.all([
+            this.requireTopicService().refreshPullRequests(),
+            this.requireTopicService().refreshWorktreePresence(),
+          ]);
           result = { refreshed: true };
           break;
         case "subscribe":

@@ -75,6 +75,8 @@ export interface DashboardState {
   knownRepositories: readonly string[];
   pullRequests: Readonly<Record<string, PullRequestRef>>;
   unavailableActions: Readonly<Record<string, readonly TopicActionId[]>>;
+  /** Topic ids whose recorded Worktree directory is missing. */
+  orphanedTopicIds: readonly string[];
   /** Animation cursor for active-status shimmers. Advanced by a UI timer only. */
   shimmerPhase: number;
   wizard?: TopicWizardState;
@@ -117,6 +119,7 @@ export function initialDashboardState(): DashboardState {
     knownRepositories: [],
     pullRequests: {},
     unavailableActions: {},
+    orphanedTopicIds: [],
     shimmerPhase: 0,
     submissions: {},
   };
@@ -174,6 +177,9 @@ export function hydrateDashboard(state: DashboardState, snapshot: DaemonSnapshot
       ? [...snapshot.knownRepositories]
       : state.knownRepositories,
     pullRequests: { ...(snapshot.pullRequests ?? state.pullRequests) },
+    orphanedTopicIds: snapshot.orphanedTopicIds
+      ? [...snapshot.orphanedTopicIds]
+      : state.orphanedTopicIds,
     unavailableActions: snapshot.deniedActions
       ? Object.fromEntries(
           Object.entries(snapshot.deniedActions).map(([topicId, actions]) => [
@@ -206,6 +212,7 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
       const baseCheckouts = { ...state.baseCheckouts };
       const pullRequests = { ...state.pullRequests };
       const unavailableActions = { ...state.unavailableActions };
+      const orphanedTopicIds = state.orphanedTopicIds.filter((id) => id !== event.topicId);
       delete workspaces[event.topicId];
       delete baseCheckouts[event.topicId];
       delete pullRequests[event.topicId];
@@ -218,6 +225,7 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
           baseCheckouts,
           pullRequests,
           unavailableActions,
+          orphanedTopicIds,
         },
         state.topics.findIndex((topic) => topic.id === event.topicId),
       );
@@ -255,6 +263,12 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
       if (event.pullRequest === null) delete pullRequests[event.topicId];
       else pullRequests[event.topicId] = event.pullRequest;
       return { ...state, pullRequests };
+    }
+    case "worktree-presence-changed": {
+      const orphanedTopicIds = new Set(state.orphanedTopicIds);
+      if (event.orphaned) orphanedTopicIds.add(event.topicId);
+      else orphanedTopicIds.delete(event.topicId);
+      return { ...state, orphanedTopicIds: [...orphanedTopicIds] };
     }
     case "daemon-stopping":
       return {
@@ -807,10 +821,11 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
         : renderMainAgentStatus(agent, state.shimmerPhase);
   const pullRequest = state.pullRequests[topic.id];
   // A live Repository Recipe phase (setup N/M) replaces the durable setup state.
-  // A settled "ready" Topic shows a blank cell; only intermediate states matter.
+  // An Orphan Topic replaces a settled ready state with a bright warning.
   const operationDetail = state.operations.find((item) => item.topicId === topic.id)?.detail;
   const setupState = topic.setup.state === "ready" ? "" : topic.setup.state;
-  const setupCell = operationDetail ?? setupState;
+  const orphaned = state.orphanedTopicIds.includes(topic.id);
+  const setupCell = operationDetail ?? (orphaned ? brightRed("orphan") : setupState);
   if (width < 72) {
     const link = pullRequest === undefined ? "" : ` · ${pullRequestCell(pullRequest)}`;
     const setupSegment = setupCell === "" ? "" : ` · ${setupCell}`;
@@ -858,6 +873,11 @@ function highlight(row: string, width: number): string {
 /** Colours a status word yellow. */
 function yellow(text: string): string {
   return `\x1b[33m${text}\x1b[39m`;
+}
+
+/** Colours an urgent status word bright red. */
+function brightRed(text: string): string {
+  return `\x1b[91m${text}\x1b[39m`;
 }
 
 /** Colours a status word a light violet. */
@@ -948,7 +968,7 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
       ...(state.pullRequests[topic.id] === undefined
         ? []
         : [`Pull Request: ${pullRequestCell(state.pullRequests[topic.id])}`]),
-      `Worktree: ${topic.worktreePath ?? "not ready"}`,
+      `Worktree: ${topic.worktreePath ?? "not ready"}${state.orphanedTopicIds.includes(topic.id) ? ` · ${brightRed("orphan")}` : ""}`,
       `Setup: ${setupDetail ?? topic.setup.state}`,
       `Main Agent: ${renderMainAgentStatus(agent?.state ?? "stopped", state.shimmerPhase)}`,
       `Workspace: ${state.workspaces[topic.id] ?? "not observable"}`,

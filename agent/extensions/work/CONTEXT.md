@@ -73,3 +73,8 @@ precedence is Thinking, then Delegated Thinking, then Tracking PR, then waiting 
 higher-precedence activity settles, the next live activity becomes visible until it completes,
 fails, or is cancelled.
 _Avoid_: waiting for human, reviewing PR.
+
+**Orphan Topic**:
+A Topic that claims a ready Worktree whose recorded path is no longer a directory. The durable Topic
+record still exists, but its Worktree is missing.
+_Avoid_: orphaned Worktree, missing Topic directory.

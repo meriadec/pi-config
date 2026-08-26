@@ -490,6 +490,27 @@ describe("dashboard state and navigation", () => {
     expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B]);
   });
 
+  test("shows an Orphan Topic in bright red and clears it from a live event", () => {
+    let state = hydrateDashboard(initialDashboardState(), {
+      ...snapshot([topic(ID_A, "Alpha")]),
+      orphanedTopicIds: [ID_A],
+    });
+
+    const wide = renderDashboard(state, 100, 24).find((line) => line.includes("Alpha"));
+    const narrow = renderDashboard(state, 40, 24).find((line) => line.includes("Alpha"));
+    expect(stripSgr(wide!)).toContain("orphan");
+    expect(stripSgr(narrow!)).toContain("orphan");
+    expect(wide).toContain("\x1b[91morphan\x1b[39m");
+
+    state = reduceDashboardEvent(state, {
+      type: "worktree-presence-changed",
+      topicId: ID_A,
+      orphaned: false,
+    });
+    const restored = renderDashboard(state, 100, 24).find((line) => line.includes("Alpha"));
+    expect(stripSgr(restored!)).not.toContain("orphan");
+  });
+
   test("Shift+J Unfocuses and Shift+K Focuses the selection, following the moved Topic", () => {
     let state = hydrateDashboard(
       initialDashboardState(),

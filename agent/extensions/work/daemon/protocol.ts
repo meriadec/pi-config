@@ -11,7 +11,7 @@ import type { TopicDiagnostic } from "../shared/topic-store.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 12 as const;
+export const WORK_PROTOCOL_VERSION = 13 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 
@@ -99,6 +99,8 @@ export interface DaemonSnapshot {
   baseCheckouts?: Readonly<Record<string, string>>;
   deniedActions?: Readonly<Record<string, readonly ActionId[]>>;
   pullRequests?: Readonly<Record<string, PullRequestRef>>;
+  /** Topic ids whose recorded Worktree path is not an existing directory. */
+  orphanedTopicIds?: readonly string[];
   daemon: {
     protocolVersion: typeof WORK_PROTOCOL_VERSION;
     pid: number;
