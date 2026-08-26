@@ -153,7 +153,7 @@ function nonBlank(value: string | undefined): string | undefined {
 }
 
 async function executeWorkTopicCreate(
-  toolCallId: string,
+  _toolCallId: string,
   params: WorkTopicCreateInput,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<WorkTopicCreateToolDetails> | undefined,
@@ -163,7 +163,7 @@ async function executeWorkTopicCreate(
   let client: TopicCreateToolClient | undefined;
   let currentPhase = "start";
   let requestSent = false;
-  const requestId = dependencies.requestId?.() ?? `${toolCallId}:${randomUUID()}`;
+  const requestId = dependencies.requestId?.() ?? randomUUID();
   const timeoutMs =
     dependencies.timeoutMs ??
     (params.timeoutSeconds === undefined ? PROVISION_TIMEOUT_MS : params.timeoutSeconds * 1_000);
@@ -208,11 +208,8 @@ async function executeWorkTopicCreate(
     }
     client = await abortable(connecting, signal);
 
-    await abortable(
-      client.subscribe((event) => reportDaemonProgress(event, progress), 2_000),
-      signal,
-      () => client?.close(),
-    );
+    const reportDaemonEvent = daemonProgressReporter(resolved, progress);
+    await abortable(client.subscribe(reportDaemonEvent, 2_000), signal, () => client?.close());
     progress("provision", "Provisioning the Topic.");
     requestSent = true;
     let result = await abortable(client.createTopic(resolved, requestId, timeoutMs), signal, () =>
@@ -267,24 +264,34 @@ function progressReporter(
   };
 }
 
-function reportDaemonProgress(
-  event: WorkEvent,
+function daemonProgressReporter(
+  target: ResolvedTopicCreationInput,
   report: (phase: string, text: string) => void,
-): void {
-  if (event.type === "topic-added") {
-    report("clone", "Preparing the repository clone.");
-    return;
-  }
-  if (event.type === "operation-changed" && event.operation?.detail?.startsWith("setup ")) {
-    report(event.operation.detail, `${event.operation.detail}.`);
-    return;
-  }
-  if (
-    (event.type === "setup-changed" || event.type === "topic-changed") &&
-    event.topic.setup.worktreeCreated
-  ) {
-    report("worktree", "Created the Topic Worktree.");
-  }
+): (event: WorkEvent) => void {
+  let topicId: string | undefined;
+  return (event) => {
+    if (event.type === "topic-added") {
+      if (event.topic.repository !== target.repository || event.topic.branch !== target.branch) {
+        return;
+      }
+      topicId = event.topic.id;
+      report("clone", "Preparing the repository clone.");
+      return;
+    }
+    if (topicId === undefined) return;
+    if (event.type === "operation-changed") {
+      if (event.topicId !== topicId || !event.operation?.detail?.startsWith("setup ")) return;
+      report(event.operation.detail, `${event.operation.detail}.`);
+      return;
+    }
+    if (
+      (event.type === "setup-changed" || event.type === "topic-changed") &&
+      event.topic.id === topicId &&
+      event.topic.setup.worktreeCreated
+    ) {
+      report("worktree", "Created the Topic Worktree.");
+    }
+  };
 }
 
 function mutationResult(

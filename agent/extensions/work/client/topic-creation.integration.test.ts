@@ -451,6 +451,21 @@ describe("agent-callable Topic creation integration", () => {
     expect(item.service.snapshot().topics[0]?.setup.state).toBe("ready");
   });
 
+  test("rejects an oversized request id locally instead of waiting for an uncorrelated error", async () => {
+    const item = await integrationWorld();
+    const client = await WorkClient.connect(item.paths.socket);
+
+    await expect(
+      client.createTopic(
+        { name: "Never sent", repository: "acme/widgets", branch: "never-sent" },
+        "x".repeat(201),
+        50,
+      ),
+    ).rejects.toMatchObject({ code: "invalid-request-id" });
+    expect(item.service.snapshot().topics).toHaveLength(0);
+    client.close();
+  });
+
   test("a timed-out client retry is deduplicated and Branch conflicts never move or suffix", async () => {
     const item = await integrationWorld();
     let release = (): void => undefined;

@@ -39,6 +39,7 @@ interface RegisteredTool {
 class FakeClient implements TopicCreateToolClient {
   readonly created: ResolvedTopicCreationInput[] = [];
   readonly createTimeouts: Array<number | undefined> = [];
+  readonly createRequestIds: Array<string | undefined> = [];
   readonly confirmed: string[] = [];
   readonly rejected: string[] = [];
   closed = 0;
@@ -47,19 +48,26 @@ class FakeClient implements TopicCreateToolClient {
   confirmResults: TopicMutationResult[] = [{ status: "ready", topic: readyTopic() }];
   rejectResult: TopicMutationResult = { status: "rejected", topicId: "topic-id" };
   createOverride?: () => Promise<TopicMutationResult>;
+  eventHandler?: (event: WorkEvent) => void;
 
   async subscribe(handler: (event: WorkEvent) => void): Promise<unknown> {
+    this.eventHandler = handler;
     for (const event of this.events) handler(event);
     return {};
   }
 
+  emit(event: WorkEvent): void {
+    this.eventHandler?.(event);
+  }
+
   createTopic(
     input: ResolvedTopicCreationInput,
-    _requestId?: string,
+    requestId?: string,
     timeoutMs?: number,
   ): Promise<TopicMutationResult> {
     this.created.push(input);
     this.createTimeouts.push(timeoutMs);
+    this.createRequestIds.push(requestId);
     if (this.createOverride !== undefined) return this.createOverride();
     return Promise.resolve(this.createResults.shift()!);
   }
@@ -151,6 +159,34 @@ describe("work_topic_create execution", () => {
     });
     expect(result.content[0]).toMatchObject({ type: "text" });
     expect(client.closed).toBe(1);
+  });
+
+  test("does not copy Pi's oversized tool-call id into the daemon request id", async () => {
+    const client = new FakeClient();
+    let tool: RegisteredTool | undefined;
+    const pi = {
+      registerTool(definition: ToolDefinition) {
+        tool = definition as unknown as RegisteredTool;
+      },
+    } as unknown as ExtensionAPI;
+    registerWorkTopicCreateTool(pi, {
+      connect: () => Promise.resolve(client),
+      resolveInput: async (input) => ({
+        name: input.name,
+        repository: input.repository!,
+        branch: "safe-request",
+      }),
+    });
+
+    await tool!.execute(
+      `call_${"x".repeat(450)}`,
+      { name: "Safe request", repository: "acme/widgets" },
+      undefined,
+      undefined,
+      context({ hasUI: false }),
+    );
+
+    expect(client.createRequestIds[0]).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   test("treats blank optional model arguments as omitted", async () => {
@@ -296,7 +332,7 @@ describe("work_topic_create execution", () => {
 
   test("reports only bounded semantic progress", async () => {
     const client = new FakeClient();
-    const topic = readyTopic();
+    const topic = { ...readyTopic(), branch: "progress" };
     client.events = [
       {
         type: "topic-added",
@@ -345,6 +381,10 @@ describe("work_topic_create execution", () => {
       context({ hasUI: false }),
     );
     while (client.created.length === 0) await Promise.resolve();
+    client.emit({
+      type: "setup-changed",
+      topic: { ...readyTopic(), id: "unrelated-topic", repository: "other/widgets" },
+    });
     controller.abort();
 
     const result = await execution;

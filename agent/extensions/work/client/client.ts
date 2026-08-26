@@ -294,6 +294,14 @@ export class WorkClient {
   ): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error("Work daemon client is closed."));
     const id = requestedId ?? String(this.nextId++);
+    if (id.length === 0 || id.length > 200) {
+      return Promise.reject(
+        new WorkClientError(
+          "invalid-request-id",
+          "Work daemon request id must contain between 1 and 200 characters.",
+        ),
+      );
+    }
     const request = {
       version: WORK_PROTOCOL_VERSION,
       kind: "request",
