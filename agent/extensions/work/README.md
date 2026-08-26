@@ -142,6 +142,5 @@ Version 1 does not provide:
 - pull request creation, monitoring, rebasing, conflict resolution, or commit-stack refinement
 - development servers, Kubernetes, or manual-test recipes
 - Delegation Jobs or headless agents
-- an LLM-callable control-plane tool
 - non-systemd Linux, non-i3 window managers, or non-kitty terminals
 - two GitHub repositories with the same repository name under one `WORK_BASE`

@@ -1,6 +1,6 @@
 # 05 — Add the `work_topic_create` Pi tool
 
-Status: ready-for-agent
+Status: done
 Type: feature
 Blocked by: 03
 Affected extension: `work`
