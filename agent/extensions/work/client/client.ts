@@ -13,7 +13,7 @@ import {
   type WorkRequest,
 } from "../daemon/protocol.ts";
 import { boundMessage } from "../shared/domain.ts";
-import type { NewTopic } from "../shared/domain.ts";
+import type { TopicCreationRequest, WorkFailureDetails } from "../shared/domain.ts";
 import type { MainAgentActionResult, WorkspaceActionResult } from "../daemon/desktop.ts";
 import type { MainAgentLease } from "../daemon/main-agent.ts";
 import type { TopicMutationResult, WorkActionResult } from "../daemon/topic-service.ts";
@@ -88,7 +88,7 @@ export class WorkClient {
   }
 
   createTopic(
-    input: NewTopic,
+    input: TopicCreationRequest,
     requestId?: string,
     timeoutMs?: number,
   ): Promise<TopicMutationResult> {
@@ -373,7 +373,12 @@ export class WorkClient {
           typeof (error as Record<string, unknown>)["code"] === "string"
             ? String((error as Record<string, unknown>)["code"])
             : "request-failed";
-        pending.reject(new WorkClientError(code, boundMessage(text)));
+        const details = parseFailureDetails(
+          error !== null && typeof error === "object"
+            ? (error as Record<string, unknown>)["details"]
+            : undefined,
+        );
+        pending.reject(new WorkClientError(code, boundMessage(text), details));
       }
     }
   }
@@ -404,12 +409,33 @@ export class WorkClient {
 
 export class WorkClientError extends Error {
   readonly code: string;
+  readonly details: WorkFailureDetails | undefined;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, details?: WorkFailureDetails) {
     super(message);
     this.name = "WorkClientError";
     this.code = code;
+    this.details = details;
   }
+}
+
+function parseFailureDetails(value: unknown): WorkFailureDetails | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const existingTopicId = record["existingTopicId"];
+  const existingTopicName = record["existingTopicName"];
+  if (
+    (existingTopicId !== undefined &&
+      (typeof existingTopicId !== "string" || existingTopicId.length > 200)) ||
+    (existingTopicName !== undefined &&
+      (typeof existingTopicName !== "string" || existingTopicName.length > 200))
+  ) {
+    return undefined;
+  }
+  return {
+    ...(typeof existingTopicId === "string" ? { existingTopicId } : {}),
+    ...(typeof existingTopicName === "string" ? { existingTopicName } : {}),
+  };
 }
 
 function isWorkEvent(value: unknown): value is WorkEvent {

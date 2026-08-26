@@ -147,6 +147,25 @@ async function provision(item: TestWorld, policy = policies(), approvedActions?:
   });
 }
 
+describe("Start Point provisioning", () => {
+  test("rejects before running Git or creating a Branch", async () => {
+    const item = await world();
+    await expect(
+      item.provisioner.provision({
+        topicId: ID,
+        workBase: item.workBase,
+        policies: policies(),
+        startPoint: { commit: "a".repeat(40), sourceCheckout: "/source/revault" },
+      }),
+    ).rejects.toMatchObject({ code: "start-point-unsupported" });
+    expect(item.runner.requests).toHaveLength(0);
+    expect((await item.topics.load(ID)).setup).toMatchObject({
+      state: "setup-failed",
+      reason: "Start Point provisioning is not supported.",
+    });
+  });
+});
+
 describe("GitHub remote and wt output parsing", () => {
   test("normalizes common SSH and HTTPS GitHub origins", () => {
     expect(normalizeGitHubRemote("git@github.com:LedgerHQ/revault.git\n")).toBe("ledgerhq/revault");

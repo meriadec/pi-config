@@ -155,13 +155,31 @@ export interface TopicManifest {
 
 export type NewTopic = Pick<TopicManifest, "name" | "branch" | "repository">;
 
+/** Creation-only Git input. It is never part of the durable Topic manifest. */
+export interface TopicStartPoint {
+  commit: string;
+  sourceCheckout: string;
+}
+
+/** Versioned daemon creation input, separate from durable Topic data. */
+export interface TopicCreationRequest extends NewTopic {
+  startPoint?: TopicStartPoint;
+}
+
+export interface WorkFailureDetails {
+  existingTopicId?: string;
+  existingTopicName?: string;
+}
+
 export class WorkDataError extends Error {
   readonly code: string;
+  readonly details: WorkFailureDetails | undefined;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, details?: WorkFailureDetails) {
     super(boundMessage(message));
     this.name = "WorkDataError";
     this.code = code;
+    this.details = details;
   }
 }
 

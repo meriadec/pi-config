@@ -78,6 +78,36 @@ describe("work daemon", () => {
     expect(() => parseRequest(request("agent.delegating"))).toThrow(ProtocolError);
   });
 
+  test("validates the version 12 Topic creation contract", () => {
+    const request = (input: Record<string, unknown>) =>
+      JSON.stringify({
+        version: WORK_PROTOCOL_VERSION,
+        kind: "request",
+        id: "create",
+        clientId: "cli",
+        action: "topic.create",
+        input,
+      });
+    const basic = { name: "Topic", branch: "topic", repository: "acme/widgets" };
+    expect(parseRequest(request(basic))).toMatchObject({ input: basic });
+    const extended = {
+      ...basic,
+      startPoint: { commit: "a".repeat(40), sourceCheckout: "/source/widgets" },
+    };
+    expect(parseRequest(request(extended))).toMatchObject({ input: extended });
+
+    for (const input of [
+      { ...basic, unknown: true },
+      { ...basic, startPoint: { ...extended.startPoint, unknown: true } },
+      { ...basic, startPoint: { commit: "a".repeat(39), sourceCheckout: "/source" } },
+      { ...basic, startPoint: { commit: "z".repeat(40), sourceCheckout: "/source" } },
+      { ...basic, startPoint: { commit: "a".repeat(40), sourceCheckout: "relative" } },
+      { ...basic, startPoint: { commit: "a".repeat(40), sourceCheckout: `/${"x".repeat(1_000)}` } },
+    ]) {
+      expect(() => parseRequest(request(input))).toThrow(ProtocolError);
+    }
+  });
+
   test("correlates requests and returns clear daemon errors", async () => {
     const { socket } = await startDaemon();
     const raw = await connectRaw(socket);

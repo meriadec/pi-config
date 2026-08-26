@@ -1,10 +1,17 @@
+import { isAbsolute } from "node:path";
 import { boundMessage } from "../shared/domain.ts";
-import type { ActionId, NewTopic, PullRequestRef, TopicManifest } from "../shared/domain.ts";
+import type {
+  ActionId,
+  PullRequestRef,
+  TopicCreationRequest,
+  TopicManifest,
+  WorkFailureDetails,
+} from "../shared/domain.ts";
 import type { TopicDiagnostic } from "../shared/topic-store.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 11 as const;
+export const WORK_PROTOCOL_VERSION = 12 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 
@@ -42,7 +49,7 @@ interface RequestBase {
 
 export type WorkRequest =
   | (RequestBase & { action: "ping" | "snapshot" | "subscribe" | "refresh" })
-  | (RequestBase & { action: "topic.create"; input: NewTopic })
+  | (RequestBase & { action: "topic.create"; input: TopicCreationRequest })
   | (RequestBase & { action: "topic.rename"; topicId: string; name: string })
   | (RequestBase & { action: "topic.set-focus"; topicId: string; focused: boolean })
   | (RequestBase & {
@@ -118,7 +125,7 @@ export type WorkFailure = {
   kind: "response";
   id: string | null;
   ok: false;
-  error: { code: string; message: string };
+  error: { code: string; message: string; details?: WorkFailureDetails };
 };
 
 export type WorkResponse = WorkSuccess | WorkFailure;
@@ -229,6 +236,31 @@ export function parseRequest(text: string): WorkRequest {
       return { ...base, action: value["action"] };
     case "topic.create": {
       const topic = record(value["input"], id);
+      exactKeys(topic, ["name", "branch", "repository", "startPoint"], id);
+      const startPoint = topic["startPoint"];
+      let parsedStartPoint: TopicCreationRequest["startPoint"];
+      if (startPoint !== undefined) {
+        const point = record(startPoint, id, "Start Point must be an object.");
+        exactKeys(point, ["commit", "sourceCheckout"], id);
+        const commit = boundedString(point["commit"], 40, "Start Point commit is invalid.", id);
+        if (!/^[0-9a-f]{40}$/i.test(commit)) {
+          throw new ProtocolError(
+            "invalid-arguments",
+            "Start Point commit must be a full SHA.",
+            id,
+          );
+        }
+        const sourceCheckout = boundedString(
+          point["sourceCheckout"],
+          1_000,
+          "Source checkout is invalid.",
+          id,
+        );
+        if (!isAbsolute(sourceCheckout)) {
+          throw new ProtocolError("invalid-arguments", "Source checkout must be absolute.", id);
+        }
+        parsedStartPoint = { commit, sourceCheckout };
+      }
       return {
         ...base,
         action: "topic.create",
@@ -246,6 +278,7 @@ export function parseRequest(text: string): WorkRequest {
             "Topic repository is required.",
             id,
           ),
+          ...(parsedStartPoint === undefined ? {} : { startPoint: parsedStartPoint }),
         },
       };
     }
@@ -351,13 +384,22 @@ export function encodeMessage(message: ServerMessage | WorkRequest): string {
   return frame;
 }
 
-export function failure(id: string | null, code: string, message: string): WorkFailure {
+export function failure(
+  id: string | null,
+  code: string,
+  message: string,
+  details?: WorkFailureDetails,
+): WorkFailure {
   return {
     version: WORK_PROTOCOL_VERSION,
     kind: "response",
     id,
     ok: false,
-    error: { code, message: boundMessage(message) },
+    error: {
+      code,
+      message: boundMessage(message),
+      ...(details === undefined ? {} : { details }),
+    },
   };
 }
 
@@ -390,9 +432,27 @@ function boundedString(
   return value;
 }
 
-function record(value: unknown, requestId: string): Record<string, unknown> {
+function record(
+  value: unknown,
+  requestId: string,
+  message = "Topic input must be an object.",
+): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new ProtocolError("invalid-arguments", "Topic input must be an object.", requestId);
+    throw new ProtocolError("invalid-arguments", message, requestId);
   }
   return value as Record<string, unknown>;
+}
+
+function exactKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  requestId: string,
+): void {
+  if (Object.keys(value).some((key) => !allowed.includes(key))) {
+    throw new ProtocolError(
+      "invalid-arguments",
+      "Topic creation input has unknown fields.",
+      requestId,
+    );
+  }
 }

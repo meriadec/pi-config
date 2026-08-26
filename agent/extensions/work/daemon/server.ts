@@ -345,7 +345,13 @@ export class WorkDaemon {
       if (error instanceof ProtocolError) {
         this.protocolFailure(client, error.requestId, error.code, error.message);
       } else if (error instanceof WorkDataError) {
-        this.requestFailure(client, requestIdFromErrorFrame(text), error.code, error.message);
+        this.requestFailure(
+          client,
+          requestIdFromErrorFrame(text),
+          error.code,
+          error.message,
+          error.details,
+        );
       } else {
         this.requestFailure(
           client,
@@ -376,8 +382,9 @@ export class WorkDaemon {
     id: string | null,
     code: string,
     message: string,
+    details?: import("../shared/domain.ts").WorkFailureDetails,
   ): void {
-    this.writeMessage(client, failure(id, code, message));
+    this.writeMessage(client, failure(id, code, message, details));
   }
 
   private protocolFailure(

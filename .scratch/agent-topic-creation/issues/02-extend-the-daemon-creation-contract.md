@@ -1,6 +1,6 @@
 # 02 — Extend the daemon Topic creation contract
 
-Status: ready-for-agent
+Status: done
 Type: feature
 Blocked by: 01
 Affected extension: `work`

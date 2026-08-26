@@ -12,6 +12,7 @@ import type {
   ResolvedPolicy,
   TopicManifest,
   TopicSetup,
+  TopicStartPoint,
   TopicStore,
   WorkPolicies,
 } from "../shared/index.ts";
@@ -48,6 +49,8 @@ export interface ProvisionRequest {
   /** The repository's Repository Recipe, run only when a fresh Worktree is created. */
   recipe?: readonly string[];
   approvedActions?: ReadonlySet<ActionId>;
+  /** Creation-only source used to create the Branch at an exact commit. */
+  startPoint?: TopicStartPoint;
   onSetupProgress?: (progress: SetupProgress) => void;
   signal?: AbortSignal;
 }
@@ -95,7 +98,23 @@ export class TopicProvisioner {
   }
 
   provision(request: ProvisionRequest): Promise<ProvisionResult> {
+    if (request.startPoint !== undefined) return this.rejectUnsupportedStartPoint(request.topicId);
     return this.serialize(request.topicId, () => this.provisionSerial(request));
+  }
+
+  private async rejectUnsupportedStartPoint(topicId: string): Promise<never> {
+    await this.topics.update(topicId, (topic) => ({
+      ...topic,
+      setup: {
+        ...topic.setup,
+        state: "setup-failed",
+        reason: "Start Point provisioning is not supported.",
+      },
+    }));
+    throw new WorkDataError(
+      "start-point-unsupported",
+      "Start Point provisioning is not supported.",
+    );
   }
 
   private async provisionSerial(request: ProvisionRequest): Promise<ProvisionResult> {

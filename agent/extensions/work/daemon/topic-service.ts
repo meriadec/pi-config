@@ -11,8 +11,8 @@ import {
 import type {
   ActionId,
   ConfigStore,
-  NewTopic,
   PullRequestRef,
+  TopicCreationRequest,
   TopicDiagnostic,
   TopicManifest,
   TopicStore,
@@ -130,6 +130,7 @@ export class TopicService {
   private readonly pullRequestById = new Map<string, PullRequestRef>();
   private pullRequestTimer: ReturnType<typeof setInterval> | undefined;
   private readonly topicQueues = new Map<string, Promise<void>>();
+  private readonly creationQueues = new Map<string, Promise<void>>();
   private readonly confirmations = new Map<string, PendingConfirmation>();
   private readonly deduplicated = new Map<
     string,
@@ -266,28 +267,61 @@ export class TopicService {
     this.emit({ type: "pull-request-changed", topicId, pullRequest: next });
   }
 
-  create(clientId: string, requestId: string, input: NewTopic): Promise<TopicMutationResult> {
+  create(
+    clientId: string,
+    requestId: string,
+    input: TopicCreationRequest,
+  ): Promise<TopicMutationResult> {
     return this.deduplicate(clientId, requestId, `create:${JSON.stringify(input)}`, async () => {
-      if (input.name.trim().length === 0) {
-        throw new WorkDataError("invalid-topic", "Topic name must not be empty.");
-      }
-      parseRepository(input.repository);
-      if (!isValidBranchName(input.branch)) {
-        throw new WorkDataError("invalid-topic", "Topic branch is not a valid Git branch name.");
-      }
+      validateCreationRequest(input);
       // Re-read config from disk so a manually edited Repository Recipe applies to a new Topic.
       this.config = await this.options.config.load();
       this.requireConfigured();
-      const topic = await this.options.topics.create(input);
-      this.topicById.set(topic.id, topic);
-      this.emit({ type: "topic-added", topic });
-      return this.provision(topic.id, this.requestKey(clientId, requestId), new Set(), clientId);
+      const topic = await this.serializeCreation(input.repository, input.branch, async () => {
+        const existing = [...this.topicById.values()].find(
+          (candidate) =>
+            candidate.repository === input.repository && candidate.branch === input.branch,
+        );
+        if (existing !== undefined) {
+          throw new WorkDataError(
+            "topic-branch-conflict",
+            "A Topic with this repository and Branch already exists.",
+            { existingTopicId: existing.id, existingTopicName: existing.name },
+          );
+        }
+        const created = await this.options.topics.create({
+          name: input.name,
+          branch: input.branch,
+          repository: input.repository,
+        });
+        this.topicById.set(created.id, created);
+        this.emit({ type: "topic-added", topic: created });
+        return created;
+      });
+      try {
+        return await this.provision(
+          topic.id,
+          this.requestKey(clientId, requestId),
+          new Set(),
+          clientId,
+          input.startPoint,
+        );
+      } catch (error) {
+        if (input.startPoint !== undefined) await this.refreshTopic(topic.id);
+        throw error;
+      }
     });
   }
 
   retry(clientId: string, requestId: string, topicId: string): Promise<TopicMutationResult> {
     return this.deduplicate(clientId, requestId, `retry:${topicId}`, async () => {
       const topic = await this.options.topics.load(topicId);
+      if (topic.setup.reason === "Start Point provisioning is not supported.") {
+        throw new WorkDataError(
+          "start-point-unsupported",
+          "Start Point provisioning is not supported.",
+        );
+      }
       if (topic.setup.state !== "setup-failed" && topic.setup.state !== "provisioning") {
         throw new WorkDataError(
           "invalid-topic-state",
@@ -599,9 +633,10 @@ export class TopicService {
     originalRequest: string,
     approvedActions: ReadonlySet<ActionId>,
     clientId: string,
+    startPoint?: TopicCreationRequest["startPoint"],
   ): Promise<TopicMutationResult> {
     return this.serializeTopic(topicId, () =>
-      this.provisionSerial(topicId, originalRequest, approvedActions, clientId),
+      this.provisionSerial(topicId, originalRequest, approvedActions, clientId, startPoint),
     );
   }
 
@@ -610,6 +645,7 @@ export class TopicService {
     originalRequest: string,
     approvedActions: ReadonlySet<ActionId>,
     clientId: string,
+    startPoint?: TopicCreationRequest["startPoint"],
   ): Promise<TopicMutationResult> {
     const config = this.requireConfigured();
     this.setOperation({ topicId, kind: "provision", state: "running" });
@@ -624,6 +660,7 @@ export class TopicService {
       policies: config.policies,
       recipe,
       approvedActions,
+      ...(startPoint === undefined ? {} : { startPoint }),
       onSetupProgress: (progress) =>
         this.setOperation({
           topicId,
@@ -809,6 +846,27 @@ export class TopicService {
     this.emit({ type: "operation-changed", topicId, operation: null });
   }
 
+  private async serializeCreation<T>(
+    repository: string,
+    branch: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const key = `${repository}\0${branch}`;
+    const previous = this.creationQueues.get(key) ?? Promise.resolve();
+    let release = (): void => undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.creationQueues.set(key, current);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.creationQueues.get(key) === current) this.creationQueues.delete(key);
+    }
+  }
+
   private async serializeTopic<T>(topicId: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.topicQueues.get(topicId) ?? Promise.resolve();
     let release = (): void => undefined;
@@ -903,6 +961,40 @@ function samePullRequest(left: PullRequestRef | null, right: PullRequestRef | nu
     left.approved === right.approved &&
     left.unresolvedThreads === right.unresolvedThreads
   );
+}
+
+function validateCreationRequest(input: TopicCreationRequest): void {
+  const keys = Object.keys(input);
+  if (keys.some((key) => !["name", "branch", "repository", "startPoint"].includes(key))) {
+    throw new WorkDataError("invalid-topic", "Topic creation input has unknown fields.");
+  }
+  if (typeof input.name !== "string" || input.name.trim().length === 0 || input.name.length > 200) {
+    throw new WorkDataError("invalid-topic", "Topic name is invalid.");
+  }
+  if (typeof input.repository !== "string" || input.repository.length > 200) {
+    throw new WorkDataError("invalid-topic", "Topic repository is invalid.");
+  }
+  parseRepository(input.repository);
+  if (typeof input.branch !== "string" || !isValidBranchName(input.branch)) {
+    throw new WorkDataError("invalid-topic", "Topic branch is not a valid Git branch name.");
+  }
+  if (input.startPoint === undefined) return;
+  const point = input.startPoint as unknown;
+  if (point === null || typeof point !== "object" || Array.isArray(point)) {
+    throw new WorkDataError("invalid-start-point", "Start Point is invalid.");
+  }
+  const value = point as Record<string, unknown>;
+  if (
+    Object.keys(value).some((key) => !["commit", "sourceCheckout"].includes(key)) ||
+    typeof value["commit"] !== "string" ||
+    !/^[0-9a-f]{40}$/i.test(value["commit"]) ||
+    typeof value["sourceCheckout"] !== "string" ||
+    value["sourceCheckout"].length === 0 ||
+    value["sourceCheckout"].length > 1_000 ||
+    !isAbsolute(value["sourceCheckout"])
+  ) {
+    throw new WorkDataError("invalid-start-point", "Start Point is invalid.");
+  }
 }
 
 /** Splits a validated owner/name Topic repository into pull request target fields. */

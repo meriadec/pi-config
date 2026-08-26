@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { WorkClient, WorkClientError } from "../client/client.ts";
 import {
   ACTION_IDS,
+  WorkDataError,
   createConfigStore,
   createTopicStore,
   createWorkPaths,
@@ -32,6 +33,7 @@ const clients: WorkClient[] = [];
 class FakeProvisioner {
   readonly calls: string[] = [];
   readonly recipes: (readonly string[])[] = [];
+  readonly requests: ProvisionRequest[] = [];
   active = 0;
   maxActive = 0;
   failBranches = new Set<string>();
@@ -46,6 +48,18 @@ class FakeProvisioner {
   async provision(request: ProvisionRequest): Promise<ProvisionResult> {
     this.calls.push(request.topicId);
     this.recipes.push(request.recipe ?? []);
+    this.requests.push(request);
+    if (request.startPoint !== undefined) {
+      await failed(
+        this.topics,
+        await this.topics.load(request.topicId),
+        "Start Point provisioning is not supported.",
+      );
+      throw new WorkDataError(
+        "start-point-unsupported",
+        "Start Point provisioning is not supported.",
+      );
+    }
     this.active += 1;
     this.maxActive = Math.max(this.maxActive, this.active);
     try {
@@ -448,7 +462,7 @@ describe("Topic Service daemon integration", () => {
     });
     const second = item.client.createTopic({
       name: "Two",
-      branch: "feat-two",
+      branch: "feat-one",
       repository: "LedgerHQ/two",
     });
     await Bun.sleep(20);
@@ -465,7 +479,8 @@ describe("Topic Service daemon integration", () => {
     const input = { name: "One", branch: "feat-one", repository: "LedgerHQ/revault" };
     await item.client.createTopic(input);
     await expect(item.client.createTopic({ ...input, name: "Duplicate" })).rejects.toMatchObject({
-      code: "duplicate-topic",
+      code: "topic-branch-conflict",
+      details: { existingTopicName: "One" },
     });
     await expect(
       item.client.createTopic({
@@ -475,6 +490,54 @@ describe("Topic Service daemon integration", () => {
       }),
     ).rejects.toBeInstanceOf(WorkClientError);
     expect(item.provisioner.calls).toHaveLength(1);
+  });
+
+  test("serializes concurrent creation for one repository and Branch", async () => {
+    const item = await world();
+    let release = (): void => undefined;
+    item.provisioner.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const input = { name: "First", branch: "same", repository: "LedgerHQ/revault" };
+    const first = item.client.createTopic(input);
+    const second = item.client.createTopic({ ...input, name: "Second" });
+    const settled = Promise.allSettled([first, second]);
+    await Bun.sleep(20);
+    const [existing] = (await item.client.snapshot()).topics;
+    expect(existing).toBeDefined();
+    release();
+    const results = await settled;
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({
+      reason: {
+        code: "topic-branch-conflict",
+        details: { existingTopicId: existing!.id, existingTopicName: existing!.name },
+      },
+    });
+    expect(item.provisioner.calls).toHaveLength(1);
+  });
+
+  test("passes creation-only Start Point data but never stores or provisions it", async () => {
+    const item = await world();
+    const startPoint = { commit: "a".repeat(40), sourceCheckout: "/source/revault" };
+    await expect(
+      item.client.createTopic({
+        name: "Exact",
+        branch: "exact",
+        repository: "LedgerHQ/revault",
+        startPoint,
+      }),
+    ).rejects.toMatchObject({ code: "start-point-unsupported" });
+    expect(item.provisioner.requests[0]?.startPoint).toEqual(startPoint);
+    const [topic] = (await item.client.snapshot()).topics;
+    expect(topic).toBeDefined();
+    expect(topic).not.toHaveProperty("startPoint");
+    expect(topic).not.toHaveProperty("sourceCheckout");
+    expect(topic?.setup.state).toBe("setup-failed");
+    await expect(item.client.retryTopic(topic!.id)).rejects.toMatchObject({
+      code: "start-point-unsupported",
+    });
   });
 
   test("deduplicates a repeated client request id without a second side effect", async () => {
