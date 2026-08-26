@@ -282,13 +282,79 @@ describe("work_topic_create execution", () => {
       undefined,
       context({ hasUI: false }),
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    while (client.created.length === 0) await Promise.resolve();
     controller.abort();
 
     const result = await execution;
-    expect(result.details).toMatchObject({ status: "cancelled", code: "cancelled" });
+    expect(result.details).toMatchObject({
+      status: "cancelled",
+      code: "tool-call-cancelled",
+      phase: "provision",
+    });
+    expect(result.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining(
+        "The tool call was cancelled during provision. Topic provisioning can continue",
+      ),
+    });
     expect(client.closed).toBeGreaterThanOrEqual(1);
+  });
+
+  test("reports cancellation before the daemon request as safe to retry", async () => {
+    const client = new FakeClient();
+    let resolving = false;
+    const controller = new AbortController();
+    const execution = registeredTool({
+      client,
+      resolveInput: () => {
+        resolving = true;
+        return new Promise(() => undefined);
+      },
+    }).execute(
+      "call-before-request",
+      { name: "Cancel before request" },
+      controller.signal,
+      undefined,
+      context({ hasUI: false }),
+    );
+    while (!resolving) await Promise.resolve();
+    controller.abort();
+
+    const result = await execution;
+    expect(result.details).toMatchObject({
+      status: "cancelled",
+      code: "tool-call-cancelled",
+      phase: "resolve",
+    });
+    expect(result.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("No Topic request was sent. Retry the tool call"),
+    });
+    expect(client.created).toHaveLength(0);
+  });
+
+  test("returns a distinct request timeout result", async () => {
+    const client = new FakeClient();
+    client.createOverride = () =>
+      Promise.reject(
+        Object.assign(new Error("Work daemon topic.create request timed out."), {
+          code: "request-timeout",
+        }),
+      );
+
+    const result = await registeredTool({ client }).execute(
+      "call-timeout",
+      { name: "Timeout", repository: "acme/widgets", branch: "timeout" },
+      undefined,
+      undefined,
+      context({ hasUI: false }),
+    );
+
+    expect(result.details).toMatchObject({
+      status: "timeout",
+      code: "request-timeout",
+      phase: "provision",
+    });
   });
 
   test("bounds repository mismatch, resolver, conflict, and disconnect failures", async () => {

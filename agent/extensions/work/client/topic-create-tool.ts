@@ -128,9 +128,15 @@ async function executeWorkTopicCreate(
   dependencies: WorkTopicCreateToolDependencies,
 ): Promise<AgentToolResult<WorkTopicCreateToolDetails>> {
   let client: TopicCreateToolClient | undefined;
+  let currentPhase = "start";
+  let requestSent = false;
   const requestId = dependencies.requestId?.() ?? `${toolCallId}:${randomUUID()}`;
   const timeoutMs = dependencies.timeoutMs ?? PROVISION_TIMEOUT_MS;
-  const progress = progressReporter(onUpdate);
+  const reportProgress = progressReporter(onUpdate);
+  const progress = (phase: string, text: string): void => {
+    currentPhase = phase;
+    reportProgress(phase, text);
+  };
 
   try {
     throwIfAborted(signal);
@@ -172,6 +178,7 @@ async function executeWorkTopicCreate(
       () => client?.close(),
     );
     progress("provision", "Provisioning the Topic.");
+    requestSent = true;
     let result = await abortable(client.createTopic(resolved, requestId, timeoutMs), signal, () =>
       client?.close(),
     );
@@ -202,9 +209,9 @@ async function executeWorkTopicCreate(
     return mutationResult(result, resolved);
   } catch (error) {
     if (signal?.aborted || error instanceof ToolCancelledError) {
-      return failureResult("cancelled", "Topic creation was cancelled.");
+      return toolCancellationResult(currentPhase, requestSent);
     }
-    return errorResult(error);
+    return errorResult(error, currentPhase);
   } finally {
     client?.close();
   }
@@ -310,7 +317,7 @@ function confirmationResult(
   };
 }
 
-function errorResult(error: unknown): AgentToolResult<WorkTopicCreateToolDetails> {
+function errorResult(error: unknown, phase: string): AgentToolResult<WorkTopicCreateToolDetails> {
   const record = error !== null && typeof error === "object" ? error : undefined;
   const code =
     record !== undefined && "code" in record && typeof record.code === "string"
@@ -327,9 +334,29 @@ function errorResult(error: unknown): AgentToolResult<WorkTopicCreateToolDetails
   const existingTopicId = readBoundedString(detailsValue, "existingTopicId");
   const existingTopicName = readBoundedString(detailsValue, "existingTopicName");
   return failureResult(code, boundMessage(rawMessage), {
+    phase,
     ...(existingTopicId === undefined ? {} : { existingTopicId }),
     ...(existingTopicName === undefined ? {} : { existingTopicName }),
   });
+}
+
+function toolCancellationResult(
+  phase: string,
+  requestSent: boolean,
+): AgentToolResult<WorkTopicCreateToolDetails> {
+  const nextStep = requestSent
+    ? "Topic provisioning can continue in the work daemon. Check /work for the current Topic state before you retry with the same repository and Branch."
+    : "No Topic request was sent. Retry the tool call.";
+  const message = `The tool call was cancelled during ${phase}. ${nextStep}`;
+  return {
+    content: [{ type: "text", text: boundMessage(message) }],
+    details: {
+      status: "cancelled",
+      code: "tool-call-cancelled",
+      message: boundMessage(message),
+      phase,
+    },
+  };
 }
 
 function failureResult(
@@ -337,9 +364,16 @@ function failureResult(
   message: string,
   extra: Partial<WorkTopicCreateToolDetails> = {},
 ): AgentToolResult<WorkTopicCreateToolDetails> {
+  const status =
+    code === "cancelled" ? "cancelled" : code === "request-timeout" ? "timeout" : "failed";
   return {
-    content: [{ type: "text", text: `Topic creation failed: ${boundMessage(message)}` }],
-    details: { status: code === "cancelled" ? "cancelled" : "failed", code, message, ...extra },
+    content: [
+      {
+        type: "text",
+        text: `Topic creation ${status === "timeout" ? "timed out" : "failed"}: ${boundMessage(message)}`,
+      },
+    ],
+    details: { status, code, message, ...extra },
   };
 }
 

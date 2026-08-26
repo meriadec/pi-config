@@ -407,6 +407,50 @@ describe("agent-callable Topic creation integration", () => {
     expect(result.details.status).toBe("ready");
   });
 
+  test("tool cancellation stops waiting while daemon provisioning continues", async () => {
+    const item = await integrationWorld();
+    let release = (): void => undefined;
+    item.runner.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tool = registeredTool(async () =>
+      capturingClient(
+        await WorkClient.connect(item.paths.socket, { clientId: "cancelled-tool" }),
+        [],
+      ),
+    );
+    const controller = new AbortController();
+    const execution = tool.execute(
+      "cancelled-tool-call",
+      { name: "Cancelled wait", startPoint: "HEAD~2" },
+      controller.signal,
+      undefined,
+      context(item.source),
+    );
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (item.service.snapshot().operations.some((operation) => operation.kind === "provision")) {
+        break;
+      }
+      await Bun.sleep(5);
+    }
+    controller.abort();
+
+    const cancelled = await execution;
+    expect(cancelled.details).toMatchObject({
+      status: "cancelled",
+      code: "tool-call-cancelled",
+      phase: "clone",
+    });
+    expect(item.service.snapshot().topics[0]?.setup.state).toBe("provisioning");
+
+    release();
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (item.service.snapshot().topics[0]?.setup.state === "ready") break;
+      await Bun.sleep(5);
+    }
+    expect(item.service.snapshot().topics[0]?.setup.state).toBe("ready");
+  });
+
   test("a timed-out client retry is deduplicated and Branch conflicts never move or suffix", async () => {
     const item = await integrationWorld();
     let release = (): void => undefined;

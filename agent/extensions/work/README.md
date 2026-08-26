@@ -83,6 +83,11 @@ move the Branch or add a numeric suffix.
 
 Creation progress and errors are bounded. They do not include raw Setup output, credentials, or
 the Source checkout after input resolution.
+The Pi tool and CLI wait for at most six hours for one request. A request timeout is reported as
+`request-timeout`, not as cancellation. If Pi cancels the tool call after the daemon request starts,
+the result gives the last semantic phase and tells you to check `/work`: daemon provisioning can
+continue after the tool stops waiting. Check the existing Topic before you retry with the same
+repository and Branch.
 
 ## Architecture and storage
 

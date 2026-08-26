@@ -305,7 +305,12 @@ export class WorkClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Work daemon ${action} request timed out.`));
+        reject(
+          new WorkClientError(
+            "request-timeout",
+            `Work daemon ${action} request timed out after ${timeoutMs} ms.`,
+          ),
+        );
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try {
