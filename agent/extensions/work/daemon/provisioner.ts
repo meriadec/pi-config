@@ -16,7 +16,7 @@ import type {
   TopicStore,
   WorkPolicies,
 } from "../shared/index.ts";
-import { LocalProcessRunner } from "./process-runner.ts";
+import { GIT_LOCAL_ENVIRONMENT_VARIABLES, LocalProcessRunner } from "./process-runner.ts";
 import type {
   ProcessRequest,
   ProcessResult,
@@ -156,6 +156,7 @@ export class TopicProvisioner {
           args: ["repo", "clone", repository.fullName, baseCheckout],
           cwd: request.workBase,
           signal: request.signal,
+          unsetEnv: GIT_LOCAL_ENVIRONMENT_VARIABLES,
         });
         if (clone.status !== "completed") throw controlError(clone.status, "Repository clone");
         if (clone.exitCode !== 0) {
@@ -234,6 +235,7 @@ export class TopicProvisioner {
           args,
           cwd: baseCheckout,
           signal: request.signal,
+          unsetEnv: GIT_LOCAL_ENVIRONMENT_VARIABLES,
         });
         if (switched.status !== "completed") {
           if (switched.status === "cancelled") throw controlError("cancelled", "Worktree creation");
@@ -579,7 +581,13 @@ export class TopicProvisioner {
     args: readonly string[],
     signal?: AbortSignal,
   ): Promise<ProcessResult> {
-    const result = await this.run({ command: "git", args, cwd, signal });
+    const result = await this.run({
+      command: "git",
+      args,
+      cwd,
+      signal,
+      unsetEnv: GIT_LOCAL_ENVIRONMENT_VARIABLES,
+    });
     if (result.status !== "completed") throw controlError(result.status, "Git inspection");
     if (result.outputTruncated)
       throw failure("git-output-too-large", "Git inspection output was too large.");
@@ -592,6 +600,7 @@ export class TopicProvisioner {
     cwd: string;
     timeoutMs?: number;
     signal?: AbortSignal | undefined;
+    unsetEnv?: readonly string[];
   }): Promise<ProcessResult> {
     const bounded: ProcessRequest = {
       command: request.command,
@@ -601,6 +610,7 @@ export class TopicProvisioner {
       maxOutputBytes: this.maxProcessOutputBytes,
     };
     if (request.signal !== undefined) bounded.signal = request.signal;
+    if (request.unsetEnv !== undefined) bounded.unsetEnv = request.unsetEnv;
     return this.runner.run(bounded);
   }
 

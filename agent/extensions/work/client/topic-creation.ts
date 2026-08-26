@@ -1,6 +1,6 @@
 import { realpath, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { LocalProcessRunner } from "../daemon/process-runner.ts";
+import { GIT_LOCAL_ENVIRONMENT_VARIABLES, LocalProcessRunner } from "../daemon/process-runner.ts";
 import type { ProcessResult, ProcessRunner } from "../daemon/process-runner.ts";
 import {
   WorkDataError,
@@ -176,6 +176,7 @@ async function git(
       cwd,
       timeoutMs: GIT_TIMEOUT_MS,
       maxOutputBytes: GIT_MAX_OUTPUT_BYTES,
+      unsetEnv: GIT_LOCAL_ENVIRONMENT_VARIABLES,
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : "Unknown process error.";

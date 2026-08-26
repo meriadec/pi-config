@@ -2,6 +2,14 @@ import { spawn } from "node:child_process";
 
 export type ProcessStatus = "completed" | "timeout" | "cancelled";
 
+/** Repository-local Git context that must not leak across checkout processes. */
+export const GIT_LOCAL_ENVIRONMENT_VARIABLES = [
+  "GIT_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_PREFIX",
+  "GIT_WORK_TREE",
+] as const;
+
 export interface ProcessRequest {
   command: string;
   args: readonly string[];
@@ -9,6 +17,7 @@ export interface ProcessRequest {
   timeoutMs: number;
   maxOutputBytes: number;
   env?: Readonly<Record<string, string>>;
+  unsetEnv?: readonly string[];
   signal?: AbortSignal;
 }
 
@@ -35,7 +44,7 @@ export class LocalProcessRunner implements ProcessRunner {
 
       const child = spawn(request.command, [...request.args], {
         cwd: request.cwd,
-        env: request.env === undefined ? process.env : { ...process.env, ...request.env },
+        env: processEnvironment(request),
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -88,6 +97,12 @@ export class LocalProcessRunner implements ProcessRunner {
       });
     });
   }
+}
+
+function processEnvironment(request: ProcessRequest): NodeJS.ProcessEnv {
+  const environment = { ...process.env, ...request.env };
+  for (const name of request.unsetEnv ?? []) delete environment[name];
+  return environment;
 }
 
 function emptyResult(status: ProcessStatus): ProcessResult {
