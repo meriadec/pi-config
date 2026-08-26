@@ -9,11 +9,16 @@ import type {
 import type { WorkEvent } from "../daemon/protocol.ts";
 import type { TopicMutationResult } from "../daemon/topic-service.ts";
 import type { TopicManifest } from "../shared/domain.ts";
-import type { ResolvedTopicCreationInput, TopicCreationInput } from "./topic-creation.ts";
+import {
+  resolveTopicCreationInput,
+  type ResolvedTopicCreationInput,
+  type TopicCreationInput,
+} from "./topic-creation.ts";
 import {
   registerWorkTopicCreateTool,
   type TopicCreateToolClient,
   type WorkTopicCreateToolDetails,
+  type WorkTopicCreateInput,
 } from "./topic-create-tool.ts";
 
 interface RegisteredTool {
@@ -24,7 +29,7 @@ interface RegisteredTool {
   parameters: { required?: string[]; properties?: Record<string, unknown> };
   execute(
     id: string,
-    params: TopicCreationInput,
+    params: WorkTopicCreateInput,
     signal: AbortSignal | undefined,
     onUpdate: AgentToolUpdateCallback<WorkTopicCreateToolDetails> | undefined,
     ctx: ExtensionContext,
@@ -33,6 +38,7 @@ interface RegisteredTool {
 
 class FakeClient implements TopicCreateToolClient {
   readonly created: ResolvedTopicCreationInput[] = [];
+  readonly createTimeouts: Array<number | undefined> = [];
   readonly confirmed: string[] = [];
   readonly rejected: string[] = [];
   closed = 0;
@@ -47,8 +53,13 @@ class FakeClient implements TopicCreateToolClient {
     return {};
   }
 
-  createTopic(input: ResolvedTopicCreationInput): Promise<TopicMutationResult> {
+  createTopic(
+    input: ResolvedTopicCreationInput,
+    _requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
     this.created.push(input);
+    this.createTimeouts.push(timeoutMs);
     if (this.createOverride !== undefined) return this.createOverride();
     return Promise.resolve(this.createResults.shift()!);
   }
@@ -90,6 +101,7 @@ describe("work_topic_create registration", () => {
       "branch",
       "startPoint",
       "sourceCheckout",
+      "timeoutSeconds",
     ]);
     const guidance = [tool.description, tool.promptSnippet, ...(tool.promptGuidelines ?? [])].join(
       " ",
@@ -98,6 +110,9 @@ describe("work_topic_create registration", () => {
     expect(guidance).toContain("Create a work Topic for LedgerHQ/revault with Branch foo-bar");
     expect(guidance).toContain("does not open");
     expect(guidance).toContain("original request is not confirmation");
+    expect(guidance).toContain("Never send an empty string");
+    expect(guidance).toContain("needs no Source checkout");
+    expect(guidance).toContain("timeoutSeconds");
     expect(tool.parameters.properties).not.toHaveProperty("approved");
   });
 });
@@ -136,6 +151,53 @@ describe("work_topic_create execution", () => {
     });
     expect(result.content[0]).toMatchObject({ type: "text" });
     expect(client.closed).toBe(1);
+  });
+
+  test("treats blank optional model arguments as omitted", async () => {
+    const client = new FakeClient();
+    const result = await registeredTool({
+      client,
+      resolveInput: resolveTopicCreationInput,
+    }).execute(
+      "call-blank-optionals",
+      {
+        name: "foo",
+        repository: "LedgerHQ/sre-argocd",
+        branch: "",
+        startPoint: "",
+        sourceCheckout: "",
+      },
+      undefined,
+      undefined,
+      context({ cwd: "/unrelated/checkout", hasUI: false }),
+    );
+
+    expect(client.created).toEqual([
+      { name: "foo", repository: "LedgerHQ/sre-argocd", branch: "foo" },
+    ]);
+    expect(client.createTimeouts).toEqual([10 * 60_000]);
+    expect(result.details).toMatchObject({
+      status: "ready",
+      repository: "acme/widgets",
+      branch: "my-contribution",
+    });
+  });
+
+  test("honors a user-requested wait timeout", async () => {
+    const client = new FakeClient();
+    await registeredTool({ client }).execute(
+      "call-short-timeout",
+      {
+        name: "foo",
+        repository: "LedgerHQ/sre-argocd",
+        timeoutSeconds: 5,
+      },
+      undefined,
+      undefined,
+      context({ hasUI: false }),
+    );
+
+    expect(client.createTimeouts).toEqual([5_000]);
   });
 
   test("shows every ask as the daemon's exact direct dialog and confirms only approval", async () => {

@@ -19,7 +19,7 @@ import {
   type TopicCreationInput,
 } from "./topic-creation.ts";
 
-const PROVISION_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
+const PROVISION_TIMEOUT_MS = 10 * 60_000;
 const registeredApis = new WeakSet<object>();
 
 const WorkTopicCreateParameters = Type.Object({
@@ -52,6 +52,14 @@ const WorkTopicCreateParameters = Type.Object({
         "Local Git checkout used to infer repository and resolve Start Point. Defaults to the Pi working directory.",
     }),
   ),
+  timeoutSeconds: Type.Optional(
+    Type.Integer({
+      description:
+        "Maximum time to wait for provisioning, in seconds. Omit it to use the same 600-second deadline as /work.",
+      minimum: 1,
+      maximum: 3_600,
+    }),
+  ),
 });
 
 export interface TopicCreateToolClient {
@@ -73,6 +81,10 @@ export interface WorkTopicCreateToolDependencies {
   resolveInput?: typeof resolveTopicCreationInput;
   connect?: () => Promise<TopicCreateToolClient>;
   requestId?: () => string;
+}
+
+export interface WorkTopicCreateInput extends TopicCreationInput {
+  timeoutSeconds?: number;
 }
 
 export interface WorkTopicCreateToolDetails {
@@ -103,12 +115,15 @@ export function registerWorkTopicCreateTool(
     name: "work_topic_create",
     label: "Create Work Topic",
     description:
-      "Create and provision one durable work Topic. Use it for requests such as ‘Create a work Topic from HEAD~2 named My contribution’ and ‘Create a work Topic for LedgerHQ/revault with Branch foo-bar.’ It resolves repository and Branch defaults, waits for provisioning, and does not open the Topic's Main Agent.",
+      "Create and provision one durable work Topic through the same daemon operation as the /work UI. Use it for requests such as ‘Create a work Topic from HEAD~2 named My contribution’ and ‘Create a work Topic for LedgerHQ/revault with Branch foo-bar.’ It resolves repository and Branch defaults, waits for provisioning, and does not open the Topic's Main Agent.",
     promptSnippet: "Create and provision a durable work Topic without opening its Main Agent",
     promptGuidelines: [
       "Use work_topic_create when the user asks to create a work Topic, including ‘Create a work Topic from HEAD~2 named My contribution’ and ‘Create a work Topic for LedgerHQ/revault with Branch foo-bar.’",
       "The name is the Topic display name; repository is owner/repo; branch is the Worktree Branch; startPoint is a local Git revision; sourceCheckout is the checkout used for inference and revision resolution.",
+      "Omit each optional work_topic_create argument that the user did not specify. Never send an empty string for repository, branch, startPoint, or sourceCheckout.",
+      "With an explicit repository and no Start Point, work_topic_create needs no Source checkout and must not clone or inspect a checkout before calling the tool.",
       "Omit repository and branch when the current Pi working directory should supply the repository and the Topic name should supply the Branch.",
+      "Set timeoutSeconds only when the user asks for a specific wait timeout; otherwise omit it to use 600 seconds.",
       "A daemon confirmation-required result always needs a separate direct human dialog. The original request is not confirmation, and this tool has no approval parameter.",
       "The tool creates and provisions the Topic, but it does not open a desktop workspace, terminal, or Main Agent.",
     ],
@@ -119,9 +134,27 @@ export function registerWorkTopicCreateTool(
   });
 }
 
+function normalizeTopicCreationInput(input: WorkTopicCreateInput): TopicCreationInput {
+  const repository = nonBlank(input.repository);
+  const branch = nonBlank(input.branch);
+  const startPoint = nonBlank(input.startPoint);
+  const sourceCheckout = nonBlank(input.sourceCheckout);
+  return {
+    name: input.name,
+    ...(repository === undefined ? {} : { repository }),
+    ...(branch === undefined ? {} : { branch }),
+    ...(startPoint === undefined ? {} : { startPoint }),
+    ...(sourceCheckout === undefined ? {} : { sourceCheckout }),
+  };
+}
+
+function nonBlank(value: string | undefined): string | undefined {
+  return value === undefined || value.trim().length === 0 ? undefined : value;
+}
+
 async function executeWorkTopicCreate(
   toolCallId: string,
-  params: TopicCreationInput,
+  params: WorkTopicCreateInput,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<WorkTopicCreateToolDetails> | undefined,
   ctx: ExtensionContext,
@@ -131,7 +164,9 @@ async function executeWorkTopicCreate(
   let currentPhase = "start";
   let requestSent = false;
   const requestId = dependencies.requestId?.() ?? `${toolCallId}:${randomUUID()}`;
-  const timeoutMs = dependencies.timeoutMs ?? PROVISION_TIMEOUT_MS;
+  const timeoutMs =
+    dependencies.timeoutMs ??
+    (params.timeoutSeconds === undefined ? PROVISION_TIMEOUT_MS : params.timeoutSeconds * 1_000);
   const reportProgress = progressReporter(onUpdate);
   const progress = (phase: string, text: string): void => {
     currentPhase = phase;
@@ -141,10 +176,11 @@ async function executeWorkTopicCreate(
   try {
     throwIfAborted(signal);
     progress("resolve", "Resolving Topic input.");
+    const normalized = normalizeTopicCreationInput(params);
     const resolved = await abortable(
       (dependencies.resolveInput ?? resolveTopicCreationInput)({
-        ...params,
-        sourceCheckout: params.sourceCheckout ?? ctx.cwd,
+        ...normalized,
+        sourceCheckout: normalized.sourceCheckout ?? ctx.cwd,
       }),
       signal,
     );

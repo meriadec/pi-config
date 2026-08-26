@@ -41,9 +41,10 @@ The extension registers the `work_topic_create` tool. You can ask Pi, for exampl
 - `Create a work Topic from HEAD~2 named My contribution.`
 - `Create a work Topic for LedgerHQ/revault with Branch foo-bar.`
 
-The tool parameters are `name`, `repository`, `branch`, `startPoint`, and `sourceCheckout`.
-Only `name` is required. The tool creates the Topic and waits for provisioning. It does not open
-a desktop workspace, terminal, or Main Agent.
+The tool parameters are `name`, `repository`, `branch`, `startPoint`, `sourceCheckout`, and
+`timeoutSeconds`. Only `name` is required. `timeoutSeconds` changes only how long the client waits;
+it does not cancel daemon provisioning. The tool creates the Topic and waits for provisioning. It
+does not open a desktop workspace, terminal, or Main Agent.
 
 The repository also exposes the `pi-work` executable through its Bun package entry. From this
 repository root, install the local command once:
@@ -83,11 +84,12 @@ move the Branch or add a numeric suffix.
 
 Creation progress and errors are bounded. They do not include raw Setup output, credentials, or
 the Source checkout after input resolution.
-The Pi tool and CLI wait for at most six hours for one request. A request timeout is reported as
-`request-timeout`, not as cancellation. If Pi cancels the tool call after the daemon request starts,
-the result gives the last semantic phase and tells you to check `/work`: daemon provisioning can
-continue after the tool stops waiting. Check the existing Topic before you retry with the same
-repository and Branch.
+The Pi tool uses the same ten-minute request deadline as the `/work` UI unless `timeoutSeconds` is
+given. The CLI waits for at most six hours. A request timeout is reported as `request-timeout`, not
+as cancellation. If Pi cancels
+the tool call after the daemon request starts, the result gives the last semantic phase and tells
+you to check `/work`: daemon provisioning can continue after the tool stops waiting. Check the
+existing Topic before you retry with the same repository and Branch.
 
 ## Architecture and storage
 
