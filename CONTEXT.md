@@ -35,3 +35,11 @@ _Avoid_: conversation dump, prompt, system prompt
 **Branch**:
 A Topic's exact Git branch name. A Branch identifies a Topic within its GitHub repository.
 _Avoid_: slug, branch slug
+
+**Start Point**:
+The exact Git commit from which a new Topic Branch starts. It is creation input and does not become part of the Topic's durable identity.
+_Avoid_: base branch, source branch, starting branch
+
+**Source checkout**:
+The Git checkout in which a client resolves a Start Point before it requests Topic creation. It is creation input and can differ from the repository's Base checkout.
+_Avoid_: current repo, source repository, invoking repo
