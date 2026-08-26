@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { WorkClient, WorkClientError } from "../client/client.ts";
 import {
   ACTION_IDS,
-  WorkDataError,
   createConfigStore,
   createTopicStore,
   createWorkPaths,
@@ -49,22 +48,37 @@ class FakeProvisioner {
     this.calls.push(request.topicId);
     this.recipes.push(request.recipe ?? []);
     this.requests.push(request);
-    if (request.startPoint !== undefined) {
-      await failed(
-        this.topics,
-        await this.topics.load(request.topicId),
-        "Start Point provisioning is not supported.",
-      );
-      throw new WorkDataError(
-        "start-point-unsupported",
-        "Start Point provisioning is not supported.",
-      );
-    }
     this.active += 1;
     this.maxActive = Math.max(this.maxActive, this.active);
     try {
       await this.gate;
       let topic = await this.topics.load(request.topicId);
+      if (request.startPoint !== undefined) {
+        const worktreePolicy = resolveActionPolicy(request.policies, "topic.create-worktree", {
+          topicId: topic.id,
+          repository: topic.repository,
+        });
+        if (
+          worktreePolicy.policy === "ask" &&
+          !request.approvedActions?.has("topic.create-worktree")
+        ) {
+          return {
+            status: "confirmation-required",
+            action: "topic.create-worktree",
+            policy: worktreePolicy,
+            topic,
+          };
+        }
+        if (worktreePolicy.policy === "deny") {
+          topic = await failed(this.topics, topic, "Policy denied topic.create-worktree.");
+          return {
+            status: "denied",
+            action: "topic.create-worktree",
+            reason: "Policy denied topic.create-worktree.",
+            topic,
+          };
+        }
+      }
       const policy = resolveActionPolicy(request.policies, "repository.clone", {
         topicId: topic.id,
         repository: topic.repository,
@@ -518,26 +532,42 @@ describe("Topic Service daemon integration", () => {
     expect(item.provisioner.calls).toHaveLength(1);
   });
 
-  test("passes creation-only Start Point data but never stores or provisions it", async () => {
+  test("provisions with creation-only Start Point data and never stores it", async () => {
     const item = await world();
     const startPoint = { commit: "a".repeat(40), sourceCheckout: "/source/revault" };
-    await expect(
-      item.client.createTopic({
-        name: "Exact",
-        branch: "exact",
-        repository: "LedgerHQ/revault",
-        startPoint,
-      }),
-    ).rejects.toMatchObject({ code: "start-point-unsupported" });
+    const result = await item.client.createTopic({
+      name: "Exact",
+      branch: "exact",
+      repository: "LedgerHQ/revault",
+      startPoint,
+    });
+    expect(result.status).toBe("ready");
     expect(item.provisioner.requests[0]?.startPoint).toEqual(startPoint);
     const [topic] = (await item.client.snapshot()).topics;
     expect(topic).toBeDefined();
     expect(topic).not.toHaveProperty("startPoint");
     expect(topic).not.toHaveProperty("sourceCheckout");
-    expect(topic?.setup.state).toBe("setup-failed");
-    await expect(item.client.retryTopic(topic!.id)).rejects.toMatchObject({
-      code: "start-point-unsupported",
+    expect(topic?.setup.state).toBe("ready");
+  });
+
+  test("preserves Start Point data through Worktree policy confirmation", async () => {
+    const item = await world({ "topic.create-worktree": "ask" });
+    const startPoint = { commit: "a".repeat(40), sourceCheckout: "/source/revault" };
+    const pending = await item.client.createTopic({
+      name: "Confirm exact",
+      branch: "confirm-exact",
+      repository: "LedgerHQ/revault",
+      startPoint,
     });
+    expect(pending.status).toBe("confirmation-required");
+    if (pending.status !== "confirmation-required") throw new Error("Expected confirmation.");
+    expect(pending.action).toBe("topic.create-worktree");
+    expect((await item.client.confirm(pending.token)).status).toBe("ready");
+    expect(item.provisioner.requests).toHaveLength(2);
+    expect(item.provisioner.requests[1]?.startPoint).toEqual(startPoint);
+    const [topic] = (await item.client.snapshot()).topics;
+    expect(topic).not.toHaveProperty("startPoint");
+    expect(topic).not.toHaveProperty("sourceCheckout");
   });
 
   test("deduplicates a repeated client request id without a second side effect", async () => {

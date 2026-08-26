@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ACTION_IDS, createTopicStore, createWorkPaths } from "../shared/index.ts";
 import type { ActionId, TopicStore, WorkPolicies } from "../shared/index.ts";
 import { TopicProvisioner, normalizeGitHubRemote, parseWtPath } from "./provisioner.ts";
+import { LocalProcessRunner } from "./process-runner.ts";
 import type { ProcessRequest, ProcessResult, ProcessRunner } from "./process-runner.ts";
 
 const ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -28,8 +29,14 @@ class FakeRunner implements ProcessRunner {
   branch = "feat-test";
   branchExists = false;
   listedWorktree = false;
+  commit = "a".repeat(40);
+  source = "";
+  sourceCommon = "";
+  branchCommit = "b".repeat(40);
+  sourceObjectType: string | undefined = "commit";
   cloneResult: ProcessResult | undefined = undefined;
   wtResult: ProcessResult | undefined = undefined;
+  branchResult: ProcessResult | undefined = undefined;
   onClone: (() => Promise<void>) | undefined = undefined;
   onWt: (() => Promise<void>) | undefined = undefined;
   readonly setupCalls: { command: string; cwd: string; timeoutMs: number }[] = [];
@@ -55,9 +62,29 @@ class FakeRunner implements ProcessRunner {
     }
     const args = request.args.join(" ");
     if (args === "rev-parse --show-toplevel") return complete(request.cwd);
-    if (args === "rev-parse --git-common-dir") return complete(join(this.base, ".git"));
+    if (args === "rev-parse --git-common-dir") {
+      return complete(request.cwd === this.source ? this.sourceCommon : join(this.base, ".git"));
+    }
     if (args === "remote get-url origin") return complete(this.origin);
     if (args === "symbolic-ref --short HEAD") return complete(this.branch);
+    if (args === "rev-parse --verify HEAD^{commit}") return complete(this.branchCommit);
+    if (args === `cat-file -t ${this.commit}`) {
+      if (request.cwd === this.source) {
+        return complete(this.sourceObjectType ?? "", this.sourceObjectType === undefined ? 1 : 0);
+      }
+      return complete("commit");
+    }
+    if (args === `rev-parse --verify refs/heads/${this.branch}^{commit}`) {
+      return complete(this.branchCommit, this.branchExists ? 0 : 1);
+    }
+    if (args === `branch -- ${this.branch} ${this.commit}`) {
+      const result = this.branchResult ?? complete();
+      if (result.status === "completed" && result.exitCode === 0) {
+        this.branchExists = true;
+        this.branchCommit = this.commit;
+      }
+      return result;
+    }
     if (args === `show-ref --verify --quiet refs/heads/${this.branch}`) {
       return complete("", this.branchExists ? 0 : 1);
     }
@@ -90,11 +117,15 @@ async function world(
       : join(workBase, options.worktreeName);
   await mkdir(workBase, { recursive: true });
   if (options.repositoryExists !== false) await mkdir(join(base, ".git"), { recursive: true });
+  const source = join(root, "source");
+  await mkdir(join(source, ".git"), { recursive: true });
   const paths = createWorkPaths({ home: join(root, "home"), runtime: join(root, "runtime") });
   const topics = createTopicStore(paths, { generateId: () => ID });
   await topics.create({ name: "Test", branch, repository: "LedgerHQ/revault" });
   const runner = new FakeRunner();
   runner.base = base;
+  runner.source = source;
+  runner.sourceCommon = join(base, ".git");
   runner.worktree = worktree;
   runner.branch = branch;
   runner.onClone = async () => {
@@ -138,6 +169,54 @@ function complete(stdout = "", exitCode = 0): ProcessResult {
   };
 }
 
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  const env = { ...process.env };
+  delete env["GIT_DIR"];
+  delete env["GIT_INDEX_FILE"];
+  delete env["GIT_PREFIX"];
+  delete env["GIT_WORK_TREE"];
+  const child = Bun.spawn(["git", ...args], {
+    cwd,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${stderr}`);
+  return stdout.trim();
+}
+
+class RealGitWtRunner implements ProcessRunner {
+  private readonly delegate = new LocalProcessRunner();
+  private readonly worktree: string;
+
+  constructor(worktree: string) {
+    this.worktree = worktree;
+  }
+
+  async run(request: ProcessRequest): Promise<ProcessResult> {
+    if (request.command !== "wt") return this.delegate.run(request);
+    const branch = request.args[1];
+    if (branch === undefined) throw new Error("wt test request has no Branch.");
+    const result = await this.delegate.run({
+      ...request,
+      command: "git",
+      args: ["worktree", "add", this.worktree, branch],
+      env: {
+        GIT_INDEX_FILE: join(request.cwd, ".git", "index"),
+        GIT_PREFIX: "",
+      },
+    });
+    return result.exitCode === 0
+      ? { ...result, stdout: JSON.stringify({ path: this.worktree }) }
+      : result;
+  }
+}
+
 async function provision(item: TestWorld, policy = policies(), approvedActions?: Set<ActionId>) {
   return item.provisioner.provision({
     topicId: ID,
@@ -148,21 +227,201 @@ async function provision(item: TestWorld, policy = policies(), approvedActions?:
 }
 
 describe("Start Point provisioning", () => {
-  test("rejects before running Git or creating a Branch", async () => {
+  function startPoint(item: TestWorld) {
+    return { commit: item.runner.commit, sourceCheckout: item.runner.source };
+  }
+
+  test("creates the Branch at an exact commit from the shared repository", async () => {
     const item = await world();
-    await expect(
-      item.provisioner.provision({
-        topicId: ID,
-        workBase: item.workBase,
-        policies: policies(),
-        startPoint: { commit: "a".repeat(40), sourceCheckout: "/source/revault" },
-      }),
-    ).rejects.toMatchObject({ code: "start-point-unsupported" });
-    expect(item.runner.requests).toHaveLength(0);
-    expect((await item.topics.load(ID)).setup).toMatchObject({
-      state: "setup-failed",
-      reason: "Start Point provisioning is not supported.",
+    const result = await item.provisioner.provision({
+      topicId: ID,
+      workBase: item.workBase,
+      policies: policies(),
+      startPoint: startPoint(item),
     });
+    expect(result.status).toBe("ready");
+    expect(item.runner.branchCommit).toBe(item.runner.commit);
+    expect(item.runner.requests.some((request) => request.args[0] === "fetch")).toBeFalse();
+    expect(item.runner.requests.find((request) => request.command === "wt")?.args).toEqual([
+      "switch",
+      "feat-test",
+      "--format",
+      "json",
+    ]);
+  });
+
+  test("adopts only an existing Branch at the requested commit", async () => {
+    const matching = await world();
+    matching.runner.branchExists = true;
+    matching.runner.branchCommit = matching.runner.commit;
+    expect(
+      (
+        await matching.provisioner.provision({
+          topicId: ID,
+          workBase: matching.workBase,
+          policies: policies(),
+          startPoint: startPoint(matching),
+        })
+      ).status,
+    ).toBe("ready");
+    expect(matching.runner.requests.some((request) => request.args[0] === "branch")).toBeFalse();
+
+    const conflict = await world();
+    conflict.runner.branchExists = true;
+    const oldTip = conflict.runner.branchCommit;
+    const result = await conflict.provisioner.provision({
+      topicId: ID,
+      workBase: conflict.workBase,
+      policies: policies(),
+      startPoint: startPoint(conflict),
+    });
+    expect(result).toMatchObject({ status: "failed", code: "start-point-conflict" });
+    expect(conflict.runner.branchCommit).toBe(oldTip);
+    expect(conflict.runner.requests.some((request) => request.command === "wt")).toBeFalse();
+  });
+
+  test("rejects invalid or separate Source repositories before mutation", async () => {
+    const invalid = await world();
+    invalid.runner.origin = "https://github.com/other/repository.git";
+    const failed = await invalid.provisioner.provision({
+      topicId: ID,
+      workBase: invalid.workBase,
+      policies: policies(),
+      startPoint: startPoint(invalid),
+    });
+    expect(failed).toMatchObject({ status: "failed", code: "invalid-start-point" });
+    expect(invalid.runner.branchExists).toBeFalse();
+
+    const separate = await world();
+    separate.runner.sourceCommon = join(separate.root, "separate.git");
+    await mkdir(separate.runner.sourceCommon);
+    expect(
+      await separate.provisioner.provision({
+        topicId: ID,
+        workBase: separate.workBase,
+        policies: policies(),
+        startPoint: startPoint(separate),
+      }),
+    ).toMatchObject({ status: "failed", code: "invalid-start-point" });
+    expect(separate.runner.branchExists).toBeFalse();
+
+    const nonCommit = await world();
+    nonCommit.runner.sourceObjectType = "tree";
+    expect(
+      await nonCommit.provisioner.provision({
+        topicId: ID,
+        workBase: nonCommit.workBase,
+        policies: policies(),
+        startPoint: startPoint(nonCommit),
+      }),
+    ).toMatchObject({ status: "failed", code: "invalid-start-point" });
+
+    const missingBase = await world({ repositoryExists: false });
+    expect(
+      await missingBase.provisioner.provision({
+        topicId: ID,
+        workBase: missingBase.workBase,
+        policies: policies(),
+        startPoint: startPoint(missingBase),
+      }),
+    ).toMatchObject({ status: "failed", code: "invalid-start-point" });
+    expect(missingBase.runner.requests.some((request) => request.command === "gh")).toBeFalse();
+  });
+
+  test("keeps the repository unchanged for policy and cancellation results", async () => {
+    const asked = await world();
+    const confirmation = await asked.provisioner.provision({
+      topicId: ID,
+      workBase: asked.workBase,
+      policies: policies({ "topic.create-worktree": "ask" }),
+      startPoint: startPoint(asked),
+    });
+    expect(confirmation).toMatchObject({
+      status: "confirmation-required",
+      action: "topic.create-worktree",
+    });
+    expect(asked.runner.branchExists).toBeFalse();
+
+    const denied = await world();
+    const denial = await denied.provisioner.provision({
+      topicId: ID,
+      workBase: denied.workBase,
+      policies: policies({ "topic.create-worktree": "deny" }),
+      startPoint: startPoint(denied),
+    });
+    expect(denial).toMatchObject({ status: "denied", action: "topic.create-worktree" });
+    expect(denied.runner.branchExists).toBeFalse();
+
+    const cancelled = await world();
+    cancelled.runner.branchResult = {
+      status: "cancelled",
+      exitCode: null,
+      stdout: "",
+      stderr: "",
+      outputTruncated: false,
+    };
+    const result = await cancelled.provisioner.provision({
+      topicId: ID,
+      workBase: cancelled.workBase,
+      policies: policies(),
+      startPoint: startPoint(cancelled),
+    });
+    expect(result).toMatchObject({ status: "cancelled", code: "cancelled" });
+    expect(cancelled.runner.branchExists).toBeFalse();
+    expect(cancelled.runner.requests.some((request) => request.command === "wt")).toBeFalse();
+  });
+
+  test("creates a Topic worktree from another worktree in the same clone", async () => {
+    const root = await mkdtemp(join(tmpdir(), "work-provisioner-git-test-"));
+    roots.push(root);
+    const source = join(root, "source");
+    const workBase = join(root, "ledger");
+    const base = join(workBase, "revault");
+    const worktree = join(root, "worktree");
+    await mkdir(workBase, { recursive: true });
+    await git(root, "init", base);
+    await git(base, "config", "user.name", "Test User");
+    await git(base, "config", "user.email", "test@example.com");
+    await git(base, "remote", "add", "origin", "git@github.com:LedgerHQ/revault.git");
+    await writeFile(join(base, "tracked.txt"), "published\n");
+    await git(base, "add", "tracked.txt");
+    await git(base, "commit", "-m", "published");
+    await git(base, "worktree", "add", "--detach", source);
+    await writeFile(join(source, "tracked.txt"), "local only\n");
+    await git(source, "commit", "-am", "local only");
+    const commit = await git(source, "rev-parse", "HEAD");
+    expect(await git(base, "cat-file", "-t", commit)).toBe("commit");
+
+    const paths = createWorkPaths({ home: join(root, "home"), runtime: join(root, "runtime") });
+    const topics = createTopicStore(paths, { generateId: () => ID });
+    await topics.create({ name: "Exact", branch: "feat-local", repository: "LedgerHQ/revault" });
+    const provisioner = new TopicProvisioner({
+      topics,
+      runner: new RealGitWtRunner(worktree),
+    });
+    const nested = join(source, "nested");
+    await mkdir(nested);
+    const invalidRoot = await provisioner.provision({
+      topicId: ID,
+      workBase,
+      policies: policies(),
+      startPoint: { commit, sourceCheckout: nested },
+    });
+    expect(invalidRoot).toMatchObject({ status: "failed", code: "invalid-start-point" });
+
+    const result = await provisioner.provision({
+      topicId: ID,
+      workBase,
+      policies: policies(),
+      startPoint: { commit, sourceCheckout: source },
+    });
+
+    expect(result).toMatchObject({ status: "ready" });
+    expect(await git(base, "rev-parse", "refs/heads/feat-local^{commit}")).toBe(commit);
+    expect(await git(worktree, "rev-parse", "HEAD^{commit}")).toBe(commit);
+    const manifest = await topics.load(ID);
+    expect(manifest).not.toHaveProperty("startPoint");
+    expect(manifest).not.toHaveProperty("sourceCheckout");
   });
 });
 

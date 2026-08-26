@@ -64,7 +64,12 @@ export type ProvisionResult =
       topic: TopicManifest;
     }
   | { status: "denied"; action: ActionId; reason: string; topic: TopicManifest }
-  | { status: "failed" | "timeout" | "cancelled"; reason: string; topic: TopicManifest };
+  | {
+      status: "failed" | "timeout" | "cancelled";
+      code?: string;
+      reason: string;
+      topic: TopicManifest;
+    };
 
 export interface TopicProvisionerOptions {
   topics: TopicStore;
@@ -98,23 +103,7 @@ export class TopicProvisioner {
   }
 
   provision(request: ProvisionRequest): Promise<ProvisionResult> {
-    if (request.startPoint !== undefined) return this.rejectUnsupportedStartPoint(request.topicId);
     return this.serialize(request.topicId, () => this.provisionSerial(request));
-  }
-
-  private async rejectUnsupportedStartPoint(topicId: string): Promise<never> {
-    await this.topics.update(topicId, (topic) => ({
-      ...topic,
-      setup: {
-        ...topic.setup,
-        state: "setup-failed",
-        reason: "Start Point provisioning is not supported.",
-      },
-    }));
-    throw new WorkDataError(
-      "start-point-unsupported",
-      "Start Point provisioning is not supported.",
-    );
   }
 
   private async provisionSerial(request: ProvisionRequest): Promise<ProvisionResult> {
@@ -134,10 +123,31 @@ export class TopicProvisioner {
       );
       const repository = parseRepository(topic.repository);
       const baseCheckout = request.baseCheckout ?? join(request.workBase, repository.name);
+      const sourceRoot =
+        request.startPoint === undefined
+          ? undefined
+          : await this.validateSourceCheckout(
+              request.startPoint.sourceCheckout,
+              repository.fullName,
+              request.startPoint.commit,
+              request.signal,
+            );
+
+      // Apply the Worktree policy before Branch or Worktree creation.
+      if (request.startPoint !== undefined) {
+        const policyResult = await this.enforcePolicy("topic.create-worktree", topic, request);
+        if (policyResult !== undefined) return policyResult;
+      }
 
       if (await pathExists(baseCheckout)) {
         await this.validateBaseCheckout(baseCheckout, repository.fullName, request.signal);
       } else {
+        if (request.startPoint !== undefined) {
+          throw failure(
+            "invalid-start-point",
+            "The Start Point is not from the configured Base repository.",
+          );
+        }
         const policyResult = await this.enforcePolicy("repository.clone", topic, request);
         if (policyResult !== undefined) return policyResult;
 
@@ -160,6 +170,16 @@ export class TopicProvisioner {
         await this.validateBaseCheckout(baseCheckout, repository.fullName, request.signal);
       }
 
+      if (sourceRoot !== undefined) {
+        await this.assertSharedGitDirectory(baseCheckout, sourceRoot, request.signal);
+        await this.assertExactCommit(
+          baseCheckout,
+          request.startPoint!.commit,
+          "Base checkout",
+          request.signal,
+        );
+      }
+
       topic = await this.topics.update(topic.id, (current) => ({
         ...current,
         setup: { ...current.setup, repositoryAvailable: true },
@@ -167,11 +187,44 @@ export class TopicProvisioner {
 
       let worktreePath = await this.findTopicWorktree(baseCheckout, topic.branch, request.signal);
       let createdThisRun = false;
+      let branchExists = false;
+      if (worktreePath === undefined || request.startPoint !== undefined) {
+        branchExists = await this.branchExists(baseCheckout, topic.branch, request.signal);
+      }
+
+      if (request.startPoint !== undefined) {
+        if (branchExists) {
+          await this.assertBranchAtCommit(
+            baseCheckout,
+            topic.branch,
+            request.startPoint.commit,
+            request.signal,
+          );
+        } else {
+          const created = await this.git(
+            baseCheckout,
+            ["branch", "--", topic.branch, request.startPoint.commit],
+            request.signal,
+          );
+          if (created.exitCode !== 0) {
+            // Reconcile a concurrent creator without ever moving its Branch.
+            await this.assertBranchAtCommit(
+              baseCheckout,
+              topic.branch,
+              request.startPoint.commit,
+              request.signal,
+            );
+          }
+          branchExists = true;
+        }
+      }
+
       if (worktreePath === undefined) {
         createdThisRun = true;
-        const branchExists = await this.branchExists(baseCheckout, topic.branch, request.signal);
-        const policyResult = await this.enforcePolicy("topic.create-worktree", topic, request);
-        if (policyResult !== undefined) return policyResult;
+        if (request.startPoint === undefined) {
+          const policyResult = await this.enforcePolicy("topic.create-worktree", topic, request);
+          if (policyResult !== undefined) return policyResult;
+        }
 
         const args = branchExists
           ? ["switch", topic.branch, "--format", "json"]
@@ -212,6 +265,7 @@ export class TopicProvisioner {
         worktreePath,
         topic.branch,
         repository.fullName,
+        request.startPoint?.commit,
         request.signal,
       );
       // Decide the Recipe outcome once, on the first pass reaching this checkpoint.
@@ -234,6 +288,7 @@ export class TopicProvisioner {
         topic.worktreePath!,
         topic.branch,
         repository.fullName,
+        request.startPoint?.commit,
         request.signal,
       );
       if (!topic.setup.setupCommandsRun) {
@@ -255,7 +310,12 @@ export class TopicProvisioner {
         ...current,
         setup: { ...current.setup, state: "setup-failed", reason: terminal.message },
       }));
-      return { status: terminal.status, reason: terminal.message, topic };
+      return {
+        status: terminal.status,
+        code: terminal.code,
+        reason: terminal.message,
+        topic,
+      };
     }
   }
 
@@ -321,6 +381,96 @@ export class TopicProvisioner {
     return { status: "denied", action, reason, topic: failed };
   }
 
+  private async validateSourceCheckout(
+    path: string,
+    expectedRepository: string,
+    commit: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const pathStat = await stat(path).catch(() => undefined);
+    if (pathStat?.isDirectory() !== true) {
+      throw failure("invalid-start-point", "Source checkout is not a directory.");
+    }
+    const root = await this.git(path, ["rev-parse", "--show-toplevel"], signal);
+    if (root.exitCode !== 0) {
+      throw failure("invalid-start-point", "Source checkout is not a Git repository.");
+    }
+    const expectedRoot = await realpath(path);
+    const actualRoot = await realpath(resolve(path, root.stdout.trim())).catch(() => "");
+    if (actualRoot !== expectedRoot) {
+      throw failure("invalid-start-point", "Source checkout is not a Git worktree root.");
+    }
+    const origin = await this.git(actualRoot, ["remote", "get-url", "origin"], signal);
+    if (
+      origin.exitCode !== 0 ||
+      normalizeGitHubRemote(origin.stdout) !== expectedRepository.toLowerCase()
+    ) {
+      throw failure("invalid-start-point", "Source checkout belongs to another repository.");
+    }
+    await this.assertExactCommit(actualRoot, commit, "Source checkout", signal);
+    return actualRoot;
+  }
+
+  private async assertSharedGitDirectory(
+    baseCheckout: string,
+    sourceCheckout: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const [baseCommon, sourceCommon] = await Promise.all([
+      this.git(baseCheckout, ["rev-parse", "--git-common-dir"], signal),
+      this.git(sourceCheckout, ["rev-parse", "--git-common-dir"], signal),
+    ]);
+    if (baseCommon.exitCode !== 0 || sourceCommon.exitCode !== 0) {
+      throw failure("invalid-start-point", "Cannot inspect the Start Point repository.");
+    }
+    const baseGit = await realpath(resolve(baseCheckout, baseCommon.stdout.trim())).catch(() => "");
+    const sourceGit = await realpath(resolve(sourceCheckout, sourceCommon.stdout.trim())).catch(
+      () => "",
+    );
+    if (baseGit.length === 0 || baseGit !== sourceGit) {
+      throw failure(
+        "invalid-start-point",
+        "The Start Point is not from the configured Base repository.",
+      );
+    }
+  }
+
+  private async assertBranchAtCommit(
+    baseCheckout: string,
+    branch: string,
+    commit: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const tip = await this.git(
+      baseCheckout,
+      ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`],
+      signal,
+    );
+    if (tip.exitCode !== 0 || tip.stdout.trim().toLowerCase() !== commit.toLowerCase()) {
+      throw failure("start-point-conflict", "The existing Topic Branch is at a different commit.");
+    }
+  }
+
+  private async assertExactCommit(
+    checkout: string,
+    commit: string,
+    subject: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!(await this.isExactCommit(checkout, commit, signal))) {
+      throw failure("invalid-start-point", `${subject} does not contain the Start Point commit.`);
+    }
+  }
+
+  private async isExactCommit(
+    checkout: string,
+    commit: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const type = await this.git(checkout, ["cat-file", "-t", commit], signal);
+    return type.exitCode === 0 && type.stdout.trim() === "commit";
+  }
+
   private async validateBaseCheckout(
     path: string,
     expectedRepository: string,
@@ -353,21 +503,25 @@ export class TopicProvisioner {
     worktreePath: string,
     expectedBranch: string,
     expectedRepository: string,
+    expectedCommit?: string,
     signal?: AbortSignal,
   ): Promise<void> {
     if (!isAbsolute(worktreePath)) {
       throw failure("invalid-worktree", "wt returned a relative worktree path.");
     }
     await assertDirectory(worktreePath, "wt returned a missing worktree path.");
-    const [baseCommon, worktreeCommon, root, origin, branch] = await Promise.all([
+    const [baseCommon, worktreeCommon, root, origin, branch, commit] = await Promise.all([
       this.git(baseCheckout, ["rev-parse", "--git-common-dir"], signal),
       this.git(worktreePath, ["rev-parse", "--git-common-dir"], signal),
       this.git(worktreePath, ["rev-parse", "--show-toplevel"], signal),
       this.git(worktreePath, ["remote", "get-url", "origin"], signal),
       this.git(worktreePath, ["symbolic-ref", "--short", "HEAD"], signal),
+      this.git(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"], signal),
     ]);
     if (
-      [baseCommon, worktreeCommon, root, origin, branch].some((result) => result.exitCode !== 0)
+      [baseCommon, worktreeCommon, root, origin, branch, commit].some(
+        (result) => result.exitCode !== 0,
+      )
     ) {
       throw failure("invalid-worktree", "wt path is not a valid Git worktree.");
     }
@@ -382,9 +536,11 @@ export class TopicProvisioner {
       baseGit.length === 0 ||
       baseGit !== worktreeGit ||
       branch.stdout.trim() !== expectedBranch ||
-      normalizeGitHubRemote(origin.stdout) !== expectedRepository.toLowerCase()
+      normalizeGitHubRemote(origin.stdout) !== expectedRepository.toLowerCase() ||
+      (expectedCommit !== undefined &&
+        commit.stdout.trim().toLowerCase() !== expectedCommit.toLowerCase())
     ) {
-      throw failure("invalid-worktree", "wt path is for a different Git repository.");
+      throw failure("invalid-worktree", "wt path is for a different Git repository or commit.");
     }
   }
 

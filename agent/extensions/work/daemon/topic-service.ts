@@ -85,7 +85,12 @@ export type TopicMutationResult =
   | { status: "refocused"; topic: TopicManifest }
   | { status: "deleted"; topicId: string }
   | { status: "rejected"; topicId: string }
-  | { status: "denied" | "failed" | "timeout" | "cancelled"; reason: string; topic: TopicManifest }
+  | {
+      status: "denied" | "failed" | "timeout" | "cancelled";
+      code?: string;
+      reason: string;
+      topic: TopicManifest;
+    }
   | ConfirmationRequirement;
 
 export type WorkActionResult =
@@ -104,6 +109,7 @@ interface PendingConfirmation {
   expiresAtMs: number;
   operation: "provision" | "delete" | "terminal" | "agent" | "reset-agent";
   approvedActions: ReadonlySet<ActionId>;
+  startPoint?: TopicCreationRequest["startPoint"];
 }
 
 export interface TopicServiceOptions {
@@ -486,7 +492,13 @@ export class TopicService {
       }
       const approved = new Set(pending.approvedActions);
       approved.add(pending.action);
-      return this.provision(pending.topicId, pending.originalRequest, approved, pending.clientId);
+      return this.provision(
+        pending.topicId,
+        pending.originalRequest,
+        approved,
+        pending.clientId,
+        pending.startPoint,
+      );
     }) as Promise<T>;
   }
 
@@ -704,6 +716,7 @@ export class TopicService {
         action: result.action,
         operation: "provision",
         approvedActions,
+        ...(startPoint === undefined ? {} : { startPoint }),
         text: `Allow ${result.action} for Topic ${result.topic.name}?`,
       });
     }
