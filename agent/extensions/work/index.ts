@@ -4,6 +4,7 @@ import { registerTopicAgentTelemetry } from "./topic-agent/reporter.ts";
 
 export * from "./client/dashboard.ts";
 export * from "./client/setup.ts";
+export * from "./client/topic-creation.ts";
 
 export default function workExtension(pi: ExtensionAPI): void {
   registerWorkCommand(pi);

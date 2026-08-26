@@ -1,6 +1,6 @@
 # 01 — Resolve Topic creation input
 
-Status: ready-for-agent
+Status: done
 Type: feature
 Blocked by: none
 Affected extension: `work`

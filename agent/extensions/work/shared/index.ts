@@ -5,3 +5,4 @@ export * from "./domain.ts";
 export * from "./paths.ts";
 export * from "./policy.ts";
 export * from "./topic-store.ts";
+export * from "./topic-creation.ts";
