@@ -1,6 +1,6 @@
 # 04 — Add the `pi-work topic create` CLI
 
-Status: ready-for-agent
+Status: done
 Type: feature
 Blocked by: 03
 Affected extension: `work`

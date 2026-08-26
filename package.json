@@ -1,6 +1,9 @@
 {
   "name": "pi-config",
   "private": true,
+  "bin": {
+    "pi-work": "./agent/extensions/work/client/cli-entry.ts"
+  },
   "type": "module",
   "sideEffects": false,
   "scripts": {
