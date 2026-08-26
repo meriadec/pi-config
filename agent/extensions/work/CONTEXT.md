@@ -15,6 +15,17 @@ at `WORK_BASE/<repo-name>`. A **Base checkout override** (`basePath` in a reposi
 `~/work/config.json`) puts it at a fixed absolute path outside `WORK_BASE` instead, so a Topic can
 adopt an existing checkout (for example `~/.pi`).
 
+**Start Point**:
+The exact Git commit from which a new Topic Branch starts. It is creation input and is not stored
+in the Topic manifest. An existing Branch is accepted only when its tip is this commit.
+_Avoid_: base branch, source branch, starting branch.
+
+**Source checkout**:
+The Git worktree in which a client resolves a Start Point. It can have a different path from the
+Base checkout, but it must share the Base checkout's local clone and Git object database. It is
+creation input and is not part of the Topic.
+_Avoid_: current repo, source repository, invoking repo.
+
 **Worktree**:
 The per-Topic Git worktree, created from the Base checkout for the Topic Branch. The Topic's own
 working directory.

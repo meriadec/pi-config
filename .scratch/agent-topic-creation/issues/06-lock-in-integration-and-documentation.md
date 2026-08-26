@@ -1,6 +1,6 @@
 # 06 — Lock in agent-callable Topic creation
 
-Status: ready-for-agent
+Status: done
 Type: feature
 Blocked by: 04, 05
 Affected extension: `work`

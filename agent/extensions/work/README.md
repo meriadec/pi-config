@@ -34,6 +34,56 @@ Running `/new` inside a Main Agent window keeps the window affiliated with its T
 
 After extension development changes, run `/reload` in Pi before you test the new code.
 
+## Create a Topic from Pi or the CLI
+
+The extension registers the `work_topic_create` tool. You can ask Pi, for example:
+
+- `Create a work Topic from HEAD~2 named My contribution.`
+- `Create a work Topic for LedgerHQ/revault with Branch foo-bar.`
+
+The tool parameters are `name`, `repository`, `branch`, `startPoint`, and `sourceCheckout`.
+Only `name` is required. The tool creates the Topic and waits for provisioning. It does not open
+a desktop workspace, terminal, or Main Agent.
+
+The repository also exposes the `pi-work` executable through its Bun package entry. From this
+repository root, install the local command once:
+
+```sh
+bun link
+```
+
+Make sure Bun's global binary directory is in `PATH`. You can then run the literal command used in
+these examples:
+
+```sh
+pi-work topic create --name "My contribution" --start-point HEAD~2
+pi-work topic create --name "My contribution" \
+  --repository LedgerHQ/revault --branch foo-bar
+```
+
+Use `--source-checkout <path>` to select a different Source checkout. It defaults to the current
+directory. If `--repository` is absent, the client infers `owner/repo` from the Source checkout's
+GitHub `origin`. If `--branch` is absent, the client makes a Git-safe Branch from the Topic name.
+An explicit repository and Branch do not need a Source checkout when there is no Start Point.
+Use `--json` for one versioned result object on stdout. Diagnostics stay on stderr.
+
+A Start Point can be a relative revision, tag, or SHA. The client resolves it to one exact commit.
+The Source checkout must be a worktree from the same local clone as the configured Base checkout.
+The daemon does not fetch or copy a local-only commit from a separate clone. The Start Point and
+Source checkout are creation input only. They are not stored in the Topic manifest.
+
+The daemon applies the configured Action policy. `allow` continues, and `deny` stops. For `ask`,
+the Pi tool shows the daemon text in a direct human dialog. An interactive CLI asks for `yes` or
+`no`. JSON mode and a non-interactive CLI return `confirmation-required` with exit code 3. They
+never approve. The tool has no approval parameter, and the original model request is not approval.
+
+A repository and Branch can belong to only one Topic. A duplicate request returns the existing
+Topic identity. If the Branch already exists at another Start Point, creation fails and does not
+move the Branch or add a numeric suffix.
+
+Creation progress and errors are bounded. They do not include raw Setup output, credentials, or
+the Source checkout after input resolution.
+
 ## Architecture and storage
 
 - `client/` contains `/work`, setup, protocol client, and dashboard code.
