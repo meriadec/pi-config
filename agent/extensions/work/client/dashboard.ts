@@ -754,10 +754,14 @@ function renderList(state: DashboardState, width: number, height: number): strin
       const focusedCount = view.topics.filter((topic) => topic.focused).length;
       const bothParts = focusedCount > 0 && focusedCount < view.topics.length;
       const capacity = Math.max(1, height - lines.length - 5 - (bothParts ? 1 : 0));
+      const visible = visibleTopics(view.topics, state.selectedTopicId, capacity);
+      const displayNames = topicHierarchyNames(view.topics, visible);
       let previousFocused: boolean | undefined;
-      for (const topic of visibleTopics(view.topics, state.selectedTopicId, capacity)) {
+      for (const topic of visible) {
         if (previousFocused === true && !topic.focused) lines.push("");
-        lines.push(renderTopicRow(state, topic, width, columns));
+        lines.push(
+          renderTopicRow(state, topic, displayNames.get(topic.id) ?? topic.name, width, columns),
+        );
         previousFocused = topic.focused;
       }
     }
@@ -795,6 +799,102 @@ function visibleTopics(
     Math.min(topics.length - capacity, selected - Math.floor(capacity / 2)),
   );
   return topics.slice(start, start + capacity);
+}
+
+const TOPIC_PATH_SEPARATOR = " > ";
+
+/**
+ * Shortens a Topic name only when its nearest exact parent precedes it in this visible group.
+ * The durable name stays unchanged.
+ */
+function topicHierarchyNames(
+  allTopics: readonly TopicManifest[],
+  visible: readonly TopicManifest[],
+): ReadonlyMap<string, string> {
+  const allParents = hierarchyParents(allTopics);
+  const visibleIndex = new Map(visible.map((topic, index) => [topic.id, index]));
+  const parents = new Map<string, TopicManifest>();
+  visible.forEach((topic, index) => {
+    const parent = allParents.get(topic.id);
+    const parentIndex = parent === undefined ? undefined : visibleIndex.get(parent.id);
+    if (parent !== undefined && parentIndex !== undefined && parentIndex < index) {
+      parents.set(topic.id, parent);
+    }
+  });
+
+  const children = new Map<string, string[]>();
+  for (const [childId, parent] of parents) {
+    const siblings = children.get(parent.id) ?? [];
+    siblings.push(childId);
+    children.set(parent.id, siblings);
+  }
+
+  const names = new Map<string, string>();
+  for (const topic of visible) {
+    const parent = parents.get(topic.id);
+    if (parent === undefined) {
+      names.set(topic.id, topic.name);
+      continue;
+    }
+
+    const lineage: TopicManifest[] = [];
+    let ancestor: TopicManifest | undefined = parent;
+    while (ancestor !== undefined) {
+      lineage.unshift(ancestor);
+      ancestor = parents.get(ancestor.id);
+    }
+    const continuation = lineage
+      .slice(1)
+      .map((item) => (isLastHierarchyChild(item.id, parents, children) ? "   " : "│  "))
+      .join("");
+    const branch = isLastHierarchyChild(topic.id, parents, children) ? "└─ " : "├─ ";
+    const remainder = topic.name.slice(parent.name.length + TOPIC_PATH_SEPARATOR.length);
+    names.set(topic.id, `  ${continuation}${branch}${remainder}`);
+  }
+  return names;
+}
+
+function hierarchyParents(topics: readonly TopicManifest[]): Map<string, TopicManifest> {
+  const topicsByName = new Map<string, TopicManifest[]>();
+  for (const topic of topics) {
+    const key = hierarchyNameKey(topic.focused, topic.name);
+    const matches = topicsByName.get(key) ?? [];
+    matches.push(topic);
+    topicsByName.set(key, matches);
+  }
+  return new Map(
+    topics.flatMap((topic) => {
+      const parent = nearestTopicParent(topic, topicsByName);
+      return parent === undefined ? [] : [[topic.id, parent] as const];
+    }),
+  );
+}
+
+function nearestTopicParent(
+  topic: TopicManifest,
+  topicsByName: ReadonlyMap<string, readonly TopicManifest[]>,
+): TopicManifest | undefined {
+  let candidate = topic.name;
+  while (candidate.includes(TOPIC_PATH_SEPARATOR)) {
+    candidate = candidate.slice(0, candidate.lastIndexOf(TOPIC_PATH_SEPARATOR));
+    const matches = topicsByName.get(hierarchyNameKey(topic.focused, candidate));
+    if (matches?.length === 1) return matches[0];
+  }
+  return undefined;
+}
+
+function hierarchyNameKey(focused: boolean, name: string): string {
+  return `${focused ? "focused" : "unfocused"}\0${name}`;
+}
+
+function isLastHierarchyChild(
+  topicId: string,
+  parents: ReadonlyMap<string, TopicManifest>,
+  children: ReadonlyMap<string, readonly string[]>,
+): boolean {
+  const parent = parents.get(topicId);
+  if (parent === undefined) return true;
+  return children.get(parent.id)?.at(-1) === topicId;
 }
 
 interface TopicColumns {
@@ -853,6 +953,7 @@ function renderWideHeader(columns: TopicColumns): string {
 function renderTopicRow(
   state: DashboardState,
   topic: TopicManifest,
+  displayName: string,
   width: number,
   columns: TopicColumns | undefined,
 ): string {
@@ -875,13 +976,13 @@ function renderTopicRow(
     const link = pullRequest === undefined ? "" : ` · ${pullRequestCell(pullRequest)}`;
     const setupSegment = setup === "" ? "" : ` · ${setup}`;
     const row = truncateToWidth(
-      `${prefix}${topic.name}${setupSegment} · ${agentCell}${link}`,
+      `${prefix}${displayName}${setupSegment} · ${agentCell}${link}`,
       width,
     );
     const styled = inactive ? dim(row) : row;
     return selected ? highlight(styled, width) : styled;
   }
-  const row = `${prefix}${pad(topic.name, columns.name)} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
+  const row = `${prefix}${pad(displayName, columns.name)} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
   const styled = inactive ? dim(row) : row;
   return selected ? highlight(styled, width) : styled;
 }
@@ -1324,7 +1425,7 @@ function isMainAgentRunning(state: MainAgentState): boolean {
   return state !== "stopped" && state !== "failed";
 }
 
-/** Sorts by Focus (Focused first), then bubbles active Topics above inactive ones, then name. */
+/** Keeps Topic families together while active families and subtrees bubble above inactive peers. */
 function sortTopics(
   topics: readonly TopicManifest[],
   mainAgents: readonly MainAgentLease[],
@@ -1332,17 +1433,52 @@ function sortTopics(
   const active = new Set(
     mainAgents.filter((agent) => isMainAgentRunning(agent.state)).map((agent) => agent.topicId),
   );
-  return [...topics].toSorted((left, right) => {
-    if (left.focused !== right.focused) return left.focused ? -1 : 1;
-    const leftActive = active.has(left.id);
-    const rightActive = active.has(right.id);
+  const parents = hierarchyParents(topics);
+  const children = new Map<string, TopicManifest[]>();
+  for (const topic of topics) {
+    const parent = parents.get(topic.id);
+    if (parent === undefined) continue;
+    const siblings = children.get(parent.id) ?? [];
+    siblings.push(topic);
+    children.set(parent.id, siblings);
+  }
+
+  const activeFamilies = new Map<string, boolean>();
+  const familyIsActive = (topic: TopicManifest): boolean => {
+    const cached = activeFamilies.get(topic.id);
+    if (cached !== undefined) return cached;
+    const result =
+      active.has(topic.id) || (children.get(topic.id) ?? []).some((child) => familyIsActive(child));
+    activeFamilies.set(topic.id, result);
+    return result;
+  };
+  const comparePeers = (left: TopicManifest, right: TopicManifest): number => {
+    const leftActive = familyIsActive(left);
+    const rightActive = familyIsActive(right);
     if (leftActive !== rightActive) return leftActive ? -1 : 1;
-    return (
-      left.name.localeCompare(right.name) ||
-      left.repository.localeCompare(right.repository) ||
-      left.id.localeCompare(right.id)
-    );
+    return compareTopicNames(left, right);
+  };
+
+  const roots = topics.filter((topic) => !parents.has(topic.id));
+  roots.sort((left, right) => {
+    if (left.focused !== right.focused) return left.focused ? -1 : 1;
+    return comparePeers(left, right);
   });
+  const sorted: TopicManifest[] = [];
+  const appendFamily = (topic: TopicManifest): void => {
+    sorted.push(topic);
+    for (const child of (children.get(topic.id) ?? []).toSorted(comparePeers)) appendFamily(child);
+  };
+  for (const root of roots) appendFamily(root);
+  return sorted;
+}
+
+function compareTopicNames(left: TopicManifest, right: TopicManifest): number {
+  return (
+    left.name.localeCompare(right.name) ||
+    left.repository.localeCompare(right.repository) ||
+    left.id.localeCompare(right.id)
+  );
 }
 
 function upsert(topics: readonly TopicManifest[], topic: TopicManifest): TopicManifest[] {

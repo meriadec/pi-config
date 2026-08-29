@@ -33,6 +33,9 @@ import { completeWorkBaseSetup, defaultWorkConfig, validateWorkBase } from "./se
 const roots: string[] = [];
 const ID_A = "123e4567-e89b-42d3-a456-426614174000";
 const ID_B = "123e4567-e89b-42d3-a456-426614174001";
+const ID_C = "123e4567-e89b-42d3-a456-426614174002";
+const ID_D = "123e4567-e89b-42d3-a456-426614174003";
+const ID_E = "123e4567-e89b-42d3-a456-426614174004";
 
 function stripSgr(text: string): string {
   let visible = "";
@@ -848,6 +851,34 @@ describe("dashboard state and navigation", () => {
     expect(cappedHeader.indexOf("REPOSITORY")).toBe(48);
     expect(betaRow).toHaveLength(100);
     expect(betaRow.endsWith("waiting-for-human")).toBeTrue();
+  });
+
+  test("renders exact Topic name prefixes as a visible hierarchy", () => {
+    const parent = topic(ID_A, "Tokenization");
+    const child = topic(ID_B, "Tokenization > 01 - Templates");
+    const grandchild = topic(ID_C, "Tokenization > 01 - Templates > Tests");
+    const sibling = topic(ID_D, "Tokenization > 02 - Validation");
+    const otherFamily = topic(ID_E, "Alpha");
+    let state = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([parent, child, grandchild, sibling, otherFamily]),
+    );
+
+    const tree = stripSgr(renderDashboard(state, 120, 24).join("\n"));
+    expect(tree).toContain("    ├─ 01 - Templates");
+    expect(tree).toContain("    │  └─ Tests");
+    expect(tree).toContain("    └─ 02 - Validation");
+    expect(tree).not.toContain("Tokenization > 01");
+
+    // An active child bubbles its whole family, but it stays below its parent.
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_B, sessionId: ID_B, state: "thinking", connected: true },
+    });
+    expect(state.topics.map((topic) => topic.id)).toEqual([ID_A, ID_B, ID_C, ID_D, ID_E]);
+    const activeTree = stripSgr(renderDashboard(state, 120, 24).join("\n"));
+    expect(activeTree).toContain("    ├─ 01 - Templates");
+    expect(activeTree).not.toContain("Tokenization > 01");
   });
 
   test("renders narrow and wide dashboards without exceeding terminal width", () => {
