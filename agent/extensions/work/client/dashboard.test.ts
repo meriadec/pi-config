@@ -817,6 +817,39 @@ describe("dashboard state and navigation", () => {
     }
   });
 
+  test("gives spare table width to Topic names and right-aligns Main Agent status", () => {
+    const alpha = { ...topic(ID_A, "Alpha"), repository: "o/a" };
+    let state = hydrateDashboard(initialDashboardState(), snapshot([alpha]));
+    const shortHeader = stripSgr(renderDashboard(state, 100, 24)[1]!);
+    const shortRow = stripSgr(
+      renderDashboard(state, 100, 24).find((line) => line.includes("Alpha"))!,
+    );
+
+    // Header-sized auxiliary columns leave 67 cells for the Topic name.
+    expect(shortHeader.indexOf("REPOSITORY")).toBe(70);
+    expect(shortRow).toHaveLength(100);
+    expect(shortRow.endsWith("stopped")).toBeTrue();
+
+    const beta = {
+      ...topic(ID_B, "Beta", "setup-failed"),
+      repository: "owner/a-repository-name-beyond-the-cap",
+    };
+    state = hydrateDashboard(state, snapshot([alpha, beta]));
+    state = reduceDashboardEvent(state, {
+      type: "main-agent-changed",
+      agent: { topicId: ID_B, sessionId: ID_B, state: "waiting-for-human", connected: true },
+    });
+    const cappedHeader = stripSgr(renderDashboard(state, 100, 24)[1]!);
+    const betaRow = stripSgr(
+      renderDashboard(state, 100, 24).find((line) => line.includes("Beta"))!,
+    );
+
+    // Auxiliary values grow only to their caps. The Topic name still gets every spare cell.
+    expect(cappedHeader.indexOf("REPOSITORY")).toBe(48);
+    expect(betaRow).toHaveLength(100);
+    expect(betaRow.endsWith("waiting-for-human")).toBeTrue();
+  });
+
   test("renders narrow and wide dashboards without exceeding terminal width", () => {
     let state = hydrateDashboard(
       initialDashboardState(),

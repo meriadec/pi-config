@@ -741,7 +741,8 @@ function renderList(state: DashboardState, width: number, height: number): strin
     lines.push("", truncateToWidth(view.message, width));
   } else {
     if (view.kind === "reconnecting") lines.push(truncateToWidth(view.message, width));
-    if (width >= 72) lines.push(renderWideHeader(width));
+    const columns = wideTopicColumns(state, width);
+    if (columns !== undefined) lines.push(renderWideHeader(columns));
     else lines.push(truncateToWidth("  TOPIC · SETUP · MAIN AGENT", width));
     if (view.topics.length === 0) {
       lines.push("", truncateToWidth("No Topics yet.", width));
@@ -756,7 +757,7 @@ function renderList(state: DashboardState, width: number, height: number): strin
       let previousFocused: boolean | undefined;
       for (const topic of visibleTopics(view.topics, state.selectedTopicId, capacity)) {
         if (previousFocused === true && !topic.focused) lines.push("");
-        lines.push(renderTopicRow(state, topic, width));
+        lines.push(renderTopicRow(state, topic, width, columns));
         previousFocused = topic.focused;
       }
     }
@@ -796,16 +797,65 @@ function visibleTopics(
   return topics.slice(start, start + capacity);
 }
 
-function renderWideHeader(width: number): string {
-  const nameWidth = Math.max(12, Math.floor(width * 0.25));
-  const repoWidth = Math.max(18, Math.floor(width * 0.3));
-  return truncateToWidth(
-    `  ${pad("TOPIC", nameWidth)} ${pad("REPOSITORY", repoWidth)} ${pad("PR", 18)} ${pad("SETUP", 14)} MAIN AGENT`,
-    width,
+interface TopicColumns {
+  name: number;
+  repository: number;
+  pullRequest: number;
+  setup: number;
+  mainAgent: number;
+}
+
+const MIN_TOPIC_NAME_WIDTH = 12;
+const COLUMN_GAPS_WIDTH = 6; // Selection prefix plus four inter-column spaces.
+
+/** Uses only the space needed by current values, up to stable readability caps. */
+function wideTopicColumns(state: DashboardState, width: number): TopicColumns | undefined {
+  const repository = columnWidth(
+    "REPOSITORY",
+    state.topics.map((topic) => topic.repository),
+    18,
+  );
+  const pullRequest = columnWidth(
+    "PR",
+    state.topics.map((topic) => pullRequestCell(state.pullRequests[topic.id])),
+    18,
+  );
+  const setup = columnWidth(
+    "SETUP",
+    state.topics.map((topic) => setupCell(state, topic)),
+    14,
+  );
+  const mainAgent = columnWidth(
+    "MAIN AGENT",
+    state.topics.map((topic) => {
+      const agent = state.mainAgents.find((item) => item.topicId === topic.id)?.state ?? "stopped";
+      return mainAgentDisplayLabel(agent);
+    }),
+    17,
+  );
+  const name = width - COLUMN_GAPS_WIDTH - repository - pullRequest - setup - mainAgent;
+  return name < MIN_TOPIC_NAME_WIDTH
+    ? undefined
+    : { name, repository, pullRequest, setup, mainAgent };
+}
+
+function columnWidth(header: string, values: readonly string[], maximum: number): number {
+  return Math.min(
+    maximum,
+    Math.max(visibleWidth(header), ...values.map((value) => visibleWidth(value))),
   );
 }
 
-function renderTopicRow(state: DashboardState, topic: TopicManifest, width: number): string {
+function renderWideHeader(columns: TopicColumns): string {
+  return `  ${pad("TOPIC", columns.name)} ${pad("REPOSITORY", columns.repository)} ${pad("PR", columns.pullRequest)} ${pad("SETUP", columns.setup)} ${padLeft("MAIN AGENT", columns.mainAgent)}`;
+}
+
+function renderTopicRow(
+  state: DashboardState,
+  topic: TopicManifest,
+  width: number,
+  columns: TopicColumns | undefined,
+): string {
   const selected = topic.id === state.selectedTopicId;
   const prefix = selected ? (state.focus === "list" ? "> " : "* ") : "  ";
   const agent = state.mainAgents.find((item) => item.topicId === topic.id)?.state ?? "stopped";
@@ -820,15 +870,10 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
         ? yellow(agentLabel)
         : renderMainAgentStatus(agent, state.shimmerPhase);
   const pullRequest = state.pullRequests[topic.id];
-  // A live Repository Recipe phase (setup N/M) replaces the durable setup state.
-  // An Orphan Topic replaces a settled ready state with a bright warning.
-  const operationDetail = state.operations.find((item) => item.topicId === topic.id)?.detail;
-  const setupState = topic.setup.state === "ready" ? "" : topic.setup.state;
-  const orphaned = state.orphanedTopicIds.includes(topic.id);
-  const setupCell = operationDetail ?? (orphaned ? brightRed("orphan") : setupState);
-  if (width < 72) {
+  const setup = setupCell(state, topic);
+  if (columns === undefined) {
     const link = pullRequest === undefined ? "" : ` · ${pullRequestCell(pullRequest)}`;
-    const setupSegment = setupCell === "" ? "" : ` · ${setupCell}`;
+    const setupSegment = setup === "" ? "" : ` · ${setup}`;
     const row = truncateToWidth(
       `${prefix}${topic.name}${setupSegment} · ${agentCell}${link}`,
       width,
@@ -836,14 +881,18 @@ function renderTopicRow(state: DashboardState, topic: TopicManifest, width: numb
     const styled = inactive ? dim(row) : row;
     return selected ? highlight(styled, width) : styled;
   }
-  const nameWidth = Math.max(12, Math.floor(width * 0.25));
-  const repoWidth = Math.max(18, Math.floor(width * 0.3));
-  const row = truncateToWidth(
-    `${prefix}${pad(topic.name, nameWidth)} ${pad(topic.repository, repoWidth)} ${pad(pullRequestCell(pullRequest), 18)} ${pad(setupCell, 14)} ${agentCell}`,
-    width,
-  );
+  const row = `${prefix}${pad(topic.name, columns.name)} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
   const styled = inactive ? dim(row) : row;
   return selected ? highlight(styled, width) : styled;
+}
+
+function setupCell(state: DashboardState, topic: TopicManifest): string {
+  // A live Repository Recipe phase replaces the durable setup state. An Orphan Topic
+  // replaces a settled ready state with a bright warning.
+  const operationDetail = state.operations.find((item) => item.topicId === topic.id)?.detail;
+  if (operationDetail !== undefined) return operationDetail;
+  if (state.orphanedTopicIds.includes(topic.id)) return brightRed("orphan");
+  return topic.setup.state === "ready" ? "" : topic.setup.state;
 }
 
 // truncateToWidth emits a full SGR reset (\x1b[0m) at truncation points (around the
@@ -1315,6 +1364,11 @@ function upsertDiagnostic(
 function pad(value: string, width: number): string {
   const truncated = truncateToWidth(value, width);
   return truncated + " ".repeat(Math.max(0, width - visibleWidth(truncated)));
+}
+
+function padLeft(value: string, width: number): string {
+  const truncated = truncateToWidth(value, width);
+  return " ".repeat(Math.max(0, width - visibleWidth(truncated))) + truncated;
 }
 
 function joinColumns(left: string, right: string, leftWidth: number, width: number): string {
