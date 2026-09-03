@@ -847,8 +847,10 @@ describe("dashboard state and navigation", () => {
       renderDashboard(state, 100, 24).find((line) => line.includes("Beta"))!,
     );
 
-    // Auxiliary values grow only to their caps. The Topic name still gets every spare cell.
-    expect(cappedHeader.indexOf("REPOSITORY")).toBe(48);
+    // Auxiliary values grow only to their caps. The Repository cap is wide enough for
+    // common owner/repo names, and the Topic name still gets every spare cell.
+    expect(cappedHeader.indexOf("REPOSITORY")).toBe(34);
+    expect(betaRow).toContain("owner/a-repository-name");
     expect(betaRow).toHaveLength(100);
     expect(betaRow.endsWith("waiting-for-human")).toBeTrue();
   });

@@ -913,7 +913,7 @@ function wideTopicColumns(state: DashboardState, width: number): TopicColumns | 
   const repository = columnWidth(
     "REPOSITORY",
     state.topics.map((topic) => topic.repository),
-    18,
+    32,
   );
   const pullRequest = columnWidth(
     "PR",
