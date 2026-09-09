@@ -697,6 +697,16 @@ describe("dashboard state and navigation", () => {
     expect(visibleWide.slice(noteIndex)).toStartWith("waiting for Tom");
     expect(wide).toContain("\x1b[33mwaiting for Tom\x1b[39m");
 
+    const longNote = "x".repeat(80);
+    const longState = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([topic(ID_A, "Alpha", "ready", true, longNote)]),
+    );
+    const longRow = stripSgr(
+      renderDashboard(longState, 220, 24).find((line) => line.includes("Alpha"))!,
+    );
+    expect(longRow).toContain(longNote);
+
     // The compact layout keeps the Note inline because it has no table columns.
     const narrow = renderDashboard(state, 30, 24).find((line) => line.includes("Alpha"))!;
     expect(visibleWidth(narrow)).toBeLessThanOrEqual(30);

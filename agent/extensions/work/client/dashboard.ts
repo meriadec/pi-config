@@ -996,7 +996,7 @@ function wideTopicColumns(state: DashboardState, width: number): TopicColumns | 
   const note = columnWidth(
     "NOTE",
     state.topics.map((topic) => topic.note ?? ""),
-    40,
+    100,
   );
   const repository = columnWidth(
     "REPOSITORY",
