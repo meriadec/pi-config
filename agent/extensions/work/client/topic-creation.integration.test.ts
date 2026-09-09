@@ -33,6 +33,7 @@ import {
   createWorkPaths,
 } from "../shared/index.ts";
 import type { ActionId, WorkPaths } from "../shared/index.ts";
+import { testGitEnvironment } from "../test-support/git-environment.ts";
 
 const roots: string[] = [];
 const worlds: IntegrationWorld[] = [];
@@ -59,7 +60,9 @@ class GitWorktreeRunner implements ProcessRunner {
 
   async run(request: ProcessRequest): Promise<ProcessResult> {
     this.commands.push(request.command);
-    if (request.command !== "wt") return this.delegate.run(request);
+    if (request.command !== "wt") {
+      return this.delegate.run({ ...request, env: testGitEnvironment(request.cwd) });
+    }
     await this.gate;
     const create = request.args[1] === "--create";
     const branch = request.args[create ? 2 : 1];
@@ -72,6 +75,7 @@ class GitWorktreeRunner implements ProcessRunner {
       args: create
         ? ["worktree", "add", "-b", branch, target]
         : ["worktree", "add", target, branch],
+      env: testGitEnvironment(request.cwd),
     });
     return result.status === "completed" && result.exitCode === 0
       ? { ...result, stdout: JSON.stringify({ path: target }) }
@@ -558,14 +562,9 @@ describe("agent-callable Topic creation integration", () => {
 });
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const environment = { ...process.env };
-  delete environment["GIT_DIR"];
-  delete environment["GIT_INDEX_FILE"];
-  delete environment["GIT_PREFIX"];
-  delete environment["GIT_WORK_TREE"];
   const child = Bun.spawn(["git", ...args], {
     cwd,
-    env: environment,
+    env: testGitEnvironment(cwd),
     stdout: "pipe",
     stderr: "pipe",
   });

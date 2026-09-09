@@ -7,6 +7,7 @@ import type { ActionId, TopicStore, WorkPolicies } from "../shared/index.ts";
 import { TopicProvisioner, normalizeGitHubRemote, parseWtPath } from "./provisioner.ts";
 import { LocalProcessRunner } from "./process-runner.ts";
 import type { ProcessRequest, ProcessResult, ProcessRunner } from "./process-runner.ts";
+import { testGitEnvironment } from "../test-support/git-environment.ts";
 
 const ID = "123e4567-e89b-42d3-a456-426614174000";
 const roots: string[] = [];
@@ -170,14 +171,9 @@ function complete(stdout = "", exitCode = 0): ProcessResult {
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const env = { ...process.env };
-  delete env["GIT_DIR"];
-  delete env["GIT_INDEX_FILE"];
-  delete env["GIT_PREFIX"];
-  delete env["GIT_WORK_TREE"];
   const child = Bun.spawn(["git", ...args], {
     cwd,
-    env,
+    env: testGitEnvironment(cwd),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -199,7 +195,9 @@ class RealGitWtRunner implements ProcessRunner {
   }
 
   async run(request: ProcessRequest): Promise<ProcessResult> {
-    if (request.command !== "wt") return this.delegate.run(request);
+    if (request.command !== "wt") {
+      return this.delegate.run({ ...request, env: testGitEnvironment(request.cwd) });
+    }
     const branch = request.args[1];
     if (branch === undefined) throw new Error("wt test request has no Branch.");
     const result = await this.delegate.run({
@@ -207,6 +205,7 @@ class RealGitWtRunner implements ProcessRunner {
       command: "git",
       args: ["worktree", "add", this.worktree, branch],
       env: {
+        ...testGitEnvironment(request.cwd),
         GIT_INDEX_FILE: join(request.cwd, ".git", "index"),
         GIT_PREFIX: "",
       },

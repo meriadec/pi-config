@@ -6,6 +6,7 @@ import { LocalProcessRunner } from "../daemon/process-runner.ts";
 import type { ProcessRequest, ProcessResult, ProcessRunner } from "../daemon/process-runner.ts";
 import { defaultBranchForTopicName } from "../shared/topic-creation.ts";
 import { parseGitHubOrigin, resolveTopicCreationInput } from "./topic-creation.ts";
+import { testGitEnvironment } from "../test-support/git-environment.ts";
 
 class RecordingRunner implements ProcessRunner {
   readonly requests: ProcessRequest[] = [];
@@ -13,7 +14,7 @@ class RecordingRunner implements ProcessRunner {
 
   run(request: ProcessRequest): Promise<ProcessResult> {
     this.requests.push(request);
-    return this.local.run(request);
+    return this.local.run({ ...request, env: testGitEnvironment(request.cwd) });
   }
 }
 
@@ -173,7 +174,12 @@ describe("Start Point resolution", () => {
 });
 
 function git(cwd: string, ...args: string[]): string {
-  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  const result = Bun.spawnSync(["git", ...args], {
+    cwd,
+    env: testGitEnvironment(cwd),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   if (result.exitCode !== 0) throw new Error(result.stderr.toString());
   return result.stdout.toString().trim();
 }
