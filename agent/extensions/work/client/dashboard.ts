@@ -981,6 +981,7 @@ function isLastHierarchyChild(
 
 interface TopicColumns {
   name: number;
+  note: number;
   repository: number;
   pullRequest: number;
   setup: number;
@@ -988,10 +989,15 @@ interface TopicColumns {
 }
 
 const MIN_TOPIC_NAME_WIDTH = 12;
-const COLUMN_GAPS_WIDTH = 6; // Selection prefix plus four inter-column spaces.
+const COLUMN_GAPS_WIDTH = 7; // Selection prefix plus five inter-column spaces.
 
 /** Uses only the space needed by current values, up to stable readability caps. */
 function wideTopicColumns(state: DashboardState, width: number): TopicColumns | undefined {
+  const note = columnWidth(
+    "NOTE",
+    state.topics.map((topic) => topic.note ?? ""),
+    40,
+  );
   const repository = columnWidth(
     "REPOSITORY",
     state.topics.map((topic) => topic.repository),
@@ -1015,10 +1021,10 @@ function wideTopicColumns(state: DashboardState, width: number): TopicColumns | 
     }),
     17,
   );
-  const name = width - COLUMN_GAPS_WIDTH - repository - pullRequest - setup - mainAgent;
+  const name = width - COLUMN_GAPS_WIDTH - note - repository - pullRequest - setup - mainAgent;
   return name < MIN_TOPIC_NAME_WIDTH
     ? undefined
-    : { name, repository, pullRequest, setup, mainAgent };
+    : { name, note, repository, pullRequest, setup, mainAgent };
 }
 
 function columnWidth(header: string, values: readonly string[], maximum: number): number {
@@ -1029,7 +1035,7 @@ function columnWidth(header: string, values: readonly string[], maximum: number)
 }
 
 function renderWideHeader(columns: TopicColumns): string {
-  return `  ${pad("TOPIC", columns.name)} ${pad("REPOSITORY", columns.repository)} ${pad("PR", columns.pullRequest)} ${pad("SETUP", columns.setup)} ${padLeft("MAIN AGENT", columns.mainAgent)}`;
+  return `  ${pad("TOPIC", columns.name)} ${pad("NOTE", columns.note)} ${pad("REPOSITORY", columns.repository)} ${pad("PR", columns.pullRequest)} ${pad("SETUP", columns.setup)} ${padLeft("MAIN AGENT", columns.mainAgent)}`;
 }
 
 function renderTopicRow(
@@ -1066,8 +1072,8 @@ function renderTopicRow(
     const styled = inactive ? dim(row) : row;
     return selected ? highlight(styled, width) : styled;
   }
-  const nameCell = `${displayName}${renderTopicNote(topic.note, columns.name - visibleWidth(displayName))}`;
-  const row = `${prefix}${pad(nameCell, columns.name)} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
+  const noteCell = renderTopicNoteCell(topic.note, columns.note);
+  const row = `${prefix}${pad(displayName, columns.name)} ${noteCell} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
   const styled = inactive ? dim(row) : row;
   return selected ? highlight(styled, width) : styled;
 }
@@ -1076,6 +1082,11 @@ function renderTopicNote(note: string | undefined, availableWidth: number): stri
   if (note === undefined || availableWidth <= 1) return "";
   const visible = truncateToWidth(note, availableWidth - 1);
   return visibleWidth(visible) === 0 ? "" : ` ${yellow(visible)}`;
+}
+
+function renderTopicNoteCell(note: string | undefined, width: number): string {
+  if (note === undefined) return pad("", width);
+  return pad(yellow(truncateToWidth(note, width)), width);
 }
 
 function setupCell(state: DashboardState, topic: TopicManifest): string {

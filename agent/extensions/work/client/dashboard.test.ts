@@ -682,14 +682,22 @@ describe("dashboard state and navigation", () => {
     expect(result.state.note?.error).toBe("Topic Note must be 200 characters or fewer.");
   });
 
-  test("renders the Topic Note in yellow without adding a visible separator", () => {
+  test("renders the Topic Note in a yellow column after the Topic title", () => {
     const state = hydrateDashboard(
       initialDashboardState(),
       snapshot([topic(ID_A, "Alpha", "ready", true, "waiting for Tom")]),
     );
-    const wide = renderDashboard(state, 100, 24).find((line) => line.includes("Alpha"))!;
-    expect(wide).toContain("Alpha \x1b[33mwaiting for Tom\x1b[39m");
-    expect(stripSgr(wide)).not.toContain("Alpha · waiting");
+    const rendered = renderDashboard(state, 100, 24);
+    const header = stripSgr(rendered[1]!);
+    const wide = rendered.find((line) => line.includes("Alpha"))!;
+    const visibleWide = stripSgr(wide);
+    const noteIndex = header.indexOf("NOTE");
+    expect(noteIndex).toBeGreaterThan(header.indexOf("TOPIC"));
+    expect(noteIndex).toBeLessThan(header.indexOf("REPOSITORY"));
+    expect(visibleWide.slice(noteIndex)).toStartWith("waiting for Tom");
+    expect(wide).toContain("\x1b[33mwaiting for Tom\x1b[39m");
+
+    // The compact layout keeps the Note inline because it has no table columns.
     const narrow = renderDashboard(state, 30, 24).find((line) => line.includes("Alpha"))!;
     expect(visibleWidth(narrow)).toBeLessThanOrEqual(30);
     expect(stripSgr(narrow)).toContain("stopped");
