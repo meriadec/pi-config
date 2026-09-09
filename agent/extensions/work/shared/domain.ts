@@ -16,6 +16,7 @@ export const ACTION_IDS = [
 /** Upper bounds that keep a Repository Recipe small and its lines shell-safe. */
 export const MAX_SETUP_COMMANDS = 50;
 export const MAX_SETUP_COMMAND_LENGTH = 4_000;
+export const MAX_TOPIC_NOTE_LENGTH = 200;
 
 export type ActionId = (typeof ACTION_IDS)[number];
 export type ActionPolicy = "allow" | "ask" | "deny";
@@ -138,6 +139,8 @@ export interface TopicManifest {
   version: typeof WORK_DATA_VERSION;
   id: string;
   name: string;
+  /** Optional one-line human annotation. Absent means that the Topic has no Note. */
+  note?: string;
   branch: string;
   repository: string;
   setup: TopicSetup;
@@ -201,6 +204,7 @@ const TOPIC_KEYS = new Set([
   "version",
   "id",
   "name",
+  "note",
   "branch",
   "repository",
   "setup",
@@ -241,6 +245,24 @@ export function parseMainAgentState(input: unknown): MainAgentState {
     throw new WorkDataError("invalid-main-agent-state", "Main-agent state is invalid.");
   }
   return input as MainAgentState;
+}
+
+/** Normalizes editable Topic Note text; an empty result removes the Note. */
+export function normalizeTopicNote(input: string): string | undefined {
+  const note = input.replace(/\r\n?|\n|\u2028|\u2029/g, " ").trim();
+  if (/\p{Cc}/u.test(note)) {
+    throw new WorkDataError(
+      "invalid-topic-note",
+      "Topic Note must not contain control characters.",
+    );
+  }
+  if ([...note].length > MAX_TOPIC_NOTE_LENGTH) {
+    throw new WorkDataError(
+      "invalid-topic-note",
+      `Topic Note must be ${MAX_TOPIC_NOTE_LENGTH} characters or fewer.`,
+    );
+  }
+  return note.length === 0 ? undefined : note;
 }
 
 export function isValidBranchName(value: string): boolean {
@@ -433,6 +455,14 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
   if (focusedValue !== undefined && typeof focusedValue !== "boolean") {
     throw new WorkDataError("invalid-topic", "Topic focused must be boolean.");
   }
+  const noteValue = value["note"];
+  if (noteValue !== undefined && typeof noteValue !== "string") {
+    throw new WorkDataError("invalid-topic", "Topic Note must be a string.");
+  }
+  const note = noteValue === undefined ? undefined : normalizeTopicNote(noteValue);
+  if (noteValue !== undefined && note !== noteValue) {
+    throw new WorkDataError("invalid-topic", "Stored Topic Note must be non-empty and normalized.");
+  }
   // A manifest predating Focus has no flag; it starts in the Focused part.
   const focused = focusedValue ?? true;
 
@@ -440,6 +470,7 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
     version: WORK_DATA_VERSION,
     id,
     name: nonEmptyString(value["name"], "Topic name"),
+    ...(note === undefined ? {} : { note }),
     branch: parseBranchName(value["branch"]),
     repository,
     setup,

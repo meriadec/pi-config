@@ -240,6 +240,14 @@ export class WorkDaemon {
             request.name,
           );
           break;
+        case "topic.set-note":
+          result = await this.requireTopicService().setNote(
+            request.clientId,
+            request.id,
+            request.topicId,
+            request.note,
+          );
+          break;
         case "topic.set-focus":
           result = await this.requireTopicService().setFocus(
             request.clientId,

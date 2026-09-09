@@ -461,6 +461,52 @@ describe("Topic Service daemon integration", () => {
     expect(stored.repository).toBe(topic.repository);
   });
 
+  test("sets, normalizes, and removes a Topic Note", async () => {
+    const item = await world();
+    const created = await item.client.createTopic({
+      name: "Annotated",
+      branch: "feat-note",
+      repository: "LedgerHQ/revault",
+    });
+    if (created.status !== "ready") throw new Error("Expected a ready Topic.");
+
+    const noted = await item.client.setTopicNote(
+      created.topic.id,
+      "  waiting for Tom\r\nto answer  ",
+    );
+    expect(noted).toMatchObject({
+      status: "note-updated",
+      topic: { note: "waiting for Tom to answer" },
+    });
+    expect(
+      JSON.parse(await readFile(item.paths.topicManifest(created.topic.id), "utf8")),
+    ).toMatchObject({
+      note: "waiting for Tom to answer",
+    });
+
+    const removed = await item.client.setTopicNote(created.topic.id, "   ");
+    expect(removed.status).toBe("note-updated");
+    expect((removed as { topic: TopicManifest }).topic.note).toBeUndefined();
+    expect(
+      JSON.parse(await readFile(item.paths.topicManifest(created.topic.id), "utf8")),
+    ).not.toHaveProperty("note");
+  });
+
+  test("rejects Topic Notes over 200 Unicode characters", async () => {
+    const item = await world();
+    const created = await item.client.createTopic({
+      name: "Bounded Note",
+      branch: "feat-bounded-note",
+      repository: "LedgerHQ/revault",
+    });
+    if (created.status !== "ready") throw new Error("Expected a ready Topic.");
+    await expect(
+      item.client.setTopicNote(created.topic.id, "🙂".repeat(201)),
+    ).rejects.toMatchObject({
+      code: "invalid-topic-note",
+    });
+  });
+
   test("rejects an empty rename", async () => {
     const item = await world();
     await item.client.createTopic({

@@ -11,6 +11,7 @@ import type { MainAgentLease } from "../daemon/main-agent.ts";
 import type { TopicOperation } from "../daemon/topic-service.ts";
 import {
   isValidBranchName,
+  normalizeTopicNote,
   parseRepository,
   pullRequestStatus,
   type MainAgentState,
@@ -49,6 +50,12 @@ export interface TopicRenameState {
   error?: string;
 }
 
+export interface TopicNoteState {
+  topicId: string;
+  note: string;
+  error?: string;
+}
+
 export type TopicActionId =
   | "workspace"
   | "terminal"
@@ -56,6 +63,7 @@ export type TopicActionId =
   | "reset-agent"
   | "pull-request"
   | "rename"
+  | "note"
   | "retry"
   | "delete";
 
@@ -81,6 +89,7 @@ export interface DashboardState {
   shimmerPhase: number;
   wizard?: TopicWizardState;
   rename?: TopicRenameState;
+  note?: TopicNoteState;
   confirmation?: DashboardConfirmation;
   /**
    * In-flight client submissions keyed by submission key: a Topic id for a
@@ -310,6 +319,7 @@ export type DashboardAction =
       topicId: string;
     }
   | { type: "rename"; topicId: string; name: string }
+  | { type: "set-note"; topicId: string; note: string }
   | { type: "set-focus"; topicId: string; focused: boolean }
   | { type: "confirm"; token: string }
   | { type: "reject"; token: string };
@@ -349,6 +359,7 @@ export interface DashboardInputResult {
 export function handleDashboardInput(state: DashboardState, data: string): DashboardInputResult {
   if (state.confirmation !== undefined) return handleConfirmationInput(state, data);
   if (state.rename !== undefined) return handleRenameInput(state, data);
+  if (state.note !== undefined) return handleNoteInput(state, data);
   if (state.wizard !== undefined) return handleWizardInput(state, data);
   if ((data === "a" || data === "A") && state.submissions["create"] === undefined) {
     return {
@@ -363,6 +374,9 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
   }
   if (data === "r") {
     return { state, exit: false, refresh: true };
+  }
+  if (data === "n" && state.focus === "list" && !isSelectedTopicBusy(state)) {
+    return openNotePrompt(state);
   }
   if ((data === "J" || data === "K") && state.focus === "list") {
     return setSelectedTopicFocus(state, data === "K");
@@ -403,6 +417,7 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
       const action = topicActions(state)[state.focusedAction];
       if (action === undefined || action.unavailable) return { state, exit: false };
       if (action.id === "rename") return openRenamePrompt(state);
+      if (action.id === "note") return openNotePrompt(state);
       return invokeTopicAction(state, action);
     }
     return openActionRail(state);
@@ -631,6 +646,70 @@ export function updateRenameField(state: DashboardState, value: string): Dashboa
   return { ...state, rename: { ...withoutError, name: value } };
 }
 
+function openNotePrompt(state: DashboardState): DashboardInputResult {
+  const topic = state.topics.find((item) => item.id === state.selectedTopicId);
+  if (topic === undefined) return { state, exit: false };
+  return {
+    state: { ...state, note: { topicId: topic.id, note: topic.note ?? "" } },
+    exit: false,
+  };
+}
+
+function handleNoteInput(state: DashboardState, data: string): DashboardInputResult {
+  const editor = state.note!;
+  if (matchesKey(data, Key.escape)) {
+    const { note: _note, ...rest } = state;
+    return { state: { ...rest, message: "Topic Note edit cancelled." }, exit: false };
+  }
+  if (matchesKey(data, Key.enter)) {
+    if (state.submissions[editor.topicId] !== undefined) return { state, exit: false };
+    let note: string | undefined;
+    try {
+      note = normalizeTopicNote(editor.note);
+    } catch (error) {
+      return {
+        state: {
+          ...state,
+          note: {
+            ...editor,
+            error: error instanceof Error ? error.message : "Topic Note is invalid.",
+          },
+        },
+        exit: false,
+      };
+    }
+    const topic = state.topics.find((item) => item.id === editor.topicId);
+    if (topic !== undefined && topic.note === note) {
+      const { note: _note, ...rest } = state;
+      return { state: { ...rest, message: "Topic Note is unchanged." }, exit: false };
+    }
+    const { note: _note, ...rest } = state;
+    return {
+      state: {
+        ...rest,
+        submissions: { ...rest.submissions, [editor.topicId]: "set-note" },
+        message: note === undefined ? "Removing Topic Note…" : "Saving Topic Note…",
+      },
+      exit: false,
+      action: { type: "set-note", topicId: editor.topicId, note: note ?? "" },
+    };
+  }
+  const current = editor.note;
+  let next = current;
+  if (matchesKey(data, Key.backspace) || data === "\x7f") next = [...current].slice(0, -1).join("");
+  else if (isPrintableInput(data)) next += data;
+  else return { state, exit: false };
+  return { state: updateNoteField(state, next), exit: false };
+}
+
+export function updateNoteField(state: DashboardState, value: string): DashboardState {
+  const editor = state.note;
+  if (editor === undefined) return state;
+  const { error: _error, ...withoutError } = editor;
+  const note = value.replace(/\r\n?|\n|\u2028|\u2029/g, " ");
+  return { ...state, note: { ...withoutError, note } };
+}
+
 function handleConfirmationInput(state: DashboardState, data: string): DashboardInputResult {
   const confirmation = state.confirmation!;
   const key = `confirm:${confirmation.token}`;
@@ -715,6 +794,9 @@ export function renderDashboard(
   if (state.rename !== undefined) {
     return renderRename(state.rename, safeWidth, safeHeight, wizardInputLine);
   }
+  if (state.note !== undefined) {
+    return renderNoteEditor(state.note, safeWidth, safeHeight, wizardInputLine);
+  }
   if (state.confirmation !== undefined) {
     return renderConfirmation(state.confirmation, safeWidth, safeHeight);
   }
@@ -777,7 +859,7 @@ function renderList(state: DashboardState, width: number, height: number): strin
   lines.push(truncateToWidth(status, width));
   lines.push(
     truncateToWidth(
-      "a Add · j/k or ↑/↓ move · ⇧J/⇧K focus · enter actions · o workspace · t terminal · m Main Agent · p PR · r refresh · esc quit",
+      "a Add · j/k or ↑/↓ move · ⇧J/⇧K focus · enter actions · n Note · o workspace · t terminal · m Main Agent · p PR · r refresh · esc quit",
       width,
     ),
   );
@@ -975,16 +1057,25 @@ function renderTopicRow(
   if (columns === undefined) {
     const link = pullRequest === undefined ? "" : ` · ${pullRequestCell(pullRequest)}`;
     const setupSegment = setup === "" ? "" : ` · ${setup}`;
-    const row = truncateToWidth(
-      `${prefix}${displayName}${setupSegment} · ${agentCell}${link}`,
-      width,
+    const suffix = `${setupSegment} · ${agentCell}${link}`;
+    const note = renderTopicNote(
+      topic.note,
+      width - visibleWidth(`${prefix}${displayName}${suffix}`),
     );
+    const row = truncateToWidth(`${prefix}${displayName}${note}${suffix}`, width);
     const styled = inactive ? dim(row) : row;
     return selected ? highlight(styled, width) : styled;
   }
-  const row = `${prefix}${pad(displayName, columns.name)} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
+  const nameCell = `${displayName}${renderTopicNote(topic.note, columns.name - visibleWidth(displayName))}`;
+  const row = `${prefix}${pad(nameCell, columns.name)} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
   const styled = inactive ? dim(row) : row;
   return selected ? highlight(styled, width) : styled;
+}
+
+function renderTopicNote(note: string | undefined, availableWidth: number): string {
+  if (note === undefined || availableWidth <= 1) return "";
+  const visible = truncateToWidth(note, availableWidth - 1);
+  return visibleWidth(visible) === 0 ? "" : ` ${yellow(visible)}`;
 }
 
 function setupCell(state: DashboardState, topic: TopicManifest): string {
@@ -1020,9 +1111,9 @@ function highlight(row: string, width: number): string {
   return `${open}${padded}\x1b[49m`;
 }
 
-/** Colours a status word yellow. */
+/** Colours text yellow, including an ellipsis inserted by truncation. */
 function yellow(text: string): string {
-  return `\x1b[33m${text}\x1b[39m`;
+  return `\x1b[33m${reopenAfterReset(text, "\x1b[33m")}\x1b[39m`;
 }
 
 /** Colours an urgent status word bright red. */
@@ -1217,6 +1308,18 @@ function renderRename(
   return fitLines(lines, width, height);
 }
 
+function renderNoteEditor(
+  editor: TopicNoteState,
+  width: number,
+  height: number,
+  inputLine?: string,
+): string[] {
+  const lines = ["EDIT TOPIC NOTE", "", "Note", inputLine ?? `> ${editor.note}`];
+  if (editor.error !== undefined) lines.push("", `! ${editor.error}`);
+  lines.push("", "enter save · empty removes · esc cancel");
+  return fitLines(lines, width, height);
+}
+
 function renderConfirmation(
   confirmation: DashboardConfirmation,
   width: number,
@@ -1339,6 +1442,11 @@ function topicActions(
     label: "Rename Topic",
     unavailable: false,
   });
+  actions.push({
+    id: "note",
+    label: topic.note === undefined ? "Add Note" : "Edit Note",
+    unavailable: false,
+  });
   if (topic.setup.state === "setup-failed" || topic.setup.state === "provisioning") {
     actions.push({
       id: "retry",
@@ -1393,7 +1501,8 @@ function invokeTopicAction(
   state: DashboardState,
   action: { id: TopicActionId; label: string },
 ): DashboardInputResult {
-  if (state.selectedTopicId === undefined || action.id === "rename") return { state, exit: false };
+  if (state.selectedTopicId === undefined || action.id === "rename" || action.id === "note")
+    return { state, exit: false };
   return {
     state: {
       ...state,

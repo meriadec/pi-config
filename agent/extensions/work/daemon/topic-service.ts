@@ -5,6 +5,7 @@ import {
   WorkDataError,
   boundMessage,
   isValidBranchName,
+  normalizeTopicNote,
   parseRepository,
   resolveActionPolicy,
   resolveBaseCheckout,
@@ -87,6 +88,7 @@ export interface ConfirmationRequirement {
 export type TopicMutationResult =
   | { status: "ready"; topic: TopicManifest }
   | { status: "renamed"; topic: TopicManifest }
+  | { status: "note-updated"; topic: TopicManifest }
   | { status: "refocused"; topic: TopicManifest }
   | { status: "deleted"; topicId: string }
   | { status: "rejected"; topicId: string }
@@ -404,6 +406,26 @@ export class TopicService {
         this.topicById.set(topic.id, topic);
         this.emit({ type: "topic-changed", topic });
         return { status: "renamed", topic };
+      }),
+    ) as Promise<TopicMutationResult>;
+  }
+
+  setNote(
+    clientId: string,
+    requestId: string,
+    topicId: string,
+    input: string,
+  ): Promise<TopicMutationResult> {
+    return this.deduplicate(clientId, requestId, `set-note:${topicId}:${input}`, () =>
+      this.serializeTopic(topicId, async () => {
+        const note = normalizeTopicNote(input);
+        const topic = await this.options.topics.update(topicId, (current) => {
+          const { note: _note, ...withoutNote } = current;
+          return note === undefined ? withoutNote : { ...withoutNote, note };
+        });
+        this.topicById.set(topic.id, topic);
+        this.emit({ type: "topic-changed", topic });
+        return { status: "note-updated", topic };
       }),
     ) as Promise<TopicMutationResult>;
   }

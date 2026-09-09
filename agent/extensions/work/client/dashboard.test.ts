@@ -64,11 +64,13 @@ function topic(
   name: string,
   setup: TopicManifest["setup"]["state"] = "ready",
   focused = true,
+  note?: string,
 ) {
   return {
     version: 1,
     id,
     name,
+    ...(note === undefined ? {} : { note }),
     branch: `feat-${name}`,
     repository: `owner/${name.toLowerCase()}`,
     setup: {
@@ -647,6 +649,69 @@ describe("dashboard state and navigation", () => {
     expect(hasShimmeringAgent(state)).toBeFalse();
   });
 
+  test("edits a Topic Note from the n shortcut and removes it with blank text", () => {
+    let state = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([topic(ID_A, "Alpha", "ready", true, "Waiting for Tom")]),
+    );
+
+    state = handleDashboardInput(state, "n").state;
+    expect(state.note).toEqual({ topicId: ID_A, note: "Waiting for Tom" });
+    state = handleDashboardInput(state, "\x7f").state;
+    expect(state.note?.note).toBe("Waiting for To");
+
+    state = { ...state, note: { topicId: ID_A, note: "  Ready\nfor review  " } };
+    const saved = handleDashboardInput(state, "\r");
+    expect(saved.action).toEqual({ type: "set-note", topicId: ID_A, note: "Ready for review" });
+
+    const removing = handleDashboardInput(
+      { ...saved.state, submissions: {}, note: { topicId: ID_A, note: "   " } },
+      "\r",
+    );
+    expect(removing.action).toEqual({ type: "set-note", topicId: ID_A, note: "" });
+  });
+
+  test("rejects an oversized Topic Note without closing the editor", () => {
+    let state = hydrateDashboard(initialDashboardState(), snapshot([topic(ID_A, "Alpha")]));
+    state = {
+      ...handleDashboardInput(state, "n").state,
+      note: { topicId: ID_A, note: "🙂".repeat(201) },
+    };
+    const result = handleDashboardInput(state, "\r");
+    expect(result.action).toBeUndefined();
+    expect(result.state.note?.error).toBe("Topic Note must be 200 characters or fewer.");
+  });
+
+  test("renders the Topic Note in yellow without adding a visible separator", () => {
+    const state = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([topic(ID_A, "Alpha", "ready", true, "waiting for Tom")]),
+    );
+    const wide = renderDashboard(state, 100, 24).find((line) => line.includes("Alpha"))!;
+    expect(wide).toContain("Alpha \x1b[33mwaiting for Tom\x1b[39m");
+    expect(stripSgr(wide)).not.toContain("Alpha · waiting");
+    const narrow = renderDashboard(state, 30, 24).find((line) => line.includes("Alpha"))!;
+    expect(visibleWidth(narrow)).toBeLessThanOrEqual(30);
+    expect(stripSgr(narrow)).toContain("stopped");
+    expect(narrow).toContain("\x1b[33m");
+  });
+
+  test("offers Add Note and Edit Note in the action rail without showing Note details", () => {
+    let state = hydrateDashboard(initialDashboardState(), snapshot([topic(ID_A, "Alpha")]));
+    state = handleDashboardInput(state, "l").state;
+    let rendered = stripSgr(renderDashboard(state, 100, 24).join("\n"));
+    expect(rendered).toContain("Add Note");
+    expect(rendered).not.toContain("Note:");
+
+    state = hydrateDashboard(
+      state,
+      snapshot([topic(ID_A, "Alpha", "ready", true, "private context")]),
+    );
+    rendered = stripSgr(renderDashboard(state, 100, 24).join("\n"));
+    expect(rendered).toContain("Edit Note");
+    expect(rendered).not.toContain("Note: private context");
+  });
+
   test("opens the action rail on its first available action and supports navigation", () => {
     let state = hydrateDashboard(
       initialDashboardState(),
@@ -914,6 +979,7 @@ class FakeDashboardClient implements DashboardClient {
   createCalls: Array<{ input: NewTopic; requestId?: string }> = [];
   retryCalls: Array<{ topicId: string; requestId?: string }> = [];
   renameCalls: Array<{ topicId: string; name: string; requestId?: string }> = [];
+  noteCalls: Array<{ topicId: string; note: string; requestId?: string }> = [];
   setFocusCalls: Array<{ topicId: string; focused: boolean; requestId?: string }> = [];
   actionCalls: Array<{
     type: "delete" | "workspace" | "terminal" | "agent" | "reset-agent" | "pull-request";
@@ -927,6 +993,7 @@ class FakeDashboardClient implements DashboardClient {
   createResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
   retryResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
   renameResult: TopicMutationResult = { status: "renamed", topic: topic(ID_A, "Alpha") };
+  noteResult: TopicMutationResult = { status: "note-updated", topic: topic(ID_A, "Alpha") };
   confirmResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
   rejectResult: TopicMutationResult = { status: "rejected", topicId: ID_A };
   private readonly topics: readonly TopicManifest[];
@@ -967,6 +1034,15 @@ class FakeDashboardClient implements DashboardClient {
   ): Promise<TopicMutationResult> {
     this.renameCalls.push({ topicId, name, ...(requestId === undefined ? {} : { requestId }) });
     return this.renameResult;
+  }
+
+  async setTopicNote(
+    topicId: string,
+    note: string,
+    requestId?: string,
+  ): Promise<TopicMutationResult> {
+    this.noteCalls.push({ topicId, note, ...(requestId === undefined ? {} : { requestId }) });
+    return this.noteResult;
   }
 
   async setTopicFocus(
@@ -1072,6 +1148,25 @@ class FakeDashboardClient implements DashboardClient {
 }
 
 describe("dashboard submission behavior", () => {
+  test("normalizes pasted line breaks and saves a Topic Note", async () => {
+    const client = new FakeDashboardClient();
+    client.noteResult = {
+      status: "note-updated",
+      topic: topic(ID_A, "Alpha", "ready", true, "waiting for Tom"),
+    };
+    const component = dashboardComponent(client);
+    await Bun.sleep(0);
+    component.handleInput("n");
+    component.handleInput("\x1b[200~  waiting\nfor Tom  \x1b[201~");
+    expect(component.snapshotState().note?.note).toBe("  waiting for Tom  ");
+    component.handleInput("\r");
+    await Bun.sleep(0);
+    expect(client.noteCalls).toHaveLength(1);
+    expect(client.noteCalls[0]).toMatchObject({ topicId: ID_A, note: "waiting for Tom" });
+    expect(component.snapshotState().message).toBe("Topic Note saved.");
+    component.dispose();
+  });
+
   test("returns to the dashboard, selects the added Topic, and prevents duplicate create", async () => {
     const client = new FakeDashboardClient([]);
     let finish!: (result: TopicMutationResult) => void;
@@ -1273,6 +1368,7 @@ describe("dashboard submission behavior", () => {
     component.handleInput("j");
     component.handleInput("j");
     component.handleInput("j");
+    component.handleInput("j");
     component.handleInput("\r");
     await Bun.sleep(0);
     const warning = component.render(180).join("\n");
@@ -1291,9 +1387,9 @@ describe("dashboard submission behavior", () => {
       const rail = component.render(80).join("\n");
       expect(rail).toContain("Retry Setup");
       expect(rail).not.toContain("Retry Setup (r)");
-      // Actions: workspace, terminal, agent, reset-agent, rename, retry, delete.
-      for (let i = 0; i < 5; i += 1) component.handleInput("j");
-      expect(component.snapshotState().focusedAction).toBe(5);
+      // Actions: workspace, terminal, agent, reset-agent, rename, note, retry, delete.
+      for (let i = 0; i < 6; i += 1) component.handleInput("j");
+      expect(component.snapshotState().focusedAction).toBe(6);
       component.handleInput("\r");
       await Bun.sleep(0);
       expect(client.retryCalls).toHaveLength(1);

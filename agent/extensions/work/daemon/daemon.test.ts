@@ -78,7 +78,7 @@ describe("work daemon", () => {
     expect(() => parseRequest(request("agent.delegating"))).toThrow(ProtocolError);
   });
 
-  test("validates the version 13 Topic creation contract", () => {
+  test("validates the version 14 Topic creation contract", () => {
     const request = (input: Record<string, unknown>) =>
       JSON.stringify({
         version: WORK_PROTOCOL_VERSION,
@@ -106,6 +106,26 @@ describe("work daemon", () => {
     ]) {
       expect(() => parseRequest(request(input))).toThrow(ProtocolError);
     }
+  });
+
+  test("accepts empty and non-empty Topic Note requests", () => {
+    const request = (note: unknown) =>
+      JSON.stringify({
+        version: WORK_PROTOCOL_VERSION,
+        kind: "request",
+        id: "set-note",
+        clientId: "dashboard",
+        action: "topic.set-note",
+        topicId: "123e4567-e89b-42d3-a456-426614174000",
+        note,
+      });
+
+    expect(parseRequest(request("waiting for Tom"))).toMatchObject({
+      action: "topic.set-note",
+      note: "waiting for Tom",
+    });
+    expect(parseRequest(request(""))).toMatchObject({ action: "topic.set-note", note: "" });
+    expect(() => parseRequest(request(42))).toThrow(ProtocolError);
   });
 
   test("correlates requests and returns clear daemon errors", async () => {

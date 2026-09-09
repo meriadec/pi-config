@@ -127,6 +127,20 @@ export class WorkClient {
     ) as Promise<TopicMutationResult>;
   }
 
+  setTopicNote(
+    topicId: string,
+    note: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
+    return this.request(
+      "topic.set-note",
+      { topicId, note },
+      timeoutMs,
+      requestId,
+    ) as Promise<TopicMutationResult>;
+  }
+
   setTopicFocus(
     topicId: string,
     focused: boolean,

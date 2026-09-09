@@ -27,6 +27,7 @@ import {
   type TopicWizardStage,
   updateWizardField,
   updateRenameField,
+  updateNoteField,
 } from "./dashboard.ts";
 
 export interface DashboardClient {
@@ -45,6 +46,12 @@ export interface DashboardClient {
   renameTopic(
     topicId: string,
     name: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult>;
+  setTopicNote(
+    topicId: string,
+    note: string,
     requestId?: string,
     timeoutMs?: number,
   ): Promise<TopicMutationResult>;
@@ -102,6 +109,8 @@ export class WorkDashboardComponent implements Component, Focusable {
   private wizardInputStage: Exclude<TopicWizardStage, "review"> | undefined;
   private renameInput: Input | undefined;
   private renameInputTopicId: string | undefined;
+  private noteInput: Input | undefined;
+  private noteInputTopicId: string | undefined;
   private client: DashboardClient | undefined;
   private removeDisconnect: (() => void) | undefined;
   private disposed = false;
@@ -126,10 +135,11 @@ export class WorkDashboardComponent implements Component, Focusable {
     this._focused = value;
     if (this.wizardInput !== undefined) this.wizardInput.focused = value;
     if (this.renameInput !== undefined) this.renameInput.focused = value;
+    if (this.noteInput !== undefined) this.noteInput.focused = value;
   }
 
   render(width: number): string[] {
-    const textInput = this.wizardInput ?? this.renameInput;
+    const textInput = this.wizardInput ?? this.renameInput ?? this.noteInput;
     const wizardInputLine = textInput?.render(width)[0];
     return renderDashboard(this.state, width, this.options.tui.terminal.rows, wizardInputLine);
   }
@@ -178,10 +188,27 @@ export class WorkDashboardComponent implements Component, Focusable {
       }
     }
 
+    if (this.state.note !== undefined) {
+      if (!matchesKey(data, Key.enter) && !matchesKey(data, Key.escape)) {
+        this.noteInput?.handleInput(data.replace(/\r\n?|\n|\u2028|\u2029/g, " "));
+        if (this.noteInput !== undefined) {
+          const value = this.noteInput.getValue().replace(/\r\n?|\n|\u2028|\u2029/g, " ");
+          if (value !== this.noteInput.getValue()) this.noteInput.setValue(value);
+          this.state = updateNoteField(this.state, value);
+        }
+        this.options.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, Key.enter) && this.noteInput !== undefined) {
+        this.state = updateNoteField(this.state, this.noteInput.getValue());
+      }
+    }
+
     const result = handleDashboardInput(this.state, data);
     this.state = result.state;
     this.syncWizardInput();
     this.syncRenameInput();
+    this.syncNoteInput();
     if (result.action !== undefined) this.beginAction(result.action);
     if (result.refresh === true) void this.forceRefresh();
     if (result.exit) {
@@ -195,6 +222,7 @@ export class WorkDashboardComponent implements Component, Focusable {
   invalidate(): void {
     this.wizardInput?.invalidate();
     this.renameInput?.invalidate();
+    this.noteInput?.invalidate();
     this.options.tui.requestRender();
   }
 
@@ -243,6 +271,21 @@ export class WorkDashboardComponent implements Component, Focusable {
     input.handleInput(rename.name);
     this.renameInput = input;
     this.renameInputTopicId = rename.topicId;
+  }
+
+  private syncNoteInput(): void {
+    const editor = this.state.note;
+    if (editor === undefined) {
+      this.noteInput = undefined;
+      this.noteInputTopicId = undefined;
+      return;
+    }
+    if (this.noteInputTopicId === editor.topicId && this.noteInput !== undefined) return;
+    const input = new Input();
+    input.focused = this.focused;
+    input.handleInput(editor.note);
+    this.noteInput = input;
+    this.noteInputTopicId = editor.topicId;
   }
 
   private async connect(): Promise<void> {
@@ -500,6 +543,13 @@ function requestMutation(
         mutation.requestId,
         MUTATION_TIMEOUT_MS,
       );
+    case "set-note":
+      return client.setTopicNote(
+        action.topicId,
+        action.note,
+        mutation.requestId,
+        MUTATION_TIMEOUT_MS,
+      );
     case "set-focus":
       return client.setTopicFocus(
         action.topicId,
@@ -539,6 +589,8 @@ function actionResultMessage(result: WorkActionResult): string {
       return `Topic ${result.topic.name} is ready.`;
     case "renamed":
       return `Topic renamed to ${result.topic.name}.`;
+    case "note-updated":
+      return result.topic.note === undefined ? "Topic Note removed." : "Topic Note saved.";
     case "refocused":
       return result.topic.focused
         ? `Focused Topic ${result.topic.name}.`

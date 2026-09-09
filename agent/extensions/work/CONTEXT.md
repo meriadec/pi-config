@@ -9,6 +9,11 @@ GitHub repository, with a provisioned worktree and a resumable Main Agent.
 A durable unit of work bound to one `owner/repo` repository and one Branch, with its own worktree
 and Main Agent. Stored as a manifest under `~/work/topics/<topic-id>/topic.json`.
 
+**Topic Note**:
+A durable, optional free-text annotation on one Topic. It gives human context without changing the
+Topic's name, identity, hierarchy, Focus, or sort order.
+_Avoid_: comment, status message.
+
 **Base checkout**:
 The single clone of a repository, shared by all Topics of that repository. By default it lives
 at `WORK_BASE/<repo-name>`. A **Base checkout override** (`basePath` in a repository entry of

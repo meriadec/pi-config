@@ -11,6 +11,7 @@ import {
   createWorkPaths,
   parseActionPolicy,
   parseMainAgentState,
+  normalizeTopicNote,
   parseRepository,
   pullRequestStatus,
   parseSetupState,
@@ -118,8 +119,31 @@ describe("domain validation", () => {
     expect(pullRequestStatus(approved)).toBe("approved");
   });
 
+  test("normalizes and validates Topic Notes", () => {
+    expect(normalizeTopicNote("  waiting for Tom\r\nto answer  ")).toBe(
+      "waiting for Tom to answer",
+    );
+    expect(normalizeTopicNote("   ")).toBeUndefined();
+    expect(normalizeTopicNote("🙂".repeat(200))).toBe("🙂".repeat(200));
+    expect(() => normalizeTopicNote("🙂".repeat(201))).toThrow(
+      "Topic Note must be 200 characters or fewer.",
+    );
+    expect(() => normalizeTopicNote("bad\tcontrol")).toThrow(
+      "Topic Note must not contain control characters.",
+    );
+  });
+
   test("accepts valid topics and rejects unsafe topic data", () => {
     expect(parseTopicManifest(manifest(), ID_A)).toEqual(manifest());
+    expect(parseTopicManifest({ ...manifest(), note: "Waiting for Tom" })).toMatchObject({
+      note: "Waiting for Tom",
+    });
+    expect(() => parseTopicManifest({ ...manifest(), note: "  not normalized  " })).toThrow(
+      "Stored Topic Note must be non-empty and normalized.",
+    );
+    expect(() => parseTopicManifest({ ...manifest(), note: "" })).toThrow(
+      "Stored Topic Note must be non-empty and normalized.",
+    );
     expect(() => parseTopicManifest({ ...manifest(), version: 2 })).toThrow(
       "Unsupported topic manifest version",
     );
