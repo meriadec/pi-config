@@ -108,6 +108,40 @@ describe("work daemon", () => {
     }
   });
 
+  test("validates the child Topic creation contract", () => {
+    const request = (input: Record<string, unknown>) =>
+      JSON.stringify({
+        version: WORK_PROTOCOL_VERSION,
+        kind: "request",
+        id: "create-child",
+        clientId: "cli",
+        action: "topic.create-child",
+        input,
+      });
+    const startPoint = { commit: "a".repeat(40), sourceCheckout: "/source/widgets" };
+    const basic = {
+      parentTopicId: "123e4567-e89b-42d3-a456-426614174000",
+      name: "First commit",
+      startPoint,
+    };
+    expect(parseRequest(request(basic))).toMatchObject({ input: basic });
+    expect(parseRequest(request({ ...basic, branch: "feat-first" }))).toMatchObject({
+      input: { ...basic, branch: "feat-first" },
+    });
+
+    for (const input of [
+      { ...basic, repository: "acme/widgets" },
+      { ...basic, startPoint: undefined },
+      { ...basic, startPoint: { ...startPoint, unknown: true } },
+      { ...basic, startPoint: { commit: "z".repeat(40), sourceCheckout: "/source" } },
+      { ...basic, startPoint: { commit: "a".repeat(40), sourceCheckout: "relative" } },
+      { ...basic, name: "" },
+      { ...basic, parentTopicId: "" },
+    ]) {
+      expect(() => parseRequest(request(input))).toThrow(ProtocolError);
+    }
+  });
+
   test("accepts empty and non-empty Topic Note requests", () => {
     const request = (note: unknown) =>
       JSON.stringify({

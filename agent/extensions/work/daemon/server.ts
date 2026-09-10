@@ -209,6 +209,8 @@ export class WorkDaemon {
           await Promise.all([
             this.requireTopicService().refreshPullRequests(),
             this.requireTopicService().refreshWorktreePresence(),
+            this.requireTopicService().refreshIntegrationBranches(),
+            this.requireTopicService().refreshIntegrationStatuses(),
           ]);
           result = { refreshed: true };
           break;
@@ -220,6 +222,13 @@ export class WorkDaemon {
           break;
         case "topic.create":
           result = await this.requireTopicService().create(
+            request.clientId,
+            request.id,
+            request.input,
+          );
+          break;
+        case "topic.create-child":
+          result = await this.requireTopicService().createChild(
             request.clientId,
             request.id,
             request.input,
@@ -254,6 +263,46 @@ export class WorkDaemon {
             request.id,
             request.topicId,
             request.focused,
+          );
+          break;
+        case "topic.change-parent":
+          result = await this.requireTopicService().changeParent(
+            request.clientId,
+            request.id,
+            request.topicId,
+            request.parentTopicId,
+          );
+          break;
+        case "topic.remove-parent":
+          result = await this.requireTopicService().removeParent(
+            request.clientId,
+            request.id,
+            request.topicId,
+          );
+          break;
+        case "topic.move-in-chain":
+          result = await this.requireTopicService().moveInChain(
+            request.clientId,
+            request.id,
+            request.topicId,
+            request.target,
+          );
+          break;
+        case "topic.reset-chain":
+          result = await this.requireTopicService().resetIntegrationTargets(
+            request.clientId,
+            request.id,
+            request.topicId,
+          );
+          break;
+        case "migration.preview":
+          result = await this.requireTopicService().previewLegacyMigration();
+          break;
+        case "migration.apply":
+          result = await this.requireTopicService().applyLegacyMigration(
+            request.clientId,
+            request.id,
+            request.parentTopicIds,
           );
           break;
         case "topic.delete":

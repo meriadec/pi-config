@@ -12,6 +12,8 @@ import {
   parseActionPolicy,
   parseMainAgentState,
   normalizeTopicNote,
+  parseIntegrationTarget,
+  parseOriginCommit,
   parseRepository,
   pullRequestStatus,
   parseSetupState,
@@ -19,6 +21,7 @@ import {
   parseWorkConfig,
   resolveActionPolicy,
   resolveBaseCheckout,
+  resolveIntegrationBranch,
 } from "./index.ts";
 import type { PullRequestRef, TopicManifest, WorkConfig } from "./index.ts";
 
@@ -163,6 +166,55 @@ describe("domain validation", () => {
     expect(parseTopicManifest({ ...legacy, setup }).setup.setupCommandsRun).toBe(true);
   });
 
+  test("keeps Integration Chain data optional and validates it", () => {
+    // A manifest predating Integration Chains stays a root Topic with an active chain state.
+    const legacy = parseTopicManifest(manifest(), ID_A);
+    expect(legacy.parentTopicId).toBeUndefined();
+    expect(legacy.originCommit).toBeUndefined();
+    expect(legacy.integrationTarget).toBeUndefined();
+    expect(legacy.chainState).toBeUndefined();
+
+    const child = {
+      ...manifest(),
+      parentTopicId: ID_B,
+      originCommit: "a".repeat(40),
+      integrationTarget: { kind: "topic", topicId: ID_C },
+      chainState: "pending",
+    };
+    expect(parseTopicManifest(child, ID_A)).toEqual(child as TopicManifest);
+    expect(
+      parseTopicManifest({ ...manifest(), integrationTarget: { kind: "integration-branch" } })
+        .integrationTarget,
+    ).toEqual({ kind: "integration-branch" });
+
+    for (const bad of [
+      { parentTopicId: "not-an-id" },
+      { parentTopicId: ID_A },
+      { originCommit: "A".repeat(40) },
+      { originCommit: "abc" },
+      { originCommit: 42 },
+      { integrationTarget: { kind: "branch", branch: "main" } },
+      { integrationTarget: { kind: "topic", topicId: "not-an-id" } },
+      { integrationTarget: { kind: "topic", topicId: ID_A } },
+      { integrationTarget: { kind: "integration-branch", topicId: ID_B } },
+      { integrationTarget: "main" },
+      { chainState: "paused" },
+      { chainState: true },
+    ]) {
+      expect(() => parseTopicManifest({ ...manifest(), ...bad }, ID_A)).toThrow(WorkDataError);
+    }
+  });
+
+  test("parses Integration Targets and Origin Commits on their own", () => {
+    expect(parseIntegrationTarget({ kind: "topic", topicId: ID_B })).toEqual({
+      kind: "topic",
+      topicId: ID_B,
+    });
+    expect(parseOriginCommit("b".repeat(40))).toBe("b".repeat(40));
+    expect(() => parseIntegrationTarget(null)).toThrow(WorkDataError);
+    expect(() => parseOriginCommit("b".repeat(39))).toThrow(WorkDataError);
+  });
+
   test("parses and validates repository recipes", () => {
     const withRecipe = {
       ...config(),
@@ -184,6 +236,9 @@ describe("domain validation", () => {
       { "LedgerHQ/revault": { setupCommands: [42] } },
       { "LedgerHQ/revault": { basePath: "relative/path" } },
       { "LedgerHQ/revault": { basePath: 42 } },
+      { "LedgerHQ/revault": { setupCommands: [], integrationBranch: "bad branch" } },
+      { "LedgerHQ/revault": { setupCommands: [], integrationBranch: "" } },
+      { "LedgerHQ/revault": { setupCommands: [], integrationBranch: 42 } },
     ]) {
       expect(() => parseWorkConfig({ ...config(), repositories: bad })).toThrow(WorkDataError);
     }
@@ -308,6 +363,30 @@ describe("configuration persistence", () => {
     };
     await store.save(withRecipe);
     expect((await createConfigStore(paths).load())?.repositories).toEqual(withRecipe.repositories);
+  });
+
+  test("round-trips a repository Integration Branch and rejects an invalid one", async () => {
+    const paths = await temporaryPaths();
+    const store = createConfigStore(paths);
+    const withBranch: WorkConfig = {
+      ...config(),
+      repositories: { "LedgerHQ/revault": { setupCommands: [], integrationBranch: "main" } },
+    };
+    await store.save(withBranch);
+
+    const loaded = await createConfigStore(paths).load();
+    expect(loaded?.repositories["LedgerHQ/revault"]?.integrationBranch).toBe("main");
+    expect(resolveIntegrationBranch(loaded!, "LedgerHQ/revault")).toBe("main");
+    expect(resolveIntegrationBranch(loaded!, "LedgerHQ/other")).toBeUndefined();
+
+    const cleared = await store.update((current) => ({
+      ...current,
+      repositories: { "LedgerHQ/revault": { setupCommands: [] } },
+    }));
+    expect(cleared.repositories["LedgerHQ/revault"]?.integrationBranch).toBeUndefined();
+    expect((await createConfigStore(paths).load())?.repositories).toEqual({
+      "LedgerHQ/revault": { setupCommands: [] },
+    });
   });
 });
 

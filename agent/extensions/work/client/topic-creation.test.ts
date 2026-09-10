@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { LocalProcessRunner } from "../daemon/process-runner.ts";
 import type { ProcessRequest, ProcessResult, ProcessRunner } from "../daemon/process-runner.ts";
 import { defaultBranchForTopicName } from "../shared/topic-creation.ts";
-import { parseGitHubOrigin, resolveTopicCreationInput } from "./topic-creation.ts";
+import {
+  parseGitHubOrigin,
+  resolveChildTopicCreationInput,
+  resolveTopicCreationInput,
+} from "./topic-creation.ts";
 import { testGitEnvironment } from "../test-support/git-environment.ts";
 
 class RecordingRunner implements ProcessRunner {
@@ -170,6 +174,101 @@ describe("Start Point resolution", () => {
     expect(runner.requests.length).toBe(3);
     expect(runner.requests.every((request) => request.timeoutMs === 10_000)).toBe(true);
     expect(runner.requests.every((request) => request.maxOutputBytes === 16 * 1024)).toBe(true);
+  });
+});
+
+describe("Child Topic input resolution", () => {
+  const parentTopicId = "11111111-2222-4333-8444-555555555555";
+
+  test("takes the Parent Topic from the Main Agent session and derives the Branch", async () => {
+    await expect(
+      resolveChildTopicCreationInput(
+        { name: "  Widen the note column  ", startPoint: "HEAD~1", sourceCheckout: repository },
+        { environment: { PI_WORK_TOPIC_ID: parentTopicId } },
+      ),
+    ).resolves.toEqual({
+      parentTopicId,
+      name: "Widen the note column",
+      branch: "widen-the-note-column",
+      startPoint: { commit: commits[1]!, sourceCheckout: repository },
+    });
+  });
+
+  test("prefers an explicit Parent Topic and keeps an explicit Branch and SHA", async () => {
+    await expect(
+      resolveChildTopicCreationInput(
+        {
+          name: "Second commit",
+          parentTopicId,
+          branch: "Feature/Keep-Case",
+          startPoint: commits[1]!,
+          sourceCheckout: repository,
+        },
+        { environment: { PI_WORK_TOPIC_ID: "99999999-2222-4333-8444-555555555555" } },
+      ),
+    ).resolves.toMatchObject({
+      parentTopicId,
+      branch: "Feature/Keep-Case",
+      startPoint: { commit: commits[1]!, sourceCheckout: repository },
+    });
+  });
+
+  test("rejects a missing or invalid Parent Topic without contacting Git", async () => {
+    const runner = new RecordingRunner();
+    await expect(
+      resolveChildTopicCreationInput(
+        { name: "Orphan", startPoint: "HEAD", sourceCheckout: repository },
+        { environment: {}, runner },
+      ),
+    ).rejects.toMatchObject({ code: "parent-topic-required" });
+    await expect(
+      resolveChildTopicCreationInput(
+        {
+          name: "Orphan",
+          parentTopicId: "not-a-topic",
+          startPoint: "HEAD",
+          sourceCheckout: repository,
+        },
+        { environment: {}, runner },
+      ),
+    ).rejects.toMatchObject({ code: "invalid-parent-topic" });
+    expect(runner.requests).toHaveLength(0);
+  });
+
+  test("requires a non-empty Start Point and a Source checkout", async () => {
+    await expect(
+      resolveChildTopicCreationInput(
+        { name: "Child", startPoint: "  ", sourceCheckout: repository },
+        { environment: { PI_WORK_TOPIC_ID: parentTopicId } },
+      ),
+    ).rejects.toMatchObject({ code: "invalid-start-point" });
+    await expect(
+      resolveChildTopicCreationInput(
+        { name: "Child", startPoint: "HEAD" },
+        { environment: { PI_WORK_TOPIC_ID: parentTopicId } },
+      ),
+    ).rejects.toMatchObject({ code: "source-checkout-required" });
+  });
+
+  test("applies the same bounded Git safety rules as normal creation", async () => {
+    const runner = new RecordingRunner();
+    await resolveChildTopicCreationInput(
+      { name: "Bounded child", startPoint: "HEAD", sourceCheckout: repository },
+      { environment: { PI_WORK_TOPIC_ID: parentTopicId }, runner },
+    );
+    expect(runner.requests.map((request) => request.args)).toEqual([
+      ["rev-parse", "--show-toplevel"],
+      ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"],
+    ]);
+    expect(runner.requests.every((request) => request.timeoutMs === 10_000)).toBe(true);
+    expect(runner.requests.every((request) => request.maxOutputBytes === 16 * 1024)).toBe(true);
+
+    await expect(
+      resolveChildTopicCreationInput(
+        { name: "Bad child", startPoint: "HEAD^{tree}", sourceCheckout: repository },
+        { environment: { PI_WORK_TOPIC_ID: parentTopicId } },
+      ),
+    ).rejects.toMatchObject({ code: "git-resolution-failed" });
   });
 });
 

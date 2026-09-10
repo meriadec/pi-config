@@ -5,7 +5,11 @@ import {
   createTopicStore,
   createWorkPaths,
 } from "../shared/index.ts";
+import { BranchAncestryReader } from "./branch-ancestry.ts";
 import { I3KittyDesktopController } from "./desktop.ts";
+import { IntegrationBranchResolver } from "./integration-branch.ts";
+import { IntegrationStatusObserver } from "./integration-status.ts";
+import { LegacyMigrationJournal } from "./legacy-migration.ts";
 import { MainAgentManager } from "./main-agent.ts";
 import { LocalProcessRunner } from "./process-runner.ts";
 import { TopicProvisioner } from "./provisioner.ts";
@@ -36,8 +40,9 @@ export async function runWorkDaemon(): Promise<void> {
     affiliations: createAffiliationStore(paths),
   });
   const ghCommand = process.env["PI_WORK_GH_EXECUTABLE"];
+  const config = createConfigStore(paths);
   const topicService = new TopicService({
-    config: createConfigStore(paths),
+    config,
     topics,
     provisioner: new TopicProvisioner({
       topics,
@@ -50,6 +55,10 @@ export async function runWorkDaemon(): Promise<void> {
       runner,
       ...(ghCommand === undefined ? {} : { ghCommand }),
     }),
+    integrationBranches: new IntegrationBranchResolver({ config, runner }),
+    integrationStatuses: new IntegrationStatusObserver({ runner }),
+    ancestry: new BranchAncestryReader({ runner }),
+    migrations: new LegacyMigrationJournal({ paths }),
   });
   const daemon = new WorkDaemon({
     socketPath: paths.socket,

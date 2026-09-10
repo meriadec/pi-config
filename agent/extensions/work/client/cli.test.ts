@@ -8,7 +8,14 @@ import {
   type CliDependencies,
   type TopicCreationClient,
 } from "./cli.ts";
-import type { ResolvedTopicCreationInput, TopicCreationInput } from "./topic-creation.ts";
+import type {
+  ChildTopicCreationInput,
+  ResolvedChildTopicCreationInput,
+  ResolvedTopicCreationInput,
+  TopicCreationInput,
+} from "./topic-creation.ts";
+
+const PARENT_TOPIC_ID = "11111111-2222-4333-8444-555555555555";
 
 const CONFIG: WorkConfig = {
   version: 1,
@@ -20,6 +27,11 @@ const CONFIG: WorkConfig = {
 class FakeClient implements TopicCreationClient {
   readonly creates: Array<{
     input: ResolvedTopicCreationInput;
+    requestId: string | undefined;
+    timeoutMs: number | undefined;
+  }> = [];
+  readonly childCreates: Array<{
+    input: ResolvedChildTopicCreationInput;
     requestId: string | undefined;
     timeoutMs: number | undefined;
   }> = [];
@@ -38,6 +50,15 @@ class FakeClient implements TopicCreationClient {
     timeoutMs?: number,
   ): Promise<TopicMutationResult> {
     this.creates.push({ input, requestId, timeoutMs });
+    return this.next();
+  }
+
+  createChildTopic(
+    input: ResolvedChildTopicCreationInput,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
+    this.childCreates.push({ input, requestId, timeoutMs });
     return this.next();
   }
 
@@ -204,6 +225,94 @@ describe("pi-work CLI parsing and output", () => {
     expect(explicit.resolvedInputs[0]?.sourceCheckout).toBe("/other/checkout");
   });
 
+  test("sends the resolved child request for `topic create-child`", async () => {
+    const client = new FakeClient([ready()]);
+    const resolvedChildInputs: ChildTopicCreationInput[] = [];
+    const exit = await runPiWorkCli(
+      [
+        "topic",
+        "create-child",
+        "--name",
+        "Widen the note column",
+        "--start-point",
+        "HEAD~1",
+        "--branch",
+        "Feature/Keep-Case",
+      ],
+      harness(client, {
+        environment: { PI_WORK_TOPIC_ID: PARENT_TOPIC_ID },
+        resolveChildInput: async (input, options) => {
+          resolvedChildInputs.push(input);
+          return {
+            parentTopicId: options?.environment?.["PI_WORK_TOPIC_ID"] ?? "unset",
+            name: input.name,
+            branch: input.branch ?? "derived",
+            startPoint: { commit: "b".repeat(40), sourceCheckout: input.sourceCheckout! },
+          };
+        },
+      }).dependencies,
+    );
+
+    expect(exit).toBe(CLI_EXIT.success);
+    expect(resolvedChildInputs).toEqual([
+      {
+        name: "Widen the note column",
+        startPoint: "HEAD~1",
+        branch: "Feature/Keep-Case",
+        sourceCheckout: "/current/checkout",
+      },
+    ]);
+    expect(client.childCreates[0]).toEqual({
+      input: {
+        parentTopicId: PARENT_TOPIC_ID,
+        name: "Widen the note column",
+        branch: "Feature/Keep-Case",
+        startPoint: { commit: "b".repeat(40), sourceCheckout: "/current/checkout" },
+      },
+      requestId: "request-1",
+      timeoutMs: CLI_PROVISION_TIMEOUT_MS,
+    });
+    expect(client.creates).toHaveLength(0);
+  });
+
+  test("rejects child syntax that the daemon operation cannot accept", async () => {
+    const missingStartPoint = harness(new FakeClient([]));
+    expect(
+      await runPiWorkCli(
+        ["topic", "create-child", "--name", "Child"],
+        missingStartPoint.dependencies,
+      ),
+    ).toBe(CLI_EXIT.usage);
+    expect(missingStartPoint.stderr()).toContain("--start-point is required");
+
+    const repositoryFlag = harness(new FakeClient([]));
+    expect(
+      await runPiWorkCli(
+        [
+          "topic",
+          "create-child",
+          "--name",
+          "Child",
+          "--start-point",
+          "HEAD",
+          "--repository",
+          "a/b",
+        ],
+        repositoryFlag.dependencies,
+      ),
+    ).toBe(CLI_EXIT.usage);
+    expect(repositoryFlag.stderr()).toContain("Unknown option: --repository");
+
+    const parentFlag = harness(new FakeClient([]));
+    expect(
+      await runPiWorkCli(
+        ["topic", "create", "--name", "Topic", "--parent-topic-id", PARENT_TOPIC_ID],
+        parentFlag.dependencies,
+      ),
+    ).toBe(CLI_EXIT.usage);
+    expect(parentFlag.stderr()).toContain("pi-work topic create-child");
+  });
+
   test("rejects invalid syntax before connecting", async () => {
     let connected = false;
     const item = harness(new FakeClient([]), {
@@ -345,6 +454,9 @@ describe("pi-work CLI provisioning outcomes", () => {
       createTopic: async () => {
         throw conflict;
       },
+      createChildTopic: async () => {
+        throw conflict;
+      },
       confirm: async () => {
         throw new Error("unused");
       },
@@ -368,6 +480,9 @@ describe("pi-work CLI provisioning outcomes", () => {
       createTopic: async () => {
         throw new Error("Work daemon connection closed.");
       },
+      createChildTopic: async () => {
+        throw new Error("unused");
+      },
       confirm: async () => {
         throw new Error("unused");
       },
@@ -388,6 +503,9 @@ describe("pi-work CLI provisioning outcomes", () => {
         new Promise((_resolve, reject) => {
           rejectRequest = reject;
         }),
+      createChildTopic: async () => {
+        throw new Error("unused");
+      },
       confirm: async () => {
         throw new Error("unused");
       },

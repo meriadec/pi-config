@@ -13,10 +13,20 @@ import {
   type WorkRequest,
 } from "../daemon/protocol.ts";
 import { boundMessage } from "../shared/domain.ts";
-import type { TopicCreationRequest, WorkFailureDetails } from "../shared/domain.ts";
+import type {
+  ChildTopicCreationRequest,
+  IntegrationTarget,
+  TopicCreationRequest,
+  WorkFailureDetails,
+} from "../shared/domain.ts";
 import type { MainAgentActionResult, WorkspaceActionResult } from "../daemon/desktop.ts";
 import type { MainAgentLease } from "../daemon/main-agent.ts";
-import type { TopicMutationResult, WorkActionResult } from "../daemon/topic-service.ts";
+import type {
+  LegacyMigrationApplyResult,
+  LegacyMigrationPreviewResult,
+  TopicMutationResult,
+  WorkActionResult,
+} from "../daemon/topic-service.ts";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -100,6 +110,19 @@ export class WorkClient {
     ) as Promise<TopicMutationResult>;
   }
 
+  createChildTopic(
+    input: ChildTopicCreationRequest,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
+    return this.request(
+      "topic.create-child",
+      { input },
+      timeoutMs,
+      requestId,
+    ) as Promise<TopicMutationResult>;
+  }
+
   retryTopic(
     topicId: string,
     requestId?: string,
@@ -166,6 +189,87 @@ export class WorkClient {
       timeoutMs,
       requestId,
     ) as Promise<TopicMutationResult>;
+  }
+
+  changeTopicParent(
+    topicId: string,
+    parentTopicId: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
+    return this.request(
+      "topic.change-parent",
+      { topicId, parentTopicId },
+      timeoutMs,
+      requestId,
+    ) as Promise<TopicMutationResult>;
+  }
+
+  removeTopicParent(
+    topicId: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
+    return this.request(
+      "topic.remove-parent",
+      { topicId },
+      timeoutMs,
+      requestId,
+    ) as Promise<TopicMutationResult>;
+  }
+
+  moveTopicInChain(
+    topicId: string,
+    target: IntegrationTarget,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
+    return this.request(
+      "topic.move-in-chain",
+      { topicId, target },
+      timeoutMs,
+      requestId,
+    ) as Promise<TopicMutationResult>;
+  }
+
+  resetIntegrationTargets(
+    topicId: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
+    return this.request(
+      "topic.reset-chain",
+      { topicId },
+      timeoutMs,
+      requestId,
+    ) as Promise<TopicMutationResult>;
+  }
+
+  /** Builds the read-only legacy migration preview. It never writes and never runs Git. */
+  previewLegacyMigration(
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<LegacyMigrationPreviewResult> {
+    return this.request(
+      "migration.preview",
+      {},
+      timeoutMs,
+      requestId,
+    ) as Promise<LegacyMigrationPreviewResult>;
+  }
+
+  /** Applies the approved families of a preview. Metadata only; no Branch or Worktree call. */
+  applyLegacyMigration(
+    parentTopicIds?: readonly string[],
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<LegacyMigrationApplyResult> {
+    return this.request(
+      "migration.apply",
+      parentTopicIds === undefined ? {} : { parentTopicIds },
+      timeoutMs,
+      requestId,
+    ) as Promise<LegacyMigrationApplyResult>;
   }
 
   accessWorkspace(

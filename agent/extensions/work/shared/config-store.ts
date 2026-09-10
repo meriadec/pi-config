@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { ACTION_IDS, WorkDataError, boundMessage, parseWorkConfig } from "./domain.ts";
-import type { ActionPolicyMap, WorkConfig } from "./domain.ts";
+import type { ActionPolicyMap, RepositoryRecipe, WorkConfig } from "./domain.ts";
 import { writeJsonAtomic } from "./atomic-json.ts";
 import type { WorkPaths } from "./paths.ts";
 
@@ -93,7 +93,7 @@ function mergeConfig(
 
 function mergeRecipes(
   raw: Record<string, unknown>,
-  current: Record<string, { setupCommands: string[]; basePath?: string }>,
+  current: Record<string, RepositoryRecipe>,
 ): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(current).map(([key, recipe]) => {
@@ -103,6 +103,8 @@ function mergeRecipes(
       };
       if (recipe.basePath === undefined) delete merged["basePath"];
       else merged["basePath"] = recipe.basePath;
+      if (recipe.integrationBranch === undefined) delete merged["integrationBranch"];
+      else merged["integrationBranch"] = recipe.integrationBranch;
       return [key, merged];
     }),
   );

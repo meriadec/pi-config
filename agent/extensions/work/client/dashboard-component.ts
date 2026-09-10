@@ -8,8 +8,18 @@ import {
   type TUI,
 } from "@earendil-works/pi-tui";
 import type { DaemonSnapshot, WorkEvent } from "../daemon/protocol.ts";
-import type { NewTopic } from "../shared/domain.ts";
-import type { TopicMutationResult, WorkActionResult } from "../daemon/topic-service.ts";
+import type { IntegrationTarget, NewTopic } from "../shared/domain.ts";
+import {
+  resolveChildTopicCreationInput,
+  type ChildTopicCreationInput,
+  type ResolvedChildTopicCreationInput,
+} from "./topic-creation.ts";
+import type {
+  LegacyMigrationApplyResult,
+  LegacyMigrationPreviewResult,
+  TopicMutationResult,
+  WorkActionResult,
+} from "../daemon/topic-service.ts";
 import type { MainAgentActionResult, WorkspaceActionResult } from "../daemon/desktop.ts";
 import {
   handleDashboardInput,
@@ -28,6 +38,7 @@ import {
   updateWizardField,
   updateRenameField,
   updateNoteField,
+  openMigrationPreview,
 } from "./dashboard.ts";
 
 export interface DashboardClient {
@@ -39,6 +50,11 @@ export interface DashboardClient {
   ): Promise<DaemonSnapshot | void>;
   createTopic(
     input: NewTopic,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult>;
+  createChildTopic(
+    input: ResolvedChildTopicCreationInput,
     requestId?: string,
     timeoutMs?: number,
   ): Promise<TopicMutationResult>;
@@ -66,6 +82,37 @@ export interface DashboardClient {
     requestId?: string,
     timeoutMs?: number,
   ): Promise<TopicMutationResult>;
+  changeTopicParent(
+    topicId: string,
+    parentTopicId: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult>;
+  removeTopicParent(
+    topicId: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult>;
+  moveTopicInChain(
+    topicId: string,
+    target: IntegrationTarget,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult>;
+  resetIntegrationTargets(
+    topicId: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult>;
+  previewLegacyMigration(
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<LegacyMigrationPreviewResult>;
+  applyLegacyMigration(
+    parentTopicIds?: readonly string[],
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<LegacyMigrationApplyResult>;
   accessWorkspace(
     topicId: string,
     requestId?: string,
@@ -99,6 +146,8 @@ export interface DashboardComponentOptions {
   done: () => void;
   setInterval?: typeof globalThis.setInterval;
   clearInterval?: typeof globalThis.clearInterval;
+  /** Resolves child Start Points through Git; the local resolver is the default. */
+  resolveChildInput?: typeof resolveChildTopicCreationInput;
 }
 
 /** Owns the dashboard client subscription for one full-screen /work view. */
@@ -253,7 +302,7 @@ export class WorkDashboardComponent implements Component, Focusable {
     if (this.wizardInputStage === wizard.stage && this.wizardInput !== undefined) return;
     const input = new Input();
     input.focused = this.focused;
-    input.handleInput(wizard[wizard.stage]);
+    input.handleInput(wizard[wizard.stage] ?? "");
     this.wizardInput = input;
     this.wizardInputStage = wizard.stage;
   }
@@ -324,6 +373,8 @@ export class WorkDashboardComponent implements Component, Focusable {
       this.hasConnected = true;
       this.reconnectDelayMs = 100;
       this.options.tui.requestRender();
+      // Opening the dashboard re-observes daemon state once, without any polling of its own.
+      void client.refresh().catch(() => undefined);
       if (this.mutations.size > 0) {
         for (const mutation of this.mutations.values()) void this.executeMutation(mutation, client);
       }
@@ -385,7 +436,11 @@ export class WorkDashboardComponent implements Component, Focusable {
 
   private async executeMutation(mutation: PendingMutation, client: DashboardClient): Promise<void> {
     try {
-      const result = await requestMutation(client, mutation);
+      const result = await requestMutation(
+        client,
+        mutation,
+        this.options.resolveChildInput ?? resolveChildTopicCreationInput,
+      );
       if (this.disposed || this.mutations.get(mutation.key) !== mutation) return;
       this.mutations.delete(mutation.key);
       this.applyMutationResult(result, mutation.action, mutation.key);
@@ -404,6 +459,11 @@ export class WorkDashboardComponent implements Component, Focusable {
     action: DashboardAction,
     key: string,
   ): void {
+    if ("status" in result && result.status === "migration-preview") {
+      this.state = openMigrationPreview(withoutSubmission(this.state, key), result.preview);
+      this.options.tui.requestRender();
+      return;
+    }
     if ("status" in result && result.status === "confirmation-required") {
       this.state = {
         ...withoutSubmission(this.state, key),
@@ -529,11 +589,14 @@ const SHIMMER_INTERVAL_MS = 80;
 function requestMutation(
   client: DashboardClient,
   mutation: PendingMutation,
+  resolveChildInput: typeof resolveChildTopicCreationInput,
 ): Promise<WorkActionResult> {
   const { action } = mutation;
   switch (action.type) {
     case "create":
       return client.createTopic(action.input, mutation.requestId, MUTATION_TIMEOUT_MS);
+    case "create-child":
+      return createChildTopic(client, action.input, mutation.requestId, resolveChildInput);
     case "retry":
       return client.retryTopic(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
     case "rename":
@@ -569,11 +632,55 @@ function requestMutation(
       return client.openPullRequest(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
     case "delete":
       return client.deleteTopic(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
+    case "change-parent":
+      return client.changeTopicParent(
+        action.topicId,
+        action.parentTopicId,
+        mutation.requestId,
+        MUTATION_TIMEOUT_MS,
+      );
+    case "remove-parent":
+      return client.removeTopicParent(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
+    case "move-in-chain":
+      return client.moveTopicInChain(
+        action.topicId,
+        action.target,
+        mutation.requestId,
+        MUTATION_TIMEOUT_MS,
+      );
+    case "reset-chain":
+      return client.resetIntegrationTargets(
+        action.topicId,
+        mutation.requestId,
+        MUTATION_TIMEOUT_MS,
+      );
+    case "migrate-legacy-preview":
+      return client.previewLegacyMigration(mutation.requestId, MUTATION_TIMEOUT_MS);
+    case "migrate-legacy":
+      return client.applyLegacyMigration(
+        action.parentTopicIds,
+        mutation.requestId,
+        MUTATION_TIMEOUT_MS,
+      );
     case "confirm":
       return client.confirm(action.token, mutation.requestId, MUTATION_TIMEOUT_MS);
     case "reject":
       return client.reject(action.token, mutation.requestId, MUTATION_TIMEOUT_MS);
   }
+}
+
+/**
+ * Resolves the wizard Start Point against the Parent Topic Worktree, then submits the child
+ * to workd. A Git resolution failure fails the submission with its bounded explanation.
+ */
+async function createChildTopic(
+  client: DashboardClient,
+  input: ChildTopicCreationInput,
+  requestId: string,
+  resolveChildInput: typeof resolveChildTopicCreationInput,
+): Promise<WorkActionResult> {
+  const resolved = await resolveChildInput(input);
+  return client.createChildTopic(resolved, requestId, MUTATION_TIMEOUT_MS);
 }
 
 function withoutSubmission(state: DashboardState, key: string, message?: string): DashboardState {
@@ -595,6 +702,15 @@ function actionResultMessage(result: WorkActionResult): string {
       return result.topic.focused
         ? `Focused Topic ${result.topic.name}.`
         : `Unfocused Topic ${result.topic.name}.`;
+    case "chain-changed":
+      return `Integration Chain of Topic ${result.topic.name} updated.`;
+    case "migration-preview":
+      return "Legacy migration preview.";
+    case "migration-applied": {
+      const applied = result.appliedParentTopicIds.length;
+      const kept = result.skipped.length;
+      return `Migrated ${applied} legacy famil${applied === 1 ? "y" : "ies"}; ${kept} Topic${kept === 1 ? "" : "s"} unchanged.`;
+    }
     case "deleted":
       return "Topic deleted.";
     case "rejected":

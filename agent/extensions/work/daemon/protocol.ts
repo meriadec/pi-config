@@ -2,16 +2,20 @@ import { isAbsolute } from "node:path";
 import { boundMessage } from "../shared/domain.ts";
 import type {
   ActionId,
+  ChildTopicCreationRequest,
+  IntegrationTarget,
   PullRequestRef,
   TopicCreationRequest,
   TopicManifest,
+  TopicStartPoint,
   WorkFailureDetails,
 } from "../shared/domain.ts";
 import type { TopicDiagnostic } from "../shared/topic-store.ts";
+import type { IntegrationStatus } from "./integration-status.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 14 as const;
+export const WORK_PROTOCOL_VERSION = 19 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 
@@ -21,6 +25,13 @@ export type RequestAction =
   | "subscribe"
   | "refresh"
   | "topic.create"
+  | "topic.create-child"
+  | "topic.change-parent"
+  | "topic.remove-parent"
+  | "topic.move-in-chain"
+  | "topic.reset-chain"
+  | "migration.preview"
+  | "migration.apply"
   | "topic.retry"
   | "topic.rename"
   | "topic.set-note"
@@ -51,6 +62,13 @@ interface RequestBase {
 export type WorkRequest =
   | (RequestBase & { action: "ping" | "snapshot" | "subscribe" | "refresh" })
   | (RequestBase & { action: "topic.create"; input: TopicCreationRequest })
+  | (RequestBase & { action: "topic.create-child"; input: ChildTopicCreationRequest })
+  | (RequestBase & {
+      action: "topic.change-parent";
+      topicId: string;
+      parentTopicId: string;
+    })
+  | (RequestBase & { action: "topic.move-in-chain"; topicId: string; target: IntegrationTarget })
   | (RequestBase & { action: "topic.rename"; topicId: string; name: string })
   | (RequestBase & { action: "topic.set-note"; topicId: string; note: string })
   | (RequestBase & { action: "topic.set-focus"; topicId: string; focused: boolean })
@@ -58,6 +76,8 @@ export type WorkRequest =
       action:
         | "topic.retry"
         | "topic.delete"
+        | "topic.remove-parent"
+        | "topic.reset-chain"
         | "workspace.access"
         | "terminal.open"
         | "agent.open"
@@ -82,6 +102,8 @@ export type WorkRequest =
         | "agent.waiting"
         | "agent.stopped";
     })
+  | (RequestBase & { action: "migration.preview" })
+  | (RequestBase & { action: "migration.apply"; parentTopicIds?: readonly string[] })
   | (RequestBase & { action: "action.confirm" | "action.reject"; token: string });
 
 export interface PingResult {
@@ -99,10 +121,16 @@ export interface DaemonSnapshot {
   /** Sorted `owner/repo` keys declared in config, offered as add-topic completions. */
   knownRepositories?: readonly string[];
   baseCheckouts?: Readonly<Record<string, string>>;
+  /** Configured Integration Branch per `owner/repo`, absent while none is inferred yet. */
+  integrationBranches?: Readonly<Record<string, string>>;
+  /** Observed Integration Status per Topic id, absent while no observer runs. */
+  integrationStatuses?: Readonly<Record<string, IntegrationStatus>>;
   deniedActions?: Readonly<Record<string, readonly ActionId[]>>;
   pullRequests?: Readonly<Record<string, PullRequestRef>>;
   /** Topic ids whose recorded Worktree path is not an existing directory. */
   orphanedTopicIds?: readonly string[];
+  /** Unresolved legacy ` > ` name families, detected by name only and never changed. */
+  legacyFamilies?: number;
   daemon: {
     protocolVersion: typeof WORK_PROTOCOL_VERSION;
     pid: number;
@@ -241,30 +269,8 @@ export function parseRequest(text: string): WorkRequest {
     case "topic.create": {
       const topic = record(value["input"], id);
       exactKeys(topic, ["name", "branch", "repository", "startPoint"], id);
-      const startPoint = topic["startPoint"];
-      let parsedStartPoint: TopicCreationRequest["startPoint"];
-      if (startPoint !== undefined) {
-        const point = record(startPoint, id, "Start Point must be an object.");
-        exactKeys(point, ["commit", "sourceCheckout"], id);
-        const commit = boundedString(point["commit"], 40, "Start Point commit is invalid.", id);
-        if (!/^[0-9a-f]{40}$/i.test(commit)) {
-          throw new ProtocolError(
-            "invalid-arguments",
-            "Start Point commit must be a full SHA.",
-            id,
-          );
-        }
-        const sourceCheckout = boundedString(
-          point["sourceCheckout"],
-          1_000,
-          "Source checkout is invalid.",
-          id,
-        );
-        if (!isAbsolute(sourceCheckout)) {
-          throw new ProtocolError("invalid-arguments", "Source checkout must be absolute.", id);
-        }
-        parsedStartPoint = { commit, sourceCheckout };
-      }
+      const startPoint =
+        topic["startPoint"] === undefined ? undefined : parseStartPoint(topic["startPoint"], id);
       return {
         ...base,
         action: "topic.create",
@@ -282,8 +288,56 @@ export function parseRequest(text: string): WorkRequest {
             "Topic repository is required.",
             id,
           ),
-          ...(parsedStartPoint === undefined ? {} : { startPoint: parsedStartPoint }),
+          ...(startPoint === undefined ? {} : { startPoint }),
         },
+      };
+    }
+    case "topic.create-child": {
+      const child = record(value["input"], id);
+      exactKeys(child, ["parentTopicId", "name", "branch", "startPoint"], id);
+      return {
+        ...base,
+        action: "topic.create-child",
+        input: {
+          parentTopicId: shortString(
+            child["parentTopicId"],
+            "invalid-arguments",
+            "Parent Topic id is required.",
+            id,
+          ),
+          name: shortString(child["name"], "invalid-arguments", "Topic name is required.", id),
+          ...(child["branch"] === undefined
+            ? {}
+            : {
+                branch: shortString(
+                  child["branch"],
+                  "invalid-arguments",
+                  "Topic branch is invalid.",
+                  id,
+                ),
+              }),
+          startPoint: parseStartPoint(child["startPoint"], id),
+        },
+      };
+    }
+    case "migration.preview":
+      return { ...base, action: "migration.preview" };
+    case "migration.apply": {
+      const requested = value["parentTopicIds"];
+      if (requested === undefined) return { ...base, action: "migration.apply" };
+      if (!Array.isArray(requested) || requested.length > 100) {
+        throw new ProtocolError(
+          "invalid-arguments",
+          "Parent Topic ids must be an array of at most 100 ids.",
+          id,
+        );
+      }
+      return {
+        ...base,
+        action: "migration.apply",
+        parentTopicIds: requested.map((entry) =>
+          shortString(entry, "invalid-arguments", "Parent Topic id is required.", id),
+        ),
       };
     }
     case "topic.rename":
@@ -315,8 +369,29 @@ export function parseRequest(text: string): WorkRequest {
         topicId: shortString(value["topicId"], "invalid-arguments", "Topic id is required.", id),
         focused: value["focused"],
       };
+    case "topic.change-parent":
+      return {
+        ...base,
+        action: "topic.change-parent",
+        topicId: shortString(value["topicId"], "invalid-arguments", "Topic id is required.", id),
+        parentTopicId: shortString(
+          value["parentTopicId"],
+          "invalid-arguments",
+          "Parent Topic id is required.",
+          id,
+        ),
+      };
+    case "topic.move-in-chain":
+      return {
+        ...base,
+        action: "topic.move-in-chain",
+        topicId: shortString(value["topicId"], "invalid-arguments", "Topic id is required.", id),
+        target: parseIntegrationTarget(value["target"], id),
+      };
     case "topic.retry":
     case "topic.delete":
+    case "topic.remove-parent":
+    case "topic.reset-chain":
     case "workspace.access":
     case "terminal.open":
     case "agent.open":
@@ -475,12 +550,61 @@ function exactKeys(
   value: Record<string, unknown>,
   allowed: readonly string[],
   requestId: string,
+  message = "Topic creation input has unknown fields.",
 ): void {
   if (Object.keys(value).some((key) => !allowed.includes(key))) {
+    throw new ProtocolError("invalid-arguments", message, requestId);
+  }
+}
+
+/** Parses one explicit Integration Target: the Integration Branch or one family Topic. */
+function parseIntegrationTarget(input: unknown, requestId: string): IntegrationTarget {
+  const target = record(input, requestId, "Integration Target must be an object.");
+  exactKeys(target, ["kind", "topicId"], requestId, "Integration Target has unknown fields.");
+  if (target["kind"] === "integration-branch") {
+    if (target["topicId"] !== undefined) {
+      throw new ProtocolError(
+        "invalid-arguments",
+        "The Integration Branch target names no Topic.",
+        requestId,
+      );
+    }
+    return { kind: "integration-branch" };
+  }
+  if (target["kind"] !== "topic") {
+    throw new ProtocolError("invalid-arguments", "Integration Target kind is invalid.", requestId);
+  }
+  return {
+    kind: "topic",
+    topicId: shortString(
+      target["topicId"],
+      "invalid-arguments",
+      "Integration Target Topic id is required.",
+      requestId,
+    ),
+  };
+}
+
+/** Parses the exact creation-only Start Point of a Topic or child Topic. */
+function parseStartPoint(input: unknown, requestId: string): TopicStartPoint {
+  const point = record(input, requestId, "Start Point must be an object.");
+  exactKeys(point, ["commit", "sourceCheckout"], requestId);
+  const commit = boundedString(point["commit"], 40, "Start Point commit is invalid.", requestId);
+  if (!/^[0-9a-f]{40}$/i.test(commit)) {
     throw new ProtocolError(
       "invalid-arguments",
-      "Topic creation input has unknown fields.",
+      "Start Point commit must be a full SHA.",
       requestId,
     );
   }
+  const sourceCheckout = boundedString(
+    point["sourceCheckout"],
+    1_000,
+    "Source checkout is invalid.",
+    requestId,
+  );
+  if (!isAbsolute(sourceCheckout)) {
+    throw new ProtocolError("invalid-arguments", "Source checkout must be absolute.", requestId);
+  }
+  return { commit, sourceCheckout };
 }

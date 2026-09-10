@@ -8,7 +8,7 @@ import {
   parseRepository,
   parseTopicManifest,
 } from "./domain.ts";
-import type { NewTopic, TopicManifest } from "./domain.ts";
+import type { NewTopic, NewTopicPlacement, TopicManifest } from "./domain.ts";
 import type { WorkPaths } from "./paths.ts";
 
 export interface TopicDiagnostic {
@@ -30,7 +30,8 @@ export interface TopicStoreOptions {
 export interface TopicStore {
   list(): Promise<TopicHydration>;
   load(id: string): Promise<TopicManifest>;
-  create(topic: NewTopic): Promise<TopicManifest>;
+  /** Creates a Topic, optionally with the durable chain placement of a pending child. */
+  create(topic: NewTopic, placement?: NewTopicPlacement): Promise<TopicManifest>;
   delete(id: string): Promise<TopicManifest>;
   update(
     id: string,
@@ -107,7 +108,7 @@ export function createTopicStore(paths: WorkPaths, options: TopicStoreOptions = 
   return {
     list,
     load,
-    async create(input) {
+    async create(input, placement) {
       return serialize("$uniqueness", async () => {
         parseRepository(input.repository);
         if (input.name.length === 0 || input.branch.length === 0) {
@@ -133,6 +134,7 @@ export function createTopicStore(paths: WorkPaths, options: TopicStoreOptions = 
             },
             worktreePath: null,
             focused: true,
+            ...(placement === undefined ? {} : placement),
             mainAgent: { sessionId: id, sessionFile: null },
             createdAt: timestamp,
             updatedAt: timestamp,

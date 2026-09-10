@@ -10,15 +10,20 @@ import type { DaemonSnapshot, WorkEvent } from "../daemon/protocol.ts";
 import type { MainAgentLease } from "../daemon/main-agent.ts";
 import type { TopicOperation } from "../daemon/topic-service.ts";
 import {
+  boundMessage,
   isValidBranchName,
   normalizeTopicNote,
   parseRepository,
   pullRequestStatus,
   type MainAgentState,
+  type IntegrationTarget,
   type PullRequestRef,
   type TopicManifest,
 } from "../shared/domain.ts";
 import type { TopicDiagnostic } from "../shared/topic-store.ts";
+import { displayChildOrder } from "../shared/integration-chain.ts";
+import type { LegacyMigrationFamily, LegacyMigrationPreview } from "../shared/legacy-migration.ts";
+import type { IntegrationStatus, IntegrationStatusKind } from "../daemon/integration-status.ts";
 import { defaultBranchForTopicName } from "../shared/topic-creation.ts";
 
 export { defaultBranchForTopicName } from "../shared/topic-creation.ts";
@@ -26,13 +31,20 @@ export { defaultBranchForTopicName } from "../shared/topic-creation.ts";
 export type DashboardPhase = "loading" | "connected" | "reconnecting" | "failure";
 export type DashboardFocus = "list" | "detail" | "actions";
 
-export type TopicWizardStage = "name" | "branch" | "repository" | "review";
+export type TopicWizardStage = "name" | "startPoint" | "branch" | "repository" | "review";
 
 export interface TopicWizardState {
   stage: TopicWizardStage;
   name: string;
   branch: string;
   repository: string;
+  /**
+   * Parent Topic of a child-creation wizard. Absent means the add-topic wizard, which
+   * asks for a repository instead of a Parent Topic and a Start Point.
+   */
+  parentTopicId?: string;
+  /** Local Git revision of the Parent Topic Branch at which a child Topic starts. */
+  startPoint?: string;
   /** Highlighted row in the Known repository completion list, or undefined when none is. */
   repositoryHighlight?: number;
   error?: string;
@@ -64,8 +76,40 @@ export type TopicActionId =
   | "pull-request"
   | "rename"
   | "note"
+  | "add-child"
+  | "change-parent"
+  | "remove-parent"
+  | "move-in-chain"
+  | "reset-chain"
+  | "migrate-legacy"
   | "retry"
   | "delete";
+
+/**
+ * The open, read-only legacy migration preview. It lists every proposed Parent Topic and
+ * Integration Target and every skipped Topic, and it writes nothing until it is approved.
+ */
+export interface MigrationPreviewState {
+  preview: LegacyMigrationPreview;
+  /** First rendered preview line, so a long preview stays scrollable. */
+  offset: number;
+}
+
+/**
+ * The open chain target chooser of one Topic. It lists only Topics that the daemon can
+ * accept, and it never edits Git; Enter submits one durable chain change.
+ */
+export interface ChainPickerState {
+  topicId: string;
+  kind: "change-parent" | "move-in-chain";
+  index: number;
+}
+
+/** One offered chain target. An absent `topicId` names the repository Integration Branch. */
+export interface ChainPickerOption {
+  label: string;
+  topicId?: string;
+}
 
 export interface DashboardState {
   phase: DashboardPhase;
@@ -82,14 +126,23 @@ export interface DashboardState {
   /** Sorted `owner/repo` completions offered in the add-topic repository stage. */
   knownRepositories: readonly string[];
   pullRequests: Readonly<Record<string, PullRequestRef>>;
+  /** Observed Integration Status per Topic id; an absent entry renders as Unknown. */
+  integrationStatuses: Readonly<Record<string, IntegrationStatus>>;
+  /** Configured Integration Branch per `owner/repo`, absent while none is inferred yet. */
+  integrationBranches: Readonly<Record<string, string>>;
   unavailableActions: Readonly<Record<string, readonly TopicActionId[]>>;
   /** Topic ids whose recorded Worktree directory is missing. */
   orphanedTopicIds: readonly string[];
+  /** Unresolved legacy name families that the daemon detected without changing them. */
+  legacyFamilies: number;
   /** Animation cursor for active-status shimmers. Advanced by a UI timer only. */
   shimmerPhase: number;
   wizard?: TopicWizardState;
   rename?: TopicRenameState;
   note?: TopicNoteState;
+  chainPicker?: ChainPickerState;
+  /** The open legacy migration preview, which needs explicit approval before any write. */
+  migration?: MigrationPreviewState;
   confirmation?: DashboardConfirmation;
   /**
    * In-flight client submissions keyed by submission key: a Topic id for a
@@ -127,8 +180,11 @@ export function initialDashboardState(): DashboardState {
     baseCheckouts: {},
     knownRepositories: [],
     pullRequests: {},
+    integrationStatuses: {},
+    integrationBranches: {},
     unavailableActions: {},
     orphanedTopicIds: [],
+    legacyFamilies: 0,
     shimmerPhase: 0,
     submissions: {},
   };
@@ -186,9 +242,12 @@ export function hydrateDashboard(state: DashboardState, snapshot: DaemonSnapshot
       ? [...snapshot.knownRepositories]
       : state.knownRepositories,
     pullRequests: { ...(snapshot.pullRequests ?? state.pullRequests) },
+    integrationStatuses: { ...(snapshot.integrationStatuses ?? state.integrationStatuses) },
+    integrationBranches: { ...(snapshot.integrationBranches ?? state.integrationBranches) },
     orphanedTopicIds: snapshot.orphanedTopicIds
       ? [...snapshot.orphanedTopicIds]
       : state.orphanedTopicIds,
+    legacyFamilies: snapshot.legacyFamilies ?? state.legacyFamilies,
     unavailableActions: snapshot.deniedActions
       ? Object.fromEntries(
           Object.entries(snapshot.deniedActions).map(([topicId, actions]) => [
@@ -220,11 +279,13 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
       const workspaces = { ...state.workspaces };
       const baseCheckouts = { ...state.baseCheckouts };
       const pullRequests = { ...state.pullRequests };
+      const integrationStatuses = { ...state.integrationStatuses };
       const unavailableActions = { ...state.unavailableActions };
       const orphanedTopicIds = state.orphanedTopicIds.filter((id) => id !== event.topicId);
       delete workspaces[event.topicId];
       delete baseCheckouts[event.topicId];
       delete pullRequests[event.topicId];
+      delete integrationStatuses[event.topicId];
       delete unavailableActions[event.topicId];
       return stabilizeSelection(
         {
@@ -233,6 +294,7 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
           workspaces,
           baseCheckouts,
           pullRequests,
+          integrationStatuses,
           unavailableActions,
           orphanedTopicIds,
         },
@@ -243,6 +305,13 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
       return {
         ...state,
         diagnostics: upsertDiagnostic(state.diagnostics, event.diagnostic),
+      };
+    case "diagnostic-cleared":
+      return {
+        ...state,
+        diagnostics: state.diagnostics.filter(
+          (item) => item.topicId !== event.topicId || item.code !== event.code,
+        ),
       };
     case "operation-changed":
       return {
@@ -279,6 +348,11 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
       else orphanedTopicIds.delete(event.topicId);
       return { ...state, orphanedTopicIds: [...orphanedTopicIds] };
     }
+    case "integration-status-changed":
+      return {
+        ...state,
+        integrationStatuses: { ...state.integrationStatuses, [event.topicId]: event.status },
+      };
     case "daemon-stopping":
       return {
         ...state,
@@ -315,8 +389,24 @@ export type DashboardAction =
         | "agent"
         | "reset-agent"
         | "pull-request"
-        | "delete";
+        | "delete"
+        | "remove-parent"
+        | "reset-chain";
       topicId: string;
+    }
+  | { type: "change-parent"; topicId: string; parentTopicId: string }
+  | { type: "migrate-legacy-preview" }
+  | { type: "migrate-legacy"; parentTopicIds: readonly string[] }
+  | { type: "move-in-chain"; topicId: string; target: IntegrationTarget }
+  | {
+      type: "create-child";
+      input: {
+        parentTopicId: string;
+        name: string;
+        startPoint: string;
+        sourceCheckout: string;
+        branch?: string;
+      };
     }
   | { type: "rename"; topicId: string; name: string }
   | { type: "set-note"; topicId: string; note: string }
@@ -330,6 +420,7 @@ export type SubmissionAction = DashboardAction["type"];
 export function submissionKey(action: DashboardAction): string {
   switch (action.type) {
     case "create":
+    case "create-child":
       return "create";
     case "set-focus":
       // Key by target state so a rapid Unfocus then Focus of one Topic never coalesce.
@@ -337,6 +428,9 @@ export function submissionKey(action: DashboardAction): string {
     case "confirm":
     case "reject":
       return `confirm:${action.token}`;
+    case "migrate-legacy-preview":
+    case "migrate-legacy":
+      return "migrate-legacy";
     default:
       return action.topicId;
   }
@@ -360,6 +454,8 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
   if (state.confirmation !== undefined) return handleConfirmationInput(state, data);
   if (state.rename !== undefined) return handleRenameInput(state, data);
   if (state.note !== undefined) return handleNoteInput(state, data);
+  if (state.chainPicker !== undefined) return handleChainPickerInput(state, data);
+  if (state.migration !== undefined) return handleMigrationInput(state, data);
   if (state.wizard !== undefined) return handleWizardInput(state, data);
   if ((data === "a" || data === "A") && state.submissions["create"] === undefined) {
     return {
@@ -367,7 +463,7 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
         ...state,
         sidebarOpen: false,
         focus: "list",
-        wizard: { stage: "name", name: "", branch: "", repository: "" },
+        wizard: { stage: "name", name: "", branch: "", repository: "", startPoint: "" },
       },
       exit: false,
     };
@@ -418,6 +514,10 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
       if (action === undefined || action.unavailable) return { state, exit: false };
       if (action.id === "rename") return openRenamePrompt(state);
       if (action.id === "note") return openNotePrompt(state);
+      if (action.id === "add-child") return openChildWizard(state);
+      if (action.id === "change-parent" || action.id === "move-in-chain") {
+        return openChainPicker(state, action.id);
+      }
       return invokeTopicAction(state, action);
     }
     return openActionRail(state);
@@ -436,10 +536,14 @@ export function isValidRepositoryInput(repository: string): boolean {
 
 function handleWizardInput(state: DashboardState, data: string): DashboardInputResult {
   const wizard = state.wizard!;
+  const child = wizard.parentTopicId !== undefined;
   if (matchesKey(data, Key.escape)) {
     const { wizard: _wizard, ...rest } = state;
     return {
-      state: { ...rest, message: "Topic creation cancelled." },
+      state: {
+        ...rest,
+        message: child ? "Child Topic creation cancelled." : "Topic creation cancelled.",
+      },
       exit: false,
     };
   }
@@ -454,10 +558,23 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
           ...state,
           wizard: clearWizardError({
             ...wizard,
-            stage: "repository",
+            stage: child ? "startPoint" : "repository",
             name,
             branch,
           }),
+        },
+        exit: false,
+      };
+    }
+    if (wizard.stage === "startPoint") {
+      const startPoint = (wizard.startPoint ?? "").trim();
+      if (startPoint.length === 0) {
+        return wizardError(state, "Start Point must name one commit of the Parent Topic Branch.");
+      }
+      return {
+        state: {
+          ...state,
+          wizard: clearWizardError({ ...wizard, stage: "branch", startPoint }),
         },
         exit: false,
       };
@@ -477,8 +594,10 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
     }
     if (wizard.stage === "branch") {
       const branch = wizard.branch.trim();
-      if (!isValidBranchName(branch))
+      // A child Branch is optional: an empty value leaves the name-to-Branch conversion to workd.
+      if (!(child && branch.length === 0) && !isValidBranchName(branch)) {
         return wizardError(state, "Enter a valid non-empty Git branch name.");
+      }
       return {
         state: {
           ...state,
@@ -488,27 +607,11 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
       };
     }
     if (state.submissions["create"] !== undefined) return { state, exit: false };
-    const { wizard: _wizard, ...rest } = state;
-    return {
-      state: {
-        ...rest,
-        submissions: { ...rest.submissions, create: "create" },
-        message: `Creating ${wizard.repository} · ${wizard.branch}…`,
-      },
-      exit: false,
-      action: {
-        type: "create",
-        input: {
-          name: wizard.name,
-          branch: wizard.branch,
-          repository: wizard.repository,
-        },
-      },
-    };
+    return child ? submitChildWizard(state, wizard) : submitTopicWizard(state, wizard);
   }
   if (wizard.stage === "review") return { state, exit: false };
   const field = wizard.stage;
-  const current = wizard[field];
+  const current = wizard[field] ?? "";
   let next = current;
   if (matchesKey(data, Key.backspace) || data === "\x7f") next = [...current].slice(0, -1).join("");
   else if (isPrintableInput(data)) next += data;
@@ -516,6 +619,58 @@ function handleWizardInput(state: DashboardState, data: string): DashboardInputR
   return {
     state: updateWizardField(state, next),
     exit: false,
+  };
+}
+
+function submitTopicWizard(state: DashboardState, wizard: TopicWizardState): DashboardInputResult {
+  const { wizard: _wizard, ...rest } = state;
+  return {
+    state: {
+      ...rest,
+      submissions: { ...rest.submissions, create: "create" },
+      message: `Creating ${wizard.repository} · ${wizard.branch}…`,
+    },
+    exit: false,
+    action: {
+      type: "create",
+      input: {
+        name: wizard.name,
+        branch: wizard.branch,
+        repository: wizard.repository,
+      },
+    },
+  };
+}
+
+/**
+ * Submits the child wizard against the Parent Topic Worktree, which is the checkout that
+ * resolves the Start Point. A Parent Topic without a Worktree keeps the wizard open.
+ */
+function submitChildWizard(state: DashboardState, wizard: TopicWizardState): DashboardInputResult {
+  const parent = state.topics.find((item) => item.id === wizard.parentTopicId);
+  const sourceCheckout = parent?.worktreePath ?? undefined;
+  if (parent === undefined || sourceCheckout === undefined) {
+    return wizardError(state, "The Parent Topic Worktree is not available.");
+  }
+  const branch = wizard.branch.trim();
+  const { wizard: _wizard, ...rest } = state;
+  return {
+    state: {
+      ...rest,
+      submissions: { ...rest.submissions, create: "create-child" },
+      message: `Creating child Topic ${wizard.name} of ${parent.name}…`,
+    },
+    exit: false,
+    action: {
+      type: "create-child",
+      input: {
+        parentTopicId: parent.id,
+        name: wizard.name,
+        startPoint: (wizard.startPoint ?? "").trim(),
+        sourceCheckout,
+        ...(branch.length === 0 ? {} : { branch }),
+      },
+    },
   };
 }
 
@@ -587,6 +742,33 @@ export function applyRepositoryCompletion(state: DashboardState): {
       }),
     },
     value: chosen,
+  };
+}
+
+/**
+ * Opens the child wizard on the selected Parent Topic. Only a root Topic with a Worktree can
+ * offer it, because the Parent Topic Worktree resolves the Start Point.
+ */
+function openChildWizard(state: DashboardState): DashboardInputResult {
+  const parent = state.topics.find((item) => item.id === state.selectedTopicId);
+  if (parent === undefined || parent.parentTopicId !== undefined || parent.worktreePath === null) {
+    return { state, exit: false };
+  }
+  return {
+    state: {
+      ...state,
+      sidebarOpen: false,
+      focus: "list",
+      wizard: {
+        stage: "name",
+        parentTopicId: parent.id,
+        name: "",
+        branch: "",
+        repository: parent.repository,
+        startPoint: "",
+      },
+    },
+    exit: false,
   };
 }
 
@@ -710,6 +892,113 @@ export function updateNoteField(state: DashboardState, value: string): Dashboard
   return { ...state, note: { ...withoutError, note } };
 }
 
+/**
+ * The chain targets that the selected Topic can take. Change Parent lists every root Topic
+ * of the same repository that can adopt it; Move in Integration Chain lists the repository
+ * Integration Branch and every active sibling, so a target always names one existing edge.
+ */
+export function chainPickerOptions(
+  state: DashboardState,
+  picker: ChainPickerState,
+): readonly ChainPickerOption[] {
+  const topic = state.topics.find((item) => item.id === picker.topicId);
+  if (topic === undefined) return [];
+  if (picker.kind === "change-parent") {
+    return state.topics
+      .filter(
+        (candidate) =>
+          candidate.id !== topic.id &&
+          candidate.repository === topic.repository &&
+          candidate.parentTopicId === undefined &&
+          candidate.id !== topic.parentTopicId &&
+          candidate.setup.state === "ready",
+      )
+      .map((candidate) => ({ label: candidate.name, topicId: candidate.id }));
+  }
+  const parentTopicId = topic.parentTopicId;
+  if (parentTopicId === undefined) return [];
+  const branch = state.integrationBranches[topic.repository] ?? "Integration Branch";
+  const siblings = state.topics.filter(
+    (candidate) =>
+      candidate.parentTopicId === parentTopicId &&
+      candidate.id !== topic.id &&
+      candidate.chainState !== "pending",
+  );
+  return [
+    { label: `${branch} (first in the chain)` },
+    ...siblings.map((sibling) => ({
+      label: `After ${sibling.name}`,
+      topicId: sibling.id,
+    })),
+  ];
+}
+
+/** Opens one chain chooser on the selected Topic, or keeps the state when none is offered. */
+function openChainPicker(
+  state: DashboardState,
+  kind: ChainPickerState["kind"],
+): DashboardInputResult {
+  const topicId = state.selectedTopicId;
+  if (topicId === undefined) return { state, exit: false };
+  const picker: ChainPickerState = { topicId, kind, index: 0 };
+  if (chainPickerOptions(state, picker).length === 0) return { state, exit: false };
+  return {
+    state: { ...state, sidebarOpen: false, focus: "list", chainPicker: picker },
+    exit: false,
+  };
+}
+
+function handleChainPickerInput(state: DashboardState, data: string): DashboardInputResult {
+  const picker = state.chainPicker!;
+  const options = chainPickerOptions(state, picker);
+  if (matchesKey(data, Key.escape) || options.length === 0) {
+    const { chainPicker: _picker, ...rest } = state;
+    return { state: { ...rest, message: "Integration Chain change cancelled." }, exit: false };
+  }
+  if (matchesKey(data, Key.down) || data === "j") {
+    return { state: { ...state, chainPicker: movePicker(picker, options.length, 1) }, exit: false };
+  }
+  if (matchesKey(data, Key.up) || data === "k") {
+    return {
+      state: { ...state, chainPicker: movePicker(picker, options.length, -1) },
+      exit: false,
+    };
+  }
+  if (!matchesKey(data, Key.enter)) return { state, exit: false };
+  if (state.submissions[picker.topicId] !== undefined) return { state, exit: false };
+  const option = options[Math.min(picker.index, options.length - 1)]!;
+  const { chainPicker: _picker, ...rest } = state;
+  if (picker.kind === "change-parent") {
+    const parentTopicId = option.topicId!;
+    return {
+      state: {
+        ...rest,
+        submissions: { ...rest.submissions, [picker.topicId]: "change-parent" },
+        message: `Changing Parent Topic to ${option.label}…`,
+      },
+      exit: false,
+      action: { type: "change-parent", topicId: picker.topicId, parentTopicId },
+    };
+  }
+  const target: IntegrationTarget =
+    option.topicId === undefined
+      ? { kind: "integration-branch" }
+      : { kind: "topic", topicId: option.topicId };
+  return {
+    state: {
+      ...rest,
+      submissions: { ...rest.submissions, [picker.topicId]: "move-in-chain" },
+      message: `Moving in the Integration Chain: ${option.label}…`,
+    },
+    exit: false,
+    action: { type: "move-in-chain", topicId: picker.topicId, target },
+  };
+}
+
+function movePicker(picker: ChainPickerState, count: number, delta: number): ChainPickerState {
+  return { ...picker, index: Math.max(0, Math.min(count - 1, picker.index + delta)) };
+}
+
 function handleConfirmationInput(state: DashboardState, data: string): DashboardInputResult {
   const confirmation = state.confirmation!;
   const key = `confirm:${confirmation.token}`;
@@ -783,19 +1072,19 @@ export function renderDashboard(
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
   if (state.wizard !== undefined) {
-    return renderWizard(
-      state.wizard,
-      safeWidth,
-      safeHeight,
-      state.knownRepositories,
-      wizardInputLine,
-    );
+    return renderWizard(state, state.wizard, safeWidth, safeHeight, wizardInputLine);
   }
   if (state.rename !== undefined) {
     return renderRename(state.rename, safeWidth, safeHeight, wizardInputLine);
   }
   if (state.note !== undefined) {
     return renderNoteEditor(state.note, safeWidth, safeHeight, wizardInputLine);
+  }
+  if (state.chainPicker !== undefined) {
+    return renderChainPicker(state, state.chainPicker, safeWidth, safeHeight);
+  }
+  if (state.migration !== undefined) {
+    return renderMigrationPreview(state, state.migration, safeWidth, safeHeight);
   }
   if (state.confirmation !== undefined) {
     return renderConfirmation(state.confirmation, safeWidth, safeHeight);
@@ -886,14 +1175,81 @@ function visibleTopics(
 const TOPIC_PATH_SEPARATOR = " > ";
 
 /**
- * Shortens a Topic name only when its nearest exact parent precedes it in this visible group.
+ * The rendered family structure of one Topic set. Durable Parent Topic data decides every
+ * family it covers; the legacy name-derived hierarchy applies only to Topics that no durable
+ * family holds, and it disappears when migration gives every family durable data.
+ */
+interface TopicHierarchy {
+  parentOf: ReadonlyMap<string, TopicManifest>;
+  /** Children per Parent Topic id, in Integration Chain order for a durable family. */
+  childrenOf: ReadonlyMap<string, readonly TopicManifest[]>;
+  /** Parent Topic ids whose children already come from durable chain data. */
+  durableParentIds: ReadonlySet<string>;
+}
+
+function topicHierarchy(topics: readonly TopicManifest[]): TopicHierarchy {
+  const byId = new Map(topics.map((topic) => [topic.id, topic]));
+  const parentOf = new Map<string, TopicManifest>();
+  const childrenOf = new Map<string, TopicManifest[]>();
+  for (const topic of topics) {
+    const parent = durableParentTopic(topic, byId);
+    if (parent === undefined) continue;
+    parentOf.set(topic.id, parent);
+    childrenOf.set(parent.id, [...(childrenOf.get(parent.id) ?? []), topic]);
+  }
+  const durableParentIds = new Set(childrenOf.keys());
+  for (const [parentId, children] of childrenOf) {
+    childrenOf.set(parentId, displayChildOrder(children));
+  }
+
+  // A Topic that durable data does not place keeps the legacy name-derived family.
+  const legacy = topics.filter(
+    (topic) => topic.parentTopicId === undefined && !durableParentIds.has(topic.id),
+  );
+  const topicsByName = new Map<string, TopicManifest[]>();
+  for (const topic of legacy) {
+    const key = hierarchyNameKey(topic.focused, topic.name);
+    const matches = topicsByName.get(key) ?? [];
+    matches.push(topic);
+    topicsByName.set(key, matches);
+  }
+  for (const topic of legacy) {
+    const parent = nearestTopicParent(topic, topicsByName);
+    if (parent === undefined || parent.id === topic.id) continue;
+    parentOf.set(topic.id, parent);
+    childrenOf.set(parent.id, [...(childrenOf.get(parent.id) ?? []), topic]);
+  }
+  return { parentOf, childrenOf, durableParentIds };
+}
+
+/**
+ * The Parent Topic that durable data records, or undefined when it cannot render a family:
+ * a missing Parent Topic, a second hierarchy level, another repository, or a Focus that
+ * differs and would split the family across the Focus separator.
+ */
+function durableParentTopic(
+  topic: TopicManifest,
+  byId: ReadonlyMap<string, TopicManifest>,
+): TopicManifest | undefined {
+  const parentTopicId = topic.parentTopicId;
+  if (parentTopicId === undefined || parentTopicId === topic.id) return undefined;
+  const parent = byId.get(parentTopicId);
+  if (parent === undefined) return undefined;
+  if (parent.parentTopicId !== undefined) return undefined;
+  if (parent.repository !== topic.repository) return undefined;
+  if (parent.focused !== topic.focused) return undefined;
+  return parent;
+}
+
+/**
+ * Shortens a Topic name only when its parent precedes it in this visible group.
  * The durable name stays unchanged.
  */
 function topicHierarchyNames(
   allTopics: readonly TopicManifest[],
   visible: readonly TopicManifest[],
 ): ReadonlyMap<string, string> {
-  const allParents = hierarchyParents(allTopics);
+  const allParents = topicHierarchy(allTopics).parentOf;
   const visibleIndex = new Map(visible.map((topic, index) => [topic.id, index]));
   const parents = new Map<string, TopicManifest>();
   visible.forEach((topic, index) => {
@@ -930,26 +1286,12 @@ function topicHierarchyNames(
       .map((item) => (isLastHierarchyChild(item.id, parents, children) ? "   " : "│  "))
       .join("");
     const branch = isLastHierarchyChild(topic.id, parents, children) ? "└─ " : "├─ ";
-    const remainder = topic.name.slice(parent.name.length + TOPIC_PATH_SEPARATOR.length);
+    const remainder = topic.name.startsWith(`${parent.name}${TOPIC_PATH_SEPARATOR}`)
+      ? topic.name.slice(parent.name.length + TOPIC_PATH_SEPARATOR.length)
+      : topic.name;
     names.set(topic.id, `  ${continuation}${branch}${remainder}`);
   }
   return names;
-}
-
-function hierarchyParents(topics: readonly TopicManifest[]): Map<string, TopicManifest> {
-  const topicsByName = new Map<string, TopicManifest[]>();
-  for (const topic of topics) {
-    const key = hierarchyNameKey(topic.focused, topic.name);
-    const matches = topicsByName.get(key) ?? [];
-    matches.push(topic);
-    topicsByName.set(key, matches);
-  }
-  return new Map(
-    topics.flatMap((topic) => {
-      const parent = nearestTopicParent(topic, topicsByName);
-      return parent === undefined ? [] : [[topic.id, parent] as const];
-    }),
-  );
 }
 
 function nearestTopicParent(
@@ -981,6 +1323,7 @@ function isLastHierarchyChild(
 
 interface TopicColumns {
   name: number;
+  integration: number;
   note: number;
   repository: number;
   pullRequest: number;
@@ -989,7 +1332,7 @@ interface TopicColumns {
 }
 
 const MIN_TOPIC_NAME_WIDTH = 12;
-const COLUMN_GAPS_WIDTH = 7; // Selection prefix plus five inter-column spaces.
+const COLUMN_GAPS_WIDTH = 8; // Selection prefix plus six inter-column spaces.
 
 /** Uses only the space needed by current values, up to stable readability caps. */
 function wideTopicColumns(state: DashboardState, width: number): TopicColumns | undefined {
@@ -1021,10 +1364,12 @@ function wideTopicColumns(state: DashboardState, width: number): TopicColumns | 
     }),
     17,
   );
-  const name = width - COLUMN_GAPS_WIDTH - note - repository - pullRequest - setup - mainAgent;
+  const integration = visibleWidth(INTEGRATION_HEADER);
+  const name =
+    width - COLUMN_GAPS_WIDTH - integration - note - repository - pullRequest - setup - mainAgent;
   return name < MIN_TOPIC_NAME_WIDTH
     ? undefined
-    : { name, note, repository, pullRequest, setup, mainAgent };
+    : { name, integration, note, repository, pullRequest, setup, mainAgent };
 }
 
 function columnWidth(header: string, values: readonly string[], maximum: number): number {
@@ -1035,7 +1380,7 @@ function columnWidth(header: string, values: readonly string[], maximum: number)
 }
 
 function renderWideHeader(columns: TopicColumns): string {
-  return `  ${pad("TOPIC", columns.name)} ${pad("NOTE", columns.note)} ${pad("REPOSITORY", columns.repository)} ${pad("PR", columns.pullRequest)} ${pad("SETUP", columns.setup)} ${padLeft("MAIN AGENT", columns.mainAgent)}`;
+  return `  ${pad("TOPIC", columns.name)} ${pad(INTEGRATION_HEADER, columns.integration)} ${pad("NOTE", columns.note)} ${pad("REPOSITORY", columns.repository)} ${pad("PR", columns.pullRequest)} ${pad("SETUP", columns.setup)} ${padLeft("MAIN AGENT", columns.mainAgent)}`;
 }
 
 function renderTopicRow(
@@ -1060,10 +1405,11 @@ function renderTopicRow(
         : renderMainAgentStatus(agent, state.shimmerPhase);
   const pullRequest = state.pullRequests[topic.id];
   const setup = setupCell(state, topic);
+  const integration = integrationCell(state, topic);
   if (columns === undefined) {
     const link = pullRequest === undefined ? "" : ` · ${pullRequestCell(pullRequest)}`;
     const setupSegment = setup === "" ? "" : ` · ${setup}`;
-    const suffix = `${setupSegment} · ${agentCell}${link}`;
+    const suffix = ` ${integration}${setupSegment} · ${agentCell}${link}`;
     const note = renderTopicNote(
       topic.note,
       width - visibleWidth(`${prefix}${displayName}${suffix}`),
@@ -1073,9 +1419,29 @@ function renderTopicRow(
     return selected ? highlight(styled, width) : styled;
   }
   const noteCell = renderTopicNoteCell(topic.note, columns.note);
-  const row = `${prefix}${pad(displayName, columns.name)} ${noteCell} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
+  const row = `${prefix}${pad(displayName, columns.name)} ${pad(integration, columns.integration)} ${noteCell} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
   const styled = inactive ? dim(row) : row;
   return selected ? highlight(styled, width) : styled;
+}
+
+// Nerd Font glyphs of the Integration Status column: heading, Current, Behind, Conflict,
+// and Unknown. Every glyph measures one cell, so the column never breaks a narrow layout.
+const INTEGRATION_HEADER = "\uF47F";
+const INTEGRATION_GLYPHS: Readonly<Record<IntegrationStatusKind, string>> = {
+  current: "\uF058",
+  behind: "\uF063",
+  conflict: "\uF071",
+  unknown: "\uF059",
+};
+
+/** The status glyph of one Topic in its agreed colour; an unobserved Topic is Unknown. */
+function integrationCell(state: DashboardState, topic: TopicManifest): string {
+  const kind = state.integrationStatuses[topic.id]?.kind ?? "unknown";
+  const glyph = INTEGRATION_GLYPHS[kind];
+  if (kind === "current") return green(glyph);
+  if (kind === "behind") return yellow(glyph);
+  if (kind === "conflict") return red(glyph);
+  return dim(glyph);
 }
 
 function renderTopicNote(note: string | undefined, availableWidth: number): string {
@@ -1125,6 +1491,16 @@ function highlight(row: string, width: number): string {
 /** Colours text yellow, including an ellipsis inserted by truncation. */
 function yellow(text: string): string {
   return `\x1b[33m${reopenAfterReset(text, "\x1b[33m")}\x1b[39m`;
+}
+
+/** Colours a settled, current status green. */
+function green(text: string): string {
+  return `\x1b[32m${reopenAfterReset(text, "\x1b[32m")}\x1b[39m`;
+}
+
+/** Colours a blocking status red. */
+function red(text: string): string {
+  return `\x1b[31m${reopenAfterReset(text, "\x1b[31m")}\x1b[39m`;
 }
 
 /** Colours an urgent status word bright red. */
@@ -1222,6 +1598,7 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
         : [`Pull Request: ${pullRequestCell(state.pullRequests[topic.id])}`]),
       `Worktree: ${topic.worktreePath ?? "not ready"}${state.orphanedTopicIds.includes(topic.id) ? ` · ${brightRed("orphan")}` : ""}`,
       `Setup: ${setupDetail ?? topic.setup.state}`,
+      ...integrationDetailLines(state, topic),
       `Main Agent: ${renderMainAgentStatus(agent?.state ?? "stopped", state.shimmerPhase)}`,
       `Workspace: ${state.workspaces[topic.id] ?? "not observable"}`,
       ...(diagnostic === undefined ? [] : [`Diagnostic: ${diagnostic}`]),
@@ -1239,29 +1616,61 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
   );
 }
 
+const INTEGRATION_LABELS: Readonly<Record<IntegrationStatusKind, string>> = {
+  current: "Current",
+  behind: "Behind",
+  conflict: "Conflict",
+  unknown: "Unknown",
+};
+
+/**
+ * Textual Integration Status of one Topic for the detail view: status word, Integration
+ * Target, Integration Branch, ahead and behind counts, pending chain state, and one bounded
+ * diagnostic. An unobserved Topic reads as Unknown instead of disappearing.
+ */
+function integrationDetailLines(state: DashboardState, topic: TopicManifest): string[] {
+  const status = state.integrationStatuses[topic.id];
+  const kind = status?.kind ?? "unknown";
+  const parts = [INTEGRATION_LABELS[kind]];
+  if (status?.target !== undefined) parts.push(`target ${status.target}`);
+  if (status?.ahead !== undefined) parts.push(`ahead ${status.ahead}`);
+  if (status?.behind !== undefined) parts.push(`behind ${status.behind}`);
+  if (topic.chainState === "pending") parts.push("pending insertion");
+  const parent = state.topics.find((item) => item.id === topic.parentTopicId);
+  const integrationBranch = state.integrationBranches[topic.repository];
+  const detail = status?.detail;
+  return [
+    `Integration: ${parts.join(" · ")}`,
+    ...(integrationBranch === undefined ? [] : [`Integration Branch: ${integrationBranch}`]),
+    ...(parent === undefined ? [] : [`Parent Topic: ${parent.name}`]),
+    ...(detail === undefined ? [] : [`Integration detail: ${boundMessage(detail)}`]),
+  ];
+}
+
 function renderWizard(
+  state: DashboardState,
   wizard: TopicWizardState,
   width: number,
   height: number,
-  knownRepositories: readonly string[],
   inputLine?: string,
 ): string[] {
+  const parent = state.topics.find((item) => item.id === wizard.parentTopicId);
   const field = wizard.stage === "review" ? undefined : wizard.stage;
-  const title = `ADD TOPIC · ${wizard.stage.toUpperCase()}`;
-  const lines = [title, ""];
+  const subject = parent === undefined ? "ADD TOPIC" : "ADD CHILD TOPIC";
+  const lines = [`${subject} · ${WIZARD_STAGE_TITLES[wizard.stage]}`, ""];
+  if (parent !== undefined) lines.push(`Parent Topic: ${parent.name}`, "");
   if (field !== undefined) {
-    const labels = {
-      name: "Name",
-      branch: "Branch",
-      repository: "Repository (owner/repo)",
-    } as const;
-    lines.push(labels[field], inputLine ?? `> ${wizard[field]}`);
+    lines.push(WIZARD_FIELD_LABELS[field], inputLine ?? `> ${wizard[field] ?? ""}`);
     if (field === "repository") {
-      lines.push(...renderRepositoryCompletions(wizard, knownRepositories, width));
+      lines.push(...renderRepositoryCompletions(wizard, state.knownRepositories, width));
     }
   } else {
     lines.push("Review the exact provisioning subject:", "", `Name: ${wizard.name}`);
-    lines.push(`Repository: ${wizard.repository}`, `Branch: ${wizard.branch}`);
+    if (parent === undefined) lines.push(`Repository: ${wizard.repository}`);
+    else lines.push(`Start Point: ${wizard.startPoint ?? ""}`);
+    lines.push(
+      `Branch: ${wizard.branch.trim().length === 0 ? "derived from the Topic name" : wizard.branch}`,
+    );
   }
   if (wizard.error !== undefined) lines.push("", `! ${wizard.error}`);
   lines.push(
@@ -1274,6 +1683,21 @@ function renderWizard(
   );
   return fitLines(lines, width, height);
 }
+
+const WIZARD_STAGE_TITLES: Readonly<Record<TopicWizardStage, string>> = {
+  name: "NAME",
+  startPoint: "START POINT",
+  branch: "BRANCH",
+  repository: "REPOSITORY",
+  review: "REVIEW",
+};
+
+const WIZARD_FIELD_LABELS: Readonly<Record<Exclude<TopicWizardStage, "review">, string>> = {
+  name: "Name",
+  startPoint: "Start Point (commit of the Parent Topic Branch)",
+  branch: "Branch",
+  repository: "Repository (owner/repo)",
+};
 
 // Caps the visible completion window so the wizard footprint stays bounded, and scrolls it
 // to keep the highlighted Known repository in view.
@@ -1350,6 +1774,30 @@ function renderConfirmation(
   );
 }
 
+function renderChainPicker(
+  state: DashboardState,
+  picker: ChainPickerState,
+  width: number,
+  height: number,
+): string[] {
+  const topic = state.topics.find((item) => item.id === picker.topicId);
+  const options = chainPickerOptions(state, picker);
+  const title =
+    picker.kind === "change-parent" ? "CHANGE PARENT TOPIC" : "MOVE IN INTEGRATION CHAIN";
+  return fitLines(
+    [
+      `${title} · ${topic?.name ?? picker.topicId}`,
+      "",
+      ...options.map((option, index) => `${index === picker.index ? ">" : " "} ${option.label}`),
+      "",
+      "No Branch moves and no Git history changes.",
+      "j/k or \u2191/\u2193 move \u00b7 enter apply \u00b7 esc cancel",
+    ],
+    width,
+    height,
+  );
+}
+
 function moveSelection(state: DashboardState, delta: number): DashboardInputResult {
   if (state.topics.length === 0) return { state, exit: false };
   const current = state.topics.findIndex((topic) => topic.id === state.selectedTopicId);
@@ -1365,15 +1813,20 @@ function moveSelection(state: DashboardState, delta: number): DashboardInputResu
 }
 
 /**
- * Sets the selected Topic's Focus. Idempotent: a no-op when it already has that Focus.
- * Updates optimistically and re-sorts so the Topic visibly crosses the separator; the
- * daemon `topic-changed` event later reconciles. Selection follows the moved Topic.
+ * Sets the Focus of the selected Topic's complete family with one keypress. Idempotent: a
+ * no-op when the family already has that Focus. It updates optimistically and re-sorts so the
+ * family visibly crosses the separator; the daemon `topic-changed` events later reconcile.
+ * Selection stays on the same Topic.
  */
 function setSelectedTopicFocus(state: DashboardState, focused: boolean): DashboardInputResult {
   const topic = state.topics.find((item) => item.id === state.selectedTopicId);
-  if (topic === undefined || topic.focused === focused) return { state, exit: false };
+  if (topic === undefined) return { state, exit: false };
+  const family = topicFamilyIds(state.topics, topic);
+  if (state.topics.every((item) => !family.has(item.id) || item.focused === focused)) {
+    return { state, exit: false };
+  }
   const topics = sortTopics(
-    state.topics.map((item) => (item.id === topic.id ? { ...item, focused } : item)),
+    state.topics.map((item) => (family.has(item.id) ? { ...item, focused } : item)),
     state.mainAgents,
   );
   return {
@@ -1381,6 +1834,28 @@ function setSelectedTopicFocus(state: DashboardState, focused: boolean): Dashboa
     exit: false,
     action: { type: "set-focus", topicId: topic.id, focused },
   };
+}
+
+/**
+ * The Topic ids of one complete family: the Parent Topic and every child that durable data
+ * or the legacy name hierarchy places under it. A Topic without a family is its own family.
+ */
+function topicFamilyIds(
+  topics: readonly TopicManifest[],
+  topic: TopicManifest,
+): ReadonlySet<string> {
+  const hierarchy = topicHierarchy(topics);
+  const root = hierarchy.parentOf.get(topic.id) ?? topic;
+  const ids = new Set<string>([root.id]);
+  const collect = (parent: TopicManifest): void => {
+    for (const child of hierarchy.childrenOf.get(parent.id) ?? []) {
+      if (ids.has(child.id)) continue;
+      ids.add(child.id);
+      collect(child);
+    }
+  };
+  collect(root);
+  return ids;
 }
 
 function moveActionFocus(state: DashboardState, delta: number): DashboardInputResult {
@@ -1406,6 +1881,72 @@ function policyActionToTopicAction(action: string): TopicActionId[] {
     default:
       return [];
   }
+}
+
+/**
+ * The safe chain repairs that the selected Topic can offer. Every entry only rewires
+ * durable links; none of them moves a Branch or changes Git history. An entry appears only
+ * when the daemon can already accept it, so the side view never offers an empty chooser.
+ */
+function chainMaintenanceActions(
+  state: DashboardState,
+  topic: TopicManifest,
+  ready: boolean,
+): { id: TopicActionId; label: string; unavailable: boolean }[] {
+  const pending = topic.chainState === "pending";
+  const children = state.topics.filter((item) => item.parentTopicId === topic.id);
+  const actions: { id: TopicActionId; label: string; unavailable: boolean }[] = [];
+  // Only a Topic without children can join another family, because families stay one level deep.
+  if (children.length === 0) {
+    const candidates = chainPickerOptions(state, {
+      topicId: topic.id,
+      kind: "change-parent",
+      index: 0,
+    });
+    if (candidates.length > 0) {
+      actions.push({
+        id: "change-parent",
+        label: "Change Parent Topic",
+        unavailable: !ready || pending,
+      });
+    }
+  }
+  if (topic.parentTopicId !== undefined) {
+    actions.push({
+      id: "remove-parent",
+      label: "Remove Parent Topic",
+      unavailable: !ready || pending,
+    });
+    const targets = chainPickerOptions(state, {
+      topicId: topic.id,
+      kind: "move-in-chain",
+      index: 0,
+    });
+    if (targets.length > 1) {
+      actions.push({
+        id: "move-in-chain",
+        label: "Move in Integration Chain",
+        unavailable: !ready || pending,
+      });
+    }
+  }
+  if (topic.parentTopicId === undefined && children.length > 0) {
+    actions.push({
+      id: "reset-chain",
+      label: "Reset Integration Target",
+      unavailable: !ready,
+    });
+  }
+  // Legacy migration is a metadata-only action of the whole control plane, offered while an
+  // unresolved ` > ` name family still exists.
+  if (state.legacyFamilies > 0) {
+    actions.push({
+      id: "migrate-legacy",
+      label: "Migrate Legacy Name Hierarchies",
+      unavailable: state.submissions["migrate-legacy"] !== undefined,
+    });
+  }
+  return actions;
 }
 
 function topicActions(
@@ -1465,6 +2006,17 @@ function topicActions(
       unavailable: denied.includes("retry"),
     });
   }
+  // Only a root Topic can offer a child, because a family stays one level deep.
+  if (topic.parentTopicId === undefined) {
+    actions.push({
+      id: "add-child",
+      label: "Add Child Topic",
+      unavailable: !ready || state.submissions["create"] !== undefined,
+    });
+  }
+  for (const maintenance of chainMaintenanceActions(state, topic, ready)) {
+    actions.push(maintenance);
+  }
   actions.push({
     id: "delete",
     label: "Delete Topic",
@@ -1512,8 +2064,19 @@ function invokeTopicAction(
   state: DashboardState,
   action: { id: TopicActionId; label: string },
 ): DashboardInputResult {
-  if (state.selectedTopicId === undefined || action.id === "rename" || action.id === "note")
+  if (action.id === "migrate-legacy") return requestMigrationPreview(state);
+  // Rename, Note, Add Child Topic, and the chain choosers open a view instead of one
+  // daemon submission.
+  if (
+    state.selectedTopicId === undefined ||
+    action.id === "rename" ||
+    action.id === "note" ||
+    action.id === "add-child" ||
+    action.id === "change-parent" ||
+    action.id === "move-in-chain"
+  ) {
     return { state, exit: false };
+  }
   return {
     state: {
       ...state,
@@ -1523,6 +2086,117 @@ function invokeTopicAction(
     exit: false,
     action: { type: action.id, topicId: state.selectedTopicId },
   };
+}
+
+/** Asks workd for the read-only migration preview. The request changes nothing on disk. */
+function requestMigrationPreview(state: DashboardState): DashboardInputResult {
+  if (state.submissions["migrate-legacy"] !== undefined) return { state, exit: false };
+  return {
+    state: {
+      ...state,
+      sidebarOpen: false,
+      focus: "list",
+      submissions: { ...state.submissions, "migrate-legacy": "migrate-legacy-preview" },
+      message: "Building the legacy migration preview…",
+    },
+    exit: false,
+    action: { type: "migrate-legacy-preview" },
+  };
+}
+
+/** Opens the preview that workd returned. Opening it still writes nothing. */
+export function openMigrationPreview(
+  state: DashboardState,
+  preview: LegacyMigrationPreview,
+): DashboardState {
+  if (preview.families.length === 0 && preview.skipped.length === 0) {
+    return { ...state, message: "No legacy name family can migrate." };
+  }
+  return { ...state, migration: { preview, offset: 0 }, message: "Legacy migration preview." };
+}
+
+function handleMigrationInput(state: DashboardState, data: string): DashboardInputResult {
+  const migration = state.migration!;
+  if (matchesKey(data, Key.escape)) {
+    const { migration: _migration, ...rest } = state;
+    return { state: { ...rest, message: "Legacy migration cancelled." }, exit: false };
+  }
+  if (matchesKey(data, Key.down) || data === "j") {
+    return {
+      state: { ...state, migration: { ...migration, offset: migration.offset + 1 } },
+      exit: false,
+    };
+  }
+  if (matchesKey(data, Key.up) || data === "k") {
+    return {
+      state: {
+        ...state,
+        migration: { ...migration, offset: Math.max(0, migration.offset - 1) },
+      },
+      exit: false,
+    };
+  }
+  if (!matchesKey(data, Key.enter)) return { state, exit: false };
+  const parentTopicIds = migration.preview.families.map((family) => family.parentTopicId);
+  if (parentTopicIds.length === 0) {
+    const { migration: _migration, ...rest } = state;
+    return { state: { ...rest, message: "No legacy family can migrate." }, exit: false };
+  }
+  if (state.submissions["migrate-legacy"] !== undefined) return { state, exit: false };
+  const { migration: _migration, ...rest } = state;
+  return {
+    state: {
+      ...rest,
+      submissions: { ...rest.submissions, "migrate-legacy": "migrate-legacy" },
+      message: `Migrating ${parentTopicIds.length} legacy famil${parentTopicIds.length === 1 ? "y" : "ies"}…`,
+    },
+    exit: false,
+    action: { type: "migrate-legacy", parentTopicIds },
+  };
+}
+
+/** The preview lines of one family: its Parent Topic and every proposed Integration Target. */
+function migrationFamilyLines(state: DashboardState, family: LegacyMigrationFamily): string[] {
+  const name = (topicId: string): string =>
+    state.topics.find((topic) => topic.id === topicId)?.name ?? topicId.slice(0, 8);
+  const target = (value: LegacyMigrationFamily["parentIntegrationTarget"]): string =>
+    value.kind === "integration-branch" ? "Integration Branch" : name(value.topicId);
+  return [
+    `Parent Topic ${name(family.parentTopicId)} → ${target(family.parentIntegrationTarget)}`,
+    ...family.children.map(
+      (child) => `  child ${name(child.topicId)} → ${target(child.integrationTarget)}`,
+    ),
+  ];
+}
+
+function renderMigrationPreview(
+  state: DashboardState,
+  migration: MigrationPreviewState,
+  width: number,
+  height: number,
+): string[] {
+  const preview = migration.preview;
+  const body = [
+    ...preview.families.flatMap((family) => migrationFamilyLines(state, family)),
+    ...(preview.skipped.length === 0 ? [] : ["", "Unchanged:"]),
+    ...preview.skipped.map((skip) => {
+      const topic = state.topics.find((item) => item.id === skip.topicId);
+      return `  ${topic?.name ?? skip.topicId.slice(0, 8)} · ${skip.code} · ${skip.message}`;
+    }),
+  ];
+  const visible = body.slice(Math.min(migration.offset, Math.max(0, body.length - 1)));
+  return fitLines(
+    [
+      `MIGRATE LEGACY NAME HIERARCHIES · ${preview.families.length} famil${preview.families.length === 1 ? "y" : "ies"}`,
+      "",
+      ...visible,
+      "",
+      "This preview changed nothing. Approving writes Topic metadata only.",
+      "j/k or \u2191/\u2193 scroll \u00b7 enter approve \u00b7 esc cancel",
+    ],
+    width,
+    height,
+  );
 }
 
 function stabilizeSelection(state: DashboardState, removedIndex = 0): DashboardState {
@@ -1545,7 +2219,11 @@ function isMainAgentRunning(state: MainAgentState): boolean {
   return state !== "stopped" && state !== "failed";
 }
 
-/** Keeps Topic families together while active families and subtrees bubble above inactive peers. */
+/**
+ * Keeps Topic families together while active families and subtrees bubble above inactive
+ * peers. A durable family keeps its Integration Chain order, so a child never moves
+ * alphabetically or bubbles away from the chain position that its Integration Target records.
+ */
 function sortTopics(
   topics: readonly TopicManifest[],
   mainAgents: readonly MainAgentLease[],
@@ -1553,15 +2231,9 @@ function sortTopics(
   const active = new Set(
     mainAgents.filter((agent) => isMainAgentRunning(agent.state)).map((agent) => agent.topicId),
   );
-  const parents = hierarchyParents(topics);
-  const children = new Map<string, TopicManifest[]>();
-  for (const topic of topics) {
-    const parent = parents.get(topic.id);
-    if (parent === undefined) continue;
-    const siblings = children.get(parent.id) ?? [];
-    siblings.push(topic);
-    children.set(parent.id, siblings);
-  }
+  const hierarchy = topicHierarchy(topics);
+  const parents = hierarchy.parentOf;
+  const children = hierarchy.childrenOf;
 
   const activeFamilies = new Map<string, boolean>();
   const familyIsActive = (topic: TopicManifest): boolean => {
@@ -1587,10 +2259,20 @@ function sortTopics(
   const sorted: TopicManifest[] = [];
   const appendFamily = (topic: TopicManifest): void => {
     sorted.push(topic);
-    for (const child of (children.get(topic.id) ?? []).toSorted(comparePeers)) appendFamily(child);
+    for (const child of orderedChildren(topic, hierarchy, comparePeers)) appendFamily(child);
   };
   for (const root of roots) appendFamily(root);
   return sorted;
+}
+
+/** Chain order inside a durable family; the legacy peer order everywhere else. */
+function orderedChildren(
+  parent: TopicManifest,
+  hierarchy: TopicHierarchy,
+  comparePeers: (left: TopicManifest, right: TopicManifest) => number,
+): readonly TopicManifest[] {
+  const children = hierarchy.childrenOf.get(parent.id) ?? [];
+  return hierarchy.durableParentIds.has(parent.id) ? children : children.toSorted(comparePeers);
 }
 
 function compareTopicNames(left: TopicManifest, right: TopicManifest): number {

@@ -5,6 +5,7 @@ import type { ProcessResult, ProcessRunner } from "../daemon/process-runner.ts";
 import {
   WorkDataError,
   boundMessage,
+  isTopicId,
   isValidBranchName,
   parseRepository,
 } from "../shared/domain.ts";
@@ -39,24 +40,34 @@ export interface TopicCreationResolverOptions {
   runner?: ProcessRunner;
 }
 
+/** Client input for a child Topic; a child always starts at an exact Parent Branch revision. */
+export interface ChildTopicCreationInput {
+  name: string;
+  startPoint: string;
+  parentTopicId?: string;
+  branch?: string;
+  sourceCheckout?: string;
+}
+
+/** Explicit child input that is safe to send to the child-creation boundary. */
+export interface ResolvedChildTopicCreationInput {
+  parentTopicId: string;
+  name: string;
+  branch: string;
+  startPoint: ResolvedTopicStartPoint;
+}
+
+export interface ChildTopicCreationResolverOptions extends TopicCreationResolverOptions {
+  /** Session environment that carries `PI_WORK_TOPIC_ID` inside a Parent Main Agent. */
+  environment?: Record<string, string | undefined>;
+}
+
 /** Resolve optional local Git input without changing the checkout or contacting the daemon. */
 export async function resolveTopicCreationInput(
   input: TopicCreationInput,
   options: TopicCreationResolverOptions = {},
 ): Promise<ResolvedTopicCreationInput> {
-  const name = input.name.trim();
-  if (name.length === 0) {
-    throw new WorkDataError("invalid-topic-name", "Topic name must not be empty.");
-  }
-
-  const branch = input.branch?.trim() ?? defaultBranchForTopicName(name);
-  if (!isValidBranchName(branch)) {
-    const message =
-      input.branch === undefined
-        ? "Topic name cannot make a safe branch."
-        : "Branch must be a valid non-empty Git branch name.";
-    throw new WorkDataError("invalid-branch", message);
-  }
+  const { name, branch } = resolveNameAndBranch(input);
 
   const explicitRepository = input.repository?.trim();
   if (explicitRepository !== undefined) parseRepository(explicitRepository);
@@ -94,6 +105,77 @@ export async function resolveTopicCreationInput(
     };
   }
   return resolved;
+}
+
+/**
+ * Resolve child input without changing the checkout or contacting the daemon. The Parent
+ * Topic comes from the Parent Main Agent session unless the caller states one explicitly.
+ */
+export async function resolveChildTopicCreationInput(
+  input: ChildTopicCreationInput,
+  options: ChildTopicCreationResolverOptions = {},
+): Promise<ResolvedChildTopicCreationInput> {
+  const { name, branch } = resolveNameAndBranch(input);
+  const parentTopicId = resolveParentTopicId(input.parentTopicId, options.environment);
+  const revision = input.startPoint.trim();
+  if (revision.length === 0) {
+    throw new WorkDataError("invalid-start-point", "Start Point must not be empty.");
+  }
+  if (input.sourceCheckout === undefined) {
+    throw new WorkDataError(
+      "source-checkout-required",
+      "Source checkout is required to resolve a child Start Point.",
+    );
+  }
+
+  const runner = options.runner ?? new LocalProcessRunner();
+  const sourceCheckout = await worktreeRoot(input.sourceCheckout, runner);
+  return {
+    parentTopicId,
+    name,
+    branch,
+    startPoint: {
+      commit: await resolveCommit(revision, sourceCheckout, runner),
+      sourceCheckout,
+    },
+  };
+}
+
+function resolveNameAndBranch(input: { name: string; branch?: string }): {
+  name: string;
+  branch: string;
+} {
+  const name = input.name.trim();
+  if (name.length === 0) {
+    throw new WorkDataError("invalid-topic-name", "Topic name must not be empty.");
+  }
+  const branch = input.branch?.trim() ?? defaultBranchForTopicName(name);
+  if (!isValidBranchName(branch)) {
+    const message =
+      input.branch === undefined
+        ? "Topic name cannot make a safe branch."
+        : "Branch must be a valid non-empty Git branch name.";
+    throw new WorkDataError("invalid-branch", message);
+  }
+  return { name, branch };
+}
+
+function resolveParentTopicId(
+  explicit: string | undefined,
+  environment: Record<string, string | undefined> | undefined,
+): string {
+  const session = (environment ?? process.env)["PI_WORK_TOPIC_ID"];
+  const parentTopicId = (explicit ?? session ?? "").trim();
+  if (parentTopicId.length === 0) {
+    throw new WorkDataError(
+      "parent-topic-required",
+      "Parent Topic ID is required outside a Parent Main Agent session.",
+    );
+  }
+  if (!isTopicId(parentTopicId)) {
+    throw new WorkDataError("invalid-parent-topic", "Parent Topic ID is invalid.");
+  }
+  return parentTopicId;
 }
 
 /** Parse the common HTTPS and SSH GitHub remote forms to owner/repo. */

@@ -6,9 +6,10 @@ import type { TopicMutationResult } from "../daemon/topic-service.ts";
 import { createConfigStore, createWorkPaths } from "../shared/index.ts";
 import { SystemdWorkdManager, defaultSystemdPaths } from "./systemd.ts";
 import {
+  resolveChildTopicCreationInput,
   resolveTopicCreationInput,
+  type ResolvedChildTopicCreationInput,
   type ResolvedTopicCreationInput,
-  type TopicCreationInput,
 } from "./topic-creation.ts";
 
 export const CLI_OUTPUT_VERSION = 1;
@@ -30,6 +31,11 @@ export interface TopicCreationClient {
     requestId?: string,
     timeoutMs?: number,
   ): Promise<TopicMutationResult>;
+  createChildTopic(
+    input: ResolvedChildTopicCreationInput,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult>;
   confirm(token: string, requestId?: string, timeoutMs?: number): Promise<TopicMutationResult>;
   reject(token: string, requestId?: string, timeoutMs?: number): Promise<TopicMutationResult>;
   close(): void;
@@ -42,6 +48,9 @@ export interface CliDependencies {
   isInteractive?: boolean;
   provisionTimeoutMs?: number;
   resolveInput?: typeof resolveTopicCreationInput;
+  resolveChildInput?: typeof resolveChildTopicCreationInput;
+  /** Session environment that carries `PI_WORK_TOPIC_ID` inside a Parent Main Agent. */
+  environment?: Record<string, string | undefined>;
   loadConfig?: () => Promise<WorkConfig | null>;
   connect?: () => Promise<TopicCreationClient>;
   prompt?: (question: string, signal?: AbortSignal) => Promise<string>;
@@ -51,9 +60,22 @@ export interface CliDependencies {
   requestId?: () => string;
 }
 
-interface ParsedOptions extends TopicCreationInput {
+type CliCommand = "create" | "create-child";
+
+interface ParsedOptions {
+  command: CliCommand;
+  values: Readonly<Record<string, string>>;
   json: boolean;
   help: boolean;
+}
+
+/** One resolved creation request, bound to the daemon call that sends it. */
+interface CliCreationPlan {
+  submit: (
+    client: TopicCreationClient,
+    requestId: string,
+    timeoutMs: number,
+  ) => Promise<TopicMutationResult>;
 }
 
 class CliUsageError extends Error {}
@@ -120,16 +142,10 @@ export async function runPiWorkCli(
     return fail(errorMessage(error), CLI_EXIT.failure, errorCode(error), errorDetails(error));
   }
 
-  let resolved: ResolvedTopicCreationInput;
+  let plan: CliCreationPlan;
   try {
     diagnostic(stderr, "Resolving Topic input.");
-    resolved = await (dependencies.resolveInput ?? resolveTopicCreationInput)({
-      name: options.name,
-      ...(options.repository === undefined ? {} : { repository: options.repository }),
-      ...(options.branch === undefined ? {} : { branch: options.branch }),
-      ...(options.startPoint === undefined ? {} : { startPoint: options.startPoint }),
-      sourceCheckout: options.sourceCheckout ?? cwd,
-    });
+    plan = await resolveCreationPlan(options, cwd, dependencies);
   } catch (error) {
     return fail(errorMessage(error), CLI_EXIT.failure, errorCode(error), errorDetails(error));
   }
@@ -173,7 +189,7 @@ export async function runPiWorkCli(
     }
 
     diagnostic(stderr, "Provisioning Topic.");
-    let result = await client.createTopic(resolved, requestId, timeoutMs);
+    let result = await plan.submit(client, requestId, timeoutMs);
     while (result.status === "confirmation-required") {
       if (!interactive) {
         renderConfirmation(result, json, stdout, stderr);
@@ -219,10 +235,12 @@ export async function runPiWorkCli(
 }
 
 function parseCliArguments(argv: readonly string[]): ParsedOptions {
-  if (argv[0] === "--help" || argv[0] === "-h") return { name: "", json: false, help: true };
-  if (argv[0] !== "topic" || argv[1] !== "create") {
-    throw new CliUsageError("Expected `topic create`.");
-  }
+  const help = { command: "create" as const, values: {}, json: false, help: true };
+  if (argv[0] === "--help" || argv[0] === "-h") return help;
+  const command = argv[0] === "topic" ? COMMANDS[argv[1] ?? ""] : undefined;
+  if (command === undefined)
+    throw new CliUsageError("Expected `topic create` or `topic create-child`.");
+  const allowed = COMMAND_FLAGS[command];
   const values: Record<string, string> = {};
   let json = false;
   for (let index = 2; index < argv.length; index += 1) {
@@ -232,9 +250,11 @@ function parseCliArguments(argv: readonly string[]): ParsedOptions {
       json = true;
       continue;
     }
-    if (argument === "--help" || argument === "-h") return { name: "", json, help: true };
+    if (argument === "--help" || argument === "-h") return { ...help, json };
     const key = FLAG_NAMES[argument];
-    if (key === undefined) throw new CliUsageError(`Unknown option: ${argument}`);
+    if (key === undefined || !allowed.includes(key)) {
+      throw new CliUsageError(`Unknown option: ${argument}`);
+    }
     if (values[key] !== undefined) throw new CliUsageError(`${argument} can be given only once.`);
     const value = argv[++index];
     if (value === undefined || value.startsWith("--")) {
@@ -243,16 +263,55 @@ function parseCliArguments(argv: readonly string[]): ParsedOptions {
     values[key] = value;
   }
   if (values["name"] === undefined) throw new CliUsageError("--name is required.");
-  return {
-    name: values["name"],
+  if (command === "create-child" && values["startPoint"] === undefined) {
+    throw new CliUsageError("--start-point is required for `topic create-child`.");
+  }
+  return { command, values, json, help: false };
+}
+
+/** Resolve the local Git input of one command and bind it to its daemon call. */
+async function resolveCreationPlan(
+  options: ParsedOptions,
+  cwd: string,
+  dependencies: CliDependencies,
+): Promise<CliCreationPlan> {
+  const values = options.values;
+  const name = values["name"]!;
+  const sourceCheckout = values["sourceCheckout"] ?? cwd;
+  if (options.command === "create-child") {
+    const resolved = await (dependencies.resolveChildInput ?? resolveChildTopicCreationInput)(
+      {
+        name,
+        startPoint: values["startPoint"]!,
+        ...(values["branch"] === undefined ? {} : { branch: values["branch"] }),
+        ...(values["parentTopicId"] === undefined
+          ? {}
+          : { parentTopicId: values["parentTopicId"] }),
+        sourceCheckout,
+      },
+      dependencies.environment === undefined ? {} : { environment: dependencies.environment },
+    );
+    return {
+      submit: (client, requestId, timeoutMs) =>
+        client.createChildTopic(resolved, requestId, timeoutMs),
+    };
+  }
+  const resolved = await (dependencies.resolveInput ?? resolveTopicCreationInput)({
+    name,
     ...(values["repository"] === undefined ? {} : { repository: values["repository"] }),
     ...(values["branch"] === undefined ? {} : { branch: values["branch"] }),
     ...(values["startPoint"] === undefined ? {} : { startPoint: values["startPoint"] }),
-    ...(values["sourceCheckout"] === undefined ? {} : { sourceCheckout: values["sourceCheckout"] }),
-    json,
-    help: false,
+    sourceCheckout,
+  });
+  return {
+    submit: (client, requestId, timeoutMs) => client.createTopic(resolved, requestId, timeoutMs),
   };
 }
+
+const COMMANDS: Readonly<Record<string, CliCommand | undefined>> = {
+  create: "create",
+  "create-child": "create-child",
+};
 
 const FLAG_NAMES: Readonly<Record<string, string>> = {
   "--name": "name",
@@ -260,10 +319,19 @@ const FLAG_NAMES: Readonly<Record<string, string>> = {
   "--branch": "branch",
   "--start-point": "startPoint",
   "--source-checkout": "sourceCheckout",
+  "--parent-topic-id": "parentTopicId",
+};
+
+const COMMAND_FLAGS: Readonly<Record<CliCommand, readonly string[]>> = {
+  create: ["name", "repository", "branch", "startPoint", "sourceCheckout"],
+  "create-child": ["name", "branch", "startPoint", "sourceCheckout", "parentTopicId"],
 };
 
 function usage(): string {
-  return "Usage: pi-work topic create --name <name> [--repository <owner/repo>] [--branch <branch>] [--start-point <revision>] [--source-checkout <path>] [--json]\n";
+  return (
+    "Usage: pi-work topic create --name <name> [--repository <owner/repo>] [--branch <branch>] [--start-point <revision>] [--source-checkout <path>] [--json]\n" +
+    "       pi-work topic create-child --name <name> --start-point <revision> [--branch <branch>] [--parent-topic-id <id>] [--source-checkout <path>] [--json]\n"
+  );
 }
 
 async function askYesNo(

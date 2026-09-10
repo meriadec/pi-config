@@ -11,9 +11,14 @@ export interface WorkPaths {
   config: string;
   topics: string;
   affiliations: string;
+  /** Private legacy-migration runs: journals and pre-migration manifest backups. */
+  migrations: string;
   socket: string;
   topicDirectory(id: string): string;
   topicManifest(id: string): string;
+  migrationDirectory(migrationId: string): string;
+  migrationJournal(migrationId: string): string;
+  migrationBackup(migrationId: string, topicId: string): string;
 }
 
 export function createWorkPaths(options: WorkPathOptions = {}): WorkPaths {
@@ -24,13 +29,19 @@ export function createWorkPaths(options: WorkPathOptions = {}): WorkPaths {
   }
   const root = join(home, "work");
   const topics = join(root, "topics");
+  const migrations = join(root, "migrations");
   return {
     root,
     config: join(root, "config.json"),
     topics,
     affiliations: join(root, "affiliations.json"),
+    migrations,
     socket: join(runtime, "pi-workd.sock"),
     topicDirectory: (id) => join(topics, id),
     topicManifest: (id) => join(topics, id, "topic.json"),
+    migrationDirectory: (migrationId) => join(migrations, migrationId),
+    migrationJournal: (migrationId) => join(migrations, migrationId, "journal.json"),
+    migrationBackup: (migrationId, topicId) =>
+      join(migrations, migrationId, "backup", `${topicId}.json`),
   };
 }

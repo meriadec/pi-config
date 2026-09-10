@@ -22,8 +22,15 @@ import type { ProvisionRequest, ProvisionResult } from "./provisioner.ts";
 import type { PullRequestObserver } from "./pull-request-observer.ts";
 import type { DesktopController } from "./desktop.ts";
 import type { MainAgentManager } from "./main-agent.ts";
+import type { IntegrationBranchResolver } from "./integration-branch.ts";
+import type {
+  IntegrationStatus,
+  IntegrationStatusObserver,
+  IntegrationStatusRequest,
+} from "./integration-status.ts";
 import { WorkDaemon } from "./server.ts";
 import { TopicService } from "./topic-service.ts";
+import type { TopicServiceEvent } from "./topic-service.ts";
 
 const roots: string[] = [];
 const daemons: WorkDaemon[] = [];
@@ -217,6 +224,20 @@ function policies(
   };
 }
 
+/** A Topic whose setup finished, so Integration Status observation applies to it. */
+async function ready(topics: TopicStore, name: string, branch: string): Promise<TopicManifest> {
+  const topic = await topics.create({ name, branch, repository: "LedgerHQ/revault" });
+  return topics.update(topic.id, (current) => ({
+    ...current,
+    setup: {
+      state: "ready",
+      repositoryAvailable: true,
+      worktreeCreated: true,
+      setupCommandsRun: true,
+    },
+  }));
+}
+
 async function failed(
   topics: TopicStore,
   topic: TopicManifest,
@@ -242,6 +263,146 @@ afterEach(async () => {
 });
 
 describe("Topic Service daemon integration", () => {
+  test("ensures and exposes the Integration Branch of every Topic repository", async () => {
+    const item = await world();
+    await stopWorld(item);
+    await item.topics.create({
+      name: "Valid",
+      branch: "feat-valid",
+      repository: "LedgerHQ/revault",
+    });
+    const config = createConfigStore(item.paths);
+    const ensured: string[] = [];
+    const integrationBranches = {
+      async ensureAll(repositories: Iterable<string>): Promise<void> {
+        for (const repository of repositories) {
+          ensured.push(repository);
+          await config.update((current) => ({
+            ...current,
+            repositories: {
+              ...current.repositories,
+              [repository]: { setupCommands: [], integrationBranch: "main" },
+            },
+          }));
+        }
+      },
+    } as IntegrationBranchResolver;
+
+    const service = new TopicService({
+      config,
+      topics: item.topics,
+      provisioner: item.provisioner,
+      integrationBranches,
+    });
+    await service.start();
+    service.stop();
+
+    expect(ensured).toEqual(["LedgerHQ/revault"]);
+    expect(service.snapshot().integrationBranches).toEqual({ "LedgerHQ/revault": "main" });
+  });
+
+  test("observes Integration Status per Topic and explains every Unknown", async () => {
+    const item = await world();
+    await stopWorld(item);
+    const config = createConfigStore(item.paths);
+    await config.update((current) => ({
+      ...current,
+      repositories: {
+        "LedgerHQ/revault": {
+          setupCommands: [],
+          basePath: "/checkouts/revault",
+          integrationBranch: "main",
+        },
+      },
+    }));
+    const child = await ready(item.topics, "Child", "feat-child");
+    const parent = await item.topics.update(
+      (await ready(item.topics, "Parent", "feat-parent")).id,
+      (current) => ({ ...current, integrationTarget: { kind: "topic", topicId: child.id } }),
+    );
+    const pending = await item.topics.update(
+      (await ready(item.topics, "Pending", "feat-pending")).id,
+      (current) => ({ ...current, parentTopicId: parent.id, chainState: "pending" }),
+    );
+    const provisioning = await item.topics.create({
+      name: "Provisioning",
+      branch: "feat-provisioning",
+      repository: "LedgerHQ/revault",
+    });
+    const observed: IntegrationStatusRequest[] = [];
+    const integrationStatuses = {
+      observe(request: IntegrationStatusRequest): Promise<IntegrationStatus> {
+        observed.push(request);
+        return Promise.resolve({
+          kind: "behind",
+          target: request.targetBranch,
+          ahead: 1,
+          behind: 2,
+        });
+      },
+    } as IntegrationStatusObserver;
+
+    const service = new TopicService({
+      config,
+      topics: item.topics,
+      provisioner: item.provisioner,
+      integrationStatuses,
+    });
+    const events: TopicServiceEvent[] = [];
+    service.subscribe((event) => events.push(event));
+    await service.start();
+    service.stop();
+
+    const statuses = service.snapshot().integrationStatuses;
+    // The child has no recorded target and no children of its own: the Integration Branch.
+    expect(statuses[child.id]).toEqual({ kind: "behind", target: "main", ahead: 1, behind: 2 });
+    expect(statuses[parent.id]).toEqual({
+      kind: "behind",
+      target: "feat-child",
+      ahead: 1,
+      behind: 2,
+    });
+    expect(statuses[pending.id]).toEqual({
+      kind: "unknown",
+      detail: "Insertion into the Integration Chain is still pending.",
+    });
+    expect(statuses[provisioning.id]).toEqual({
+      kind: "unknown",
+      detail: "Topic setup is not finished.",
+    });
+    expect(observed.map((request) => request.repositoryPath)).toEqual([
+      "/checkouts/revault",
+      "/checkouts/revault",
+    ]);
+    expect(observed.map((request) => request.branch)).toEqual(["feat-child", "feat-parent"]);
+    expect(events.filter((event) => event.type === "integration-status-changed").length).toBe(4);
+  });
+
+  test("reports Unknown while the repository has no Integration Branch", async () => {
+    const item = await world();
+    await stopWorld(item);
+    const topic = await ready(item.topics, "Solo", "feat-solo");
+    const integrationStatuses = {
+      observe(): Promise<IntegrationStatus> {
+        throw new Error("The observer must not run without a resolved Integration Target.");
+      },
+    } as unknown as IntegrationStatusObserver;
+
+    const service = new TopicService({
+      config: createConfigStore(item.paths),
+      topics: item.topics,
+      provisioner: item.provisioner,
+      integrationStatuses,
+    });
+    await service.start();
+    service.stop();
+
+    expect(service.snapshot().integrationStatuses[topic.id]).toEqual({
+      kind: "unknown",
+      detail: "The repository has no Integration Branch yet.",
+    });
+  });
+
   test("hydrates valid Topics and reports corrupt manifest diagnostics", async () => {
     const item = await world();
     await stopWorld(item);

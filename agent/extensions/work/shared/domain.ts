@@ -22,6 +22,14 @@ export type ActionId = (typeof ACTION_IDS)[number];
 export type ActionPolicy = "allow" | "ask" | "deny";
 export type ActionPolicyMap = Partial<Record<ActionId, ActionPolicy>>;
 
+/**
+ * Everything that one confirmation can cover: every policy action, plus the explicit
+ * Integration Chain change, which asks only because current Git ancestry does not support
+ * the new edge. `topic.change-chain` is deliberately outside `ACTION_IDS`, because it is
+ * never a configurable policy.
+ */
+export type ConfirmableActionId = ActionId | "topic.change-chain";
+
 export interface WorkPolicies {
   defaults: ActionPolicyMap;
   repositories: Record<string, ActionPolicyMap>;
@@ -37,6 +45,11 @@ export interface RepositoryRecipe {
    * so a Topic can adopt an existing checkout outside `WORK_BASE` (for example `~/.pi`).
    */
   basePath?: string;
+  /**
+   * Local Branch that a root Topic integrates into. It is inferred once from the
+   * repository and then stays stable; version 1 changes it through manual configuration.
+   */
+  integrationBranch?: string;
 }
 
 export interface WorkConfig {
@@ -135,6 +148,15 @@ export function pullRequestStatus(ref: PullRequestRef): PullRequestStatus {
   return "clear";
 }
 
+/** Chain participation of a Topic. A pending Topic is not yet part of the active chain. */
+export type TopicChainState = "active" | "pending";
+
+/**
+ * Durable link to the Branch that a Topic must contain. A Topic Target keeps chain
+ * order stable when a rebase changes commit SHAs.
+ */
+export type IntegrationTarget = { kind: "integration-branch" } | { kind: "topic"; topicId: string };
+
 export interface TopicManifest {
   version: typeof WORK_DATA_VERSION;
   id: string;
@@ -152,6 +174,20 @@ export interface TopicManifest {
    * so new Topics and manifests predating Focus start Focused.
    */
   focused: boolean;
+  /**
+   * Parent Topic of a one-level family. Absent means that the Topic is a root Topic.
+   * A Parent Topic and its children always belong to the same repository.
+   */
+  parentTopicId?: string;
+  /**
+   * Immutable commit at which a child Branch started. It is provenance and duplicate
+   * protection only; it never defines chain order or Integration Status after creation.
+   */
+  originCommit?: string;
+  /** Durable Integration Target. Absent means that no target is recorded yet. */
+  integrationTarget?: IntegrationTarget;
+  /** Chain state. Absent means active, so manifests predating chains stay active. */
+  chainState?: TopicChainState;
   createdAt: string;
   updatedAt: string;
 }
@@ -167,6 +203,29 @@ export interface TopicStartPoint {
 /** Versioned daemon creation input, separate from durable Topic data. */
 export interface TopicCreationRequest extends NewTopic {
   startPoint?: TopicStartPoint;
+}
+
+/**
+ * Versioned daemon child-creation input. A child Topic always starts at an exact Start
+ * Point of its Parent Topic Branch; the Branch is optional, because a client can leave the
+ * deterministic name-to-Branch conversion to the daemon.
+ */
+export interface ChildTopicCreationRequest {
+  parentTopicId: string;
+  name: string;
+  branch?: string;
+  startPoint: TopicStartPoint;
+}
+
+/**
+ * The durable chain placement written with a new child Topic, before provisioning starts.
+ * It records provenance and the intended chain position without touching the active chain.
+ */
+export interface NewTopicPlacement {
+  parentTopicId: string;
+  originCommit: string;
+  integrationTarget: IntegrationTarget;
+  chainState: TopicChainState;
 }
 
 export interface WorkFailureDetails {
@@ -200,6 +259,7 @@ const MAIN_AGENT_STATE_SET = new Set<string>([
   "stopped",
   "failed",
 ]);
+const CHAIN_STATE_SET = new Set<string>(["active", "pending"]);
 const TOPIC_KEYS = new Set([
   "version",
   "id",
@@ -211,6 +271,10 @@ const TOPIC_KEYS = new Set([
   "worktreePath",
   "mainAgent",
   "focused",
+  "parentTopicId",
+  "originCommit",
+  "integrationTarget",
+  "chainState",
   "createdAt",
   "updatedAt",
 ]);
@@ -379,7 +443,28 @@ function parseRepositoryRecipe(input: unknown): RepositoryRecipe {
   });
   const recipe: RepositoryRecipe = { setupCommands };
   if (basePath !== undefined) recipe.basePath = basePath;
+  const integrationBranch = value["integrationBranch"];
+  if (integrationBranch !== undefined) {
+    if (typeof integrationBranch !== "string" || !isValidBranchName(integrationBranch)) {
+      throw new WorkDataError(
+        "invalid-config",
+        "A repository integrationBranch is not a valid Git branch name.",
+      );
+    }
+    recipe.integrationBranch = integrationBranch;
+  }
   return recipe;
+}
+
+/**
+ * The configured Integration Branch of a repository. Returns undefined while no
+ * Integration Branch is inferred and persisted yet.
+ */
+export function resolveIntegrationBranch(
+  config: Pick<WorkConfig, "repositories">,
+  repository: string,
+): string | undefined {
+  return config.repositories[repository]?.integrationBranch;
 }
 
 /**
@@ -466,6 +551,37 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
   // A manifest predating Focus has no flag; it starts in the Focused part.
   const focused = focusedValue ?? true;
 
+  const parentTopicId = value["parentTopicId"];
+  if (parentTopicId !== undefined) {
+    if (typeof parentTopicId !== "string" || !isTopicId(parentTopicId)) {
+      throw new WorkDataError("invalid-topic", "Topic parentTopicId is not a valid Topic id.");
+    }
+    if (parentTopicId === id) {
+      throw new WorkDataError("invalid-topic", "Topic parentTopicId must not be the Topic itself.");
+    }
+  }
+  const originCommitValue = value["originCommit"];
+  const originCommit =
+    originCommitValue === undefined ? undefined : parseOriginCommit(originCommitValue);
+  const targetValue = value["integrationTarget"];
+  const integrationTarget =
+    targetValue === undefined ? undefined : parseIntegrationTarget(targetValue);
+  if (integrationTarget?.kind === "topic" && integrationTarget.topicId === id) {
+    throw new WorkDataError(
+      "invalid-topic",
+      "Topic integrationTarget must not be the Topic itself.",
+    );
+  }
+  const chainStateValue = value["chainState"];
+  if (
+    chainStateValue !== undefined &&
+    (typeof chainStateValue !== "string" || !CHAIN_STATE_SET.has(chainStateValue))
+  ) {
+    throw new WorkDataError("invalid-topic", "Topic chainState must be active or pending.");
+  }
+  // A manifest predating Integration Chains has no chain state; it is active.
+  const chainState = chainStateValue as TopicChainState | undefined;
+
   return {
     version: WORK_DATA_VERSION,
     id,
@@ -476,6 +592,10 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
     setup,
     worktreePath,
     focused,
+    ...(parentTopicId === undefined ? {} : { parentTopicId }),
+    ...(originCommit === undefined ? {} : { originCommit }),
+    ...(integrationTarget === undefined ? {} : { integrationTarget }),
+    ...(chainState === undefined ? {} : { chainState }),
     mainAgent: {
       sessionId,
       sessionFile: nullableString(
@@ -490,6 +610,33 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
 
 export function isTopicId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+/** Parses a durable Integration Target reference from stored or protocol data. */
+export function parseIntegrationTarget(input: unknown): IntegrationTarget {
+  const value = object(input, "Integration Target must be an object.");
+  const kind = value["kind"];
+  if (kind === "integration-branch") {
+    exactKeys(value, new Set(["kind"]), "Integration Target");
+    return { kind: "integration-branch" };
+  }
+  if (kind !== "topic") {
+    throw new WorkDataError("invalid-topic", "Integration Target kind is invalid.");
+  }
+  exactKeys(value, new Set(["kind", "topicId"]), "Integration Target");
+  const topicId = value["topicId"];
+  if (typeof topicId !== "string" || !isTopicId(topicId)) {
+    throw new WorkDataError("invalid-topic", "Integration Target topicId is not a valid Topic id.");
+  }
+  return { kind: "topic", topicId };
+}
+
+/** Parses an immutable child Origin Commit; only a full lowercase SHA is durable data. */
+export function parseOriginCommit(input: unknown): string {
+  if (typeof input !== "string" || !/^[0-9a-f]{40}$/.test(input)) {
+    throw new WorkDataError("invalid-topic", "Topic originCommit must be a full lowercase SHA.");
+  }
+  return input;
 }
 
 function requireVersion(value: Record<string, unknown>, subject: string): void {

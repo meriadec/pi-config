@@ -222,6 +222,9 @@ async function runCli(
       captured.push(input);
       return client.createTopic(input, requestId, timeoutMs);
     },
+    createChildTopic(input, requestId, timeoutMs) {
+      return client.createChildTopic(input, requestId, timeoutMs);
+    },
     confirm: (token, requestId, timeoutMs) => client.confirm(token, requestId, timeoutMs),
     reject: (token, requestId, timeoutMs) => client.reject(token, requestId, timeoutMs),
     close: () => client.close(),

@@ -4,15 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { WORK_PROTOCOL_VERSION, type DaemonSnapshot, type WorkEvent } from "../daemon/protocol.ts";
-import type { TopicMutationResult, WorkActionResult } from "../daemon/topic-service.ts";
+import type {
+  LegacyMigrationApplyResult,
+  LegacyMigrationPreviewResult,
+  TopicMutationResult,
+  WorkActionResult,
+} from "../daemon/topic-service.ts";
+import type { LegacyMigrationPreview } from "../shared/legacy-migration.ts";
+import type { IntegrationStatus } from "../daemon/integration-status.ts";
 import type { MainAgentActionResult, WorkspaceActionResult } from "../daemon/desktop.ts";
-import type { NewTopic, TopicManifest } from "../shared/domain.ts";
+import type { IntegrationTarget, NewTopic, TopicManifest } from "../shared/domain.ts";
 import { createConfigStore, createWorkPaths } from "../shared/index.ts";
 import { WorkDashboardComponent, type DashboardClient } from "./dashboard-component.ts";
+import type { ResolvedChildTopicCreationInput } from "./topic-creation.ts";
 import {
   dashboardViewModel,
   handleDashboardInput,
   hydrateDashboard,
+  openMigrationPreview,
   initialDashboardState,
   advanceShimmer,
   hasShimmeringAgent,
@@ -88,11 +97,40 @@ function topic(
   } satisfies TopicManifest;
 }
 
+// Nerd Font glyphs of the Integration Status column.
+const CURRENT_GLYPH = "\uF058";
+const CONFLICT_GLYPH = "\uF071";
+const UNKNOWN_GLYPH = "\uF059";
+
+/** One Topic with durable chain data: Parent Topic, Integration Target, and chain state. */
+function familyTopic(
+  id: string,
+  name: string,
+  chain: {
+    parentTopicId?: string;
+    integrationTarget?: TopicManifest["integrationTarget"];
+    chainState?: TopicManifest["chainState"];
+    setup?: TopicManifest["setup"]["state"];
+  },
+): TopicManifest {
+  return {
+    ...topic(id, name, chain.setup ?? "ready"),
+    repository: "owner/family",
+    ...(chain.parentTopicId === undefined ? {} : { parentTopicId: chain.parentTopicId }),
+    ...(chain.integrationTarget === undefined
+      ? {}
+      : { integrationTarget: chain.integrationTarget }),
+    ...(chain.chainState === undefined ? {} : { chainState: chain.chainState }),
+  };
+}
+
 function snapshot(
   topics: readonly TopicManifest[] = [],
   knownRepositories: readonly string[] = [],
+  integrationStatuses: Readonly<Record<string, IntegrationStatus>> = {},
 ): DaemonSnapshot {
   return {
+    integrationStatuses,
     revision: 0,
     topics,
     diagnostics: [],
@@ -455,7 +493,10 @@ describe("dashboard state and navigation", () => {
   test("bubbles Topics with a running Main Agent above inactive ones and dims the inactive", () => {
     let state = hydrateDashboard(
       initialDashboardState(),
-      snapshot([topic(ID_A, "Alpha"), topic(ID_B, "Beta")]),
+      snapshot([topic(ID_A, "Alpha"), topic(ID_B, "Beta")], [], {
+        [ID_A]: { kind: "current" },
+        [ID_B]: { kind: "current" },
+      }),
     );
     // All Main Agents stopped: pure name order.
     expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B]);
@@ -966,6 +1007,338 @@ describe("dashboard state and navigation", () => {
     expect(activeTree).not.toContain("Tokenization > 01");
   });
 
+  test("orders a durable family by Integration Chain and keeps pending children in place", () => {
+    const parent = familyTopic(ID_A, "Parent", {
+      integrationTarget: { kind: "topic", topicId: ID_C },
+    });
+    // Alphabetical order would put alpha first; the Integration Chain keeps zeta first.
+    const zeta = familyTopic(ID_B, "zeta", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "integration-branch" },
+    });
+    const alpha = familyTopic(ID_C, "alpha", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "topic", topicId: ID_B },
+    });
+    const pending = familyTopic(ID_D, "pending-child", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "topic", topicId: ID_B },
+      chainState: "pending",
+      setup: "provisioning",
+    });
+    const state = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([alpha, parent, pending, zeta], [], {
+        [ID_A]: { kind: "current" },
+        [ID_B]: { kind: "current" },
+        [ID_C]: { kind: "behind", target: "zeta", ahead: 2, behind: 1 },
+      }),
+    );
+
+    expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B, ID_D, ID_C]);
+    const tree = stripSgr(renderDashboard(state, 120, 24).join("\n"));
+    expect(tree).toContain("  ├─ zeta");
+    expect(tree).toContain("  ├─ pending-child");
+    expect(tree).toContain("  └─ alpha");
+  });
+
+  test("colours the first broken chain edge and leaves later current edges green", () => {
+    const parent = familyTopic(ID_A, "Parent", {
+      integrationTarget: { kind: "topic", topicId: ID_C },
+    });
+    const first = familyTopic(ID_B, "first", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "integration-branch" },
+    });
+    const second = familyTopic(ID_C, "second", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "topic", topicId: ID_B },
+    });
+    const pending = familyTopic(ID_D, "pending-child", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "topic", topicId: ID_C },
+      chainState: "pending",
+      setup: "setup-failed",
+    });
+    const state = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([parent, first, second, pending], [], {
+        [ID_A]: { kind: "current" },
+        [ID_B]: { kind: "conflict", target: "main", behind: 3 },
+        [ID_C]: { kind: "current" },
+      }),
+    );
+    const rows = renderDashboard(state, 120, 24);
+    const rowOf = (name: string) => rows.find((line) => line.includes(name))!;
+
+    expect(rowOf("first")).toContain(`\x1b[31m${CONFLICT_GLYPH}`);
+    expect(rowOf("second")).toContain(`\x1b[32m${CURRENT_GLYPH}`);
+    expect(rowOf("Parent")).toContain(`\x1b[32m${CURRENT_GLYPH}`);
+    // A setup-failed pending child keeps its position and reads Unknown.
+    expect(stripSgr(rowOf("pending-child"))).toContain(UNKNOWN_GLYPH);
+    expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B, ID_C, ID_D]);
+  });
+
+  test("shows textual Integration Status, Branch, counts, and a bounded diagnostic", () => {
+    const parent = familyTopic(ID_A, "Parent", {
+      integrationTarget: { kind: "topic", topicId: ID_B },
+    });
+    const child = familyTopic(ID_B, "child", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "integration-branch" },
+      chainState: "pending",
+    });
+    let state = hydrateDashboard(initialDashboardState(), {
+      ...snapshot([parent, child], [], {
+        [ID_B]: {
+          kind: "behind",
+          target: "main",
+          ahead: 4,
+          behind: 2,
+          detail: "The Integration Target has new commits.",
+        },
+      }),
+      integrationBranches: { [parent.repository]: "main" },
+    });
+    state = { ...state, selectedTopicId: ID_B, sidebarOpen: true };
+
+    const detail = stripSgr(renderDashboard(state, 260, 40).join("\n"));
+    expect(detail).toContain(
+      "Integration: Behind · target main · ahead 4 · behind 2 · pending insertion",
+    );
+    expect(detail).toContain("Integration Branch: main");
+    expect(detail).toContain("Parent Topic: Parent");
+    expect(detail).toContain("Integration detail: The Integration Target has new commits.");
+  });
+
+  test("offers Add Child Topic on a Parent Topic only", () => {
+    const parent = familyTopic(ID_A, "Parent", {
+      integrationTarget: { kind: "topic", topicId: ID_B },
+    });
+    const child = familyTopic(ID_B, "child", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "integration-branch" },
+    });
+    let state = hydrateDashboard(initialDashboardState(), snapshot([parent, child]));
+    state = { ...state, selectedTopicId: ID_A, sidebarOpen: true, focus: "actions" };
+    expect(stripSgr(renderDashboard(state, 120, 40).join("\n"))).toContain("Add Child Topic");
+
+    const onChild = { ...state, selectedTopicId: ID_B };
+    expect(stripSgr(renderDashboard(onChild, 120, 40).join("\n"))).not.toContain("Add Child Topic");
+  });
+
+  test("offers only the chain maintenance actions that the daemon can accept", () => {
+    const parent = familyTopic(ID_A, "Parent", {
+      integrationTarget: { kind: "topic", topicId: ID_C },
+    });
+    const first = familyTopic(ID_B, "first-child", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "integration-branch" },
+    });
+    const second = familyTopic(ID_C, "second-child", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "topic", topicId: ID_B },
+    });
+    const other = familyTopic(ID_D, "Other root", {
+      integrationTarget: { kind: "integration-branch" },
+    });
+    let state = hydrateDashboard(initialDashboardState(), snapshot([parent, first, second, other]));
+    state = { ...state, selectedTopicId: ID_B, sidebarOpen: true, focus: "actions" };
+
+    const onChild = stripSgr(renderDashboard(state, 120, 40).join("\n"));
+    expect(onChild).toContain("Change Parent Topic");
+    expect(onChild).toContain("Remove Parent Topic");
+    expect(onChild).toContain("Move in Integration Chain");
+    expect(onChild).not.toContain("Reset Integration Target");
+
+    const onParent = stripSgr(
+      renderDashboard({ ...state, selectedTopicId: ID_A }, 120, 40).join("\n"),
+    );
+    expect(onParent).toContain("Reset Integration Target");
+    // A Parent Topic keeps its children, so it can never join another family.
+    expect(onParent).not.toContain("Change Parent Topic");
+    expect(onParent).not.toContain("Remove Parent Topic");
+
+    // A root Topic without a family offers no chain repair at all.
+    const alone = hydrateDashboard(initialDashboardState(), snapshot([topic(ID_E, "Alpha")]));
+    const onAlone = stripSgr(
+      renderDashboard(
+        { ...alone, selectedTopicId: ID_E, sidebarOpen: true, focus: "actions" },
+        120,
+        40,
+      ).join("\n"),
+    );
+    expect(onAlone).not.toContain("Change Parent Topic");
+    expect(onAlone).not.toContain("Reset Integration Target");
+  });
+
+  test("submits one chain move from the side-view chooser and cancels on escape", () => {
+    const parent = familyTopic(ID_A, "Parent", {
+      integrationTarget: { kind: "topic", topicId: ID_C },
+    });
+    const first = familyTopic(ID_B, "first-child", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "integration-branch" },
+    });
+    const second = familyTopic(ID_C, "second-child", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "topic", topicId: ID_B },
+    });
+    let state = hydrateDashboard(initialDashboardState(), {
+      ...snapshot([parent, first, second]),
+      integrationBranches: { "owner/family": "main" },
+    });
+    state = { ...state, selectedTopicId: ID_B, sidebarOpen: true, focus: "actions" };
+    // Walk the action rail to Move in Integration Chain.
+    let opened = { state, exit: false } as ReturnType<typeof handleDashboardInput>;
+    for (let step = 0; step < 20; step += 1) {
+      const view = stripSgr(renderDashboard(opened.state, 120, 40).join("\n"));
+      if (view.includes("> Move in Integration Chain")) break;
+      opened = handleDashboardInput(opened.state, "j");
+    }
+    opened = handleDashboardInput(opened.state, "\r");
+    const chooser = stripSgr(renderDashboard(opened.state, 120, 40).join("\n"));
+    expect(chooser).toContain("MOVE IN INTEGRATION CHAIN");
+    expect(chooser).toContain("main (first in the chain)");
+    expect(chooser).toContain("After second-child");
+
+    const cancelled = handleDashboardInput(opened.state, "\x1b");
+    expect(cancelled.state.chainPicker).toBeUndefined();
+    expect(cancelled.action).toBeUndefined();
+
+    const moved = handleDashboardInput(handleDashboardInput(opened.state, "j").state, "\r");
+    expect(moved.action).toEqual({
+      type: "move-in-chain",
+      topicId: ID_B,
+      target: { kind: "topic", topicId: ID_C },
+    });
+    expect(moved.state.chainPicker).toBeUndefined();
+  });
+
+  test("offers legacy migration only while an unresolved legacy family exists", () => {
+    const parent = familyTopic(ID_A, "Parent", {
+      integrationTarget: { kind: "integration-branch" },
+    });
+    const legacy = hydrateDashboard(initialDashboardState(), {
+      ...snapshot([parent]),
+      legacyFamilies: 1,
+    });
+    const state = {
+      ...legacy,
+      selectedTopicId: ID_A,
+      sidebarOpen: true,
+      focus: "actions" as const,
+    };
+    expect(stripSgr(renderDashboard(state, 120, 40).join("\n"))).toContain(
+      "Migrate Legacy Name Hierarchies",
+    );
+
+    const migrated = hydrateDashboard(initialDashboardState(), {
+      ...snapshot([parent]),
+      legacyFamilies: 0,
+    });
+    expect(
+      stripSgr(
+        renderDashboard(
+          { ...migrated, selectedTopicId: ID_A, sidebarOpen: true, focus: "actions" },
+          120,
+          40,
+        ).join("\n"),
+      ),
+    ).not.toContain("Migrate Legacy Name Hierarchies");
+  });
+
+  test("shows every proposal and skipped Topic, and needs explicit approval", () => {
+    const parent = familyTopic(ID_A, "Parent", {});
+    const child = familyTopic(ID_B, "Parent > child", {});
+    const stranger = familyTopic(ID_C, "Other > lost", {});
+    const state = hydrateDashboard(initialDashboardState(), {
+      ...snapshot([parent, child, stranger]),
+      legacyFamilies: 1,
+    });
+    const opened = openMigrationPreview(state, {
+      families: [
+        {
+          parentTopicId: ID_A,
+          children: [{ topicId: ID_B, integrationTarget: { kind: "integration-branch" } }],
+          parentIntegrationTarget: { kind: "topic", topicId: ID_B },
+        },
+      ],
+      skipped: [{ topicId: ID_C, code: "no-parent-match", message: 'No Topic is named "Other".' }],
+    });
+    const view = stripSgr(renderDashboard(opened, 120, 40).join("\n"));
+    expect(view).toContain("MIGRATE LEGACY NAME HIERARCHIES");
+    expect(view).toContain("Parent Topic Parent");
+    expect(view).toContain("child Parent > child");
+    expect(view).toContain("no-parent-match");
+    expect(view).toContain("enter approve");
+
+    const cancelled = handleDashboardInput(opened, "\x1b");
+    expect(cancelled.action).toBeUndefined();
+    expect(cancelled.state.migration).toBeUndefined();
+
+    const approved = handleDashboardInput(opened, "\r");
+    expect(approved.action).toEqual({ type: "migrate-legacy", parentTopicIds: [ID_A] });
+    expect(approved.state.migration).toBeUndefined();
+  });
+
+  test("submits one Change Parent Topic from the side-view chooser", () => {
+    const parent = familyTopic(ID_A, "Parent", {
+      integrationTarget: { kind: "topic", topicId: ID_B },
+    });
+    const child = familyTopic(ID_B, "child", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "integration-branch" },
+    });
+    const adopter = familyTopic(ID_D, "Adopter", {
+      integrationTarget: { kind: "integration-branch" },
+    });
+    let state = hydrateDashboard(initialDashboardState(), snapshot([parent, child, adopter]));
+    state = {
+      ...state,
+      selectedTopicId: ID_B,
+      chainPicker: { topicId: ID_B, kind: "change-parent", index: 0 },
+    };
+
+    const chooser = stripSgr(renderDashboard(state, 120, 40).join("\n"));
+    expect(chooser).toContain("CHANGE PARENT TOPIC");
+    expect(chooser).toContain("Adopter");
+    // The current Parent Topic is never offered again.
+    expect(chooser).not.toContain("> Parent");
+
+    const submitted = handleDashboardInput(state, "\r");
+    expect(submitted.action).toEqual({
+      type: "change-parent",
+      topicId: ID_B,
+      parentTopicId: ID_D,
+    });
+  });
+
+  test("Focus and Unfocus move the complete family and keep the selection", () => {
+    const parent = familyTopic(ID_A, "Parent", {
+      integrationTarget: { kind: "topic", topicId: ID_B },
+    });
+    const child = familyTopic(ID_B, "child", {
+      parentTopicId: ID_A,
+      integrationTarget: { kind: "integration-branch" },
+    });
+    const other = topic(ID_E, "Alpha");
+    let state = hydrateDashboard(initialDashboardState(), snapshot([parent, child, other]));
+    state = { ...state, selectedTopicId: ID_B };
+
+    const unfocused = handleDashboardInput(state, "J");
+    expect(unfocused.action).toEqual({ type: "set-focus", topicId: ID_B, focused: false });
+    expect(unfocused.state.selectedTopicId).toBe(ID_B);
+    expect(unfocused.state.topics.filter((item) => !item.focused).map((item) => item.id)).toEqual([
+      ID_A,
+      ID_B,
+    ]);
+    // The family stays together above the separator again after Focus.
+    const refocused = handleDashboardInput(unfocused.state, "K");
+    expect(refocused.state.topics.every((item) => item.focused)).toBeTrue();
+    expect(refocused.state.topics.map((item) => item.id)).toEqual([ID_E, ID_A, ID_B]);
+  });
+
   test("renders narrow and wide dashboards without exceeding terminal width", () => {
     let state = hydrateDashboard(
       initialDashboardState(),
@@ -995,6 +1368,7 @@ class FakeDashboardClient implements DashboardClient {
   handler: ((event: WorkEvent) => void) | undefined;
   disconnect: ((error: Error) => void) | undefined;
   createCalls: Array<{ input: NewTopic; requestId?: string }> = [];
+  createChildCalls: Array<{ input: ResolvedChildTopicCreationInput; requestId?: string }> = [];
   retryCalls: Array<{ topicId: string; requestId?: string }> = [];
   renameCalls: Array<{ topicId: string; name: string; requestId?: string }> = [];
   noteCalls: Array<{ topicId: string; note: string; requestId?: string }> = [];
@@ -1004,10 +1378,25 @@ class FakeDashboardClient implements DashboardClient {
     topicId: string;
     requestId?: string;
   }> = [];
+  chainCalls: Array<{
+    type: "change-parent" | "remove-parent" | "move-in-chain" | "reset-chain";
+    topicId: string;
+    parentTopicId?: string;
+    target?: IntegrationTarget;
+    requestId?: string;
+  }> = [];
+  migrationCalls: Array<{
+    type: "preview" | "apply";
+    parentTopicIds?: readonly string[];
+    requestId?: string;
+  }> = [];
+  migrationPreview: LegacyMigrationPreview = { families: [], skipped: [] };
+  legacyFamilies = 0;
   confirmCalls: Array<{ token: string; requestId?: string }> = [];
   rejectCalls: Array<{ token: string; requestId?: string }> = [];
   snapshotCalls = 0;
   refreshCalls = 0;
+  chainResult: TopicMutationResult = { status: "chain-changed", topic: topic(ID_A, "Alpha") };
   createResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
   retryResult: TopicMutationResult = { status: "ready", topic: topic(ID_A, "Alpha") };
   renameResult: TopicMutationResult = { status: "renamed", topic: topic(ID_A, "Alpha") };
@@ -1023,7 +1412,10 @@ class FakeDashboardClient implements DashboardClient {
 
   async snapshot(): Promise<DaemonSnapshot> {
     this.snapshotCalls += 1;
-    return snapshot(this.topics, this.knownRepositories);
+    return {
+      ...snapshot(this.topics, this.knownRepositories),
+      legacyFamilies: this.legacyFamilies,
+    };
   }
 
   async refresh(): Promise<{ refreshed: boolean }> {
@@ -1037,6 +1429,14 @@ class FakeDashboardClient implements DashboardClient {
 
   async createTopic(input: NewTopic, requestId?: string): Promise<TopicMutationResult> {
     this.createCalls.push({ input, ...(requestId === undefined ? {} : { requestId }) });
+    return this.createResult;
+  }
+
+  async createChildTopic(
+    input: ResolvedChildTopicCreationInput,
+    requestId?: string,
+  ): Promise<TopicMutationResult> {
+    this.createChildCalls.push({ input, ...(requestId === undefined ? {} : { requestId }) });
     return this.createResult;
   }
 
@@ -1089,6 +1489,78 @@ class FakeDashboardClient implements DashboardClient {
       topicId,
       expiresAt: "2026-01-01T00:01:00.000Z",
       text: "Delete only this local Topic record? The branch, worktree, base checkout, Pi session, and open windows will remain.",
+    };
+  }
+
+  async changeTopicParent(
+    topicId: string,
+    parentTopicId: string,
+    requestId?: string,
+  ): Promise<TopicMutationResult> {
+    this.chainCalls.push({
+      type: "change-parent",
+      topicId,
+      parentTopicId,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    return this.chainResult;
+  }
+
+  async removeTopicParent(topicId: string, requestId?: string): Promise<TopicMutationResult> {
+    this.chainCalls.push({
+      type: "remove-parent",
+      topicId,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    return this.chainResult;
+  }
+
+  async moveTopicInChain(
+    topicId: string,
+    target: IntegrationTarget,
+    requestId?: string,
+  ): Promise<TopicMutationResult> {
+    this.chainCalls.push({
+      type: "move-in-chain",
+      topicId,
+      target,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    return this.chainResult;
+  }
+
+  async resetIntegrationTargets(topicId: string, requestId?: string): Promise<TopicMutationResult> {
+    this.chainCalls.push({
+      type: "reset-chain",
+      topicId,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    return this.chainResult;
+  }
+
+  async previewLegacyMigration(requestId?: string): Promise<LegacyMigrationPreviewResult> {
+    this.migrationCalls.push({
+      type: "preview",
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    return { status: "migration-preview", preview: this.migrationPreview };
+  }
+
+  async applyLegacyMigration(
+    parentTopicIds?: readonly string[],
+    requestId?: string,
+  ): Promise<LegacyMigrationApplyResult> {
+    this.migrationCalls.push({
+      type: "apply",
+      ...(parentTopicIds === undefined ? {} : { parentTopicIds }),
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    return {
+      status: "migration-applied",
+      migrationId: "run-1",
+      appliedParentTopicIds: parentTopicIds ?? [],
+      rolledBackParentTopicIds: [],
+      skipped: [],
     };
   }
 
@@ -1328,6 +1800,43 @@ describe("dashboard submission behavior", () => {
     component.dispose();
   });
 
+  test("previews the legacy migration and applies it only after approval", async () => {
+    const client = new FakeDashboardClient();
+    client.legacyFamilies = 1;
+    client.migrationPreview = {
+      families: [
+        {
+          parentTopicId: ID_A,
+          children: [],
+          parentIntegrationTarget: { kind: "integration-branch" },
+        },
+      ],
+      skipped: [],
+    };
+    const component = dashboardComponent(client);
+    await Bun.sleep(0);
+    component.handleInput("l");
+    for (let step = 0; step < 20; step += 1) {
+      if (component.snapshotState().migration !== undefined) break;
+      const view = stripSgr(component.render(120).join("\n"));
+      if (view.includes("> Migrate Legacy Name Hierarchies")) {
+        component.handleInput("\r");
+        await Bun.sleep(0);
+        break;
+      }
+      component.handleInput("j");
+    }
+    expect(client.migrationCalls.map((call) => call.type)).toEqual(["preview"]);
+    expect(component.snapshotState().migration?.preview.families).toHaveLength(1);
+
+    component.handleInput("\r");
+    await Bun.sleep(0);
+    expect(client.migrationCalls.map((call) => call.type)).toEqual(["preview", "apply"]);
+    expect(client.migrationCalls[1]?.parentTopicIds).toEqual([ID_A]);
+    expect(component.snapshotState().migration).toBeUndefined();
+    component.dispose();
+  });
+
   test("retries an in-flight workspace action after reconnect with the same request id", async () => {
     const first = new FakeDashboardClient();
     first.openTerminal = async (topicId, requestId) => {
@@ -1381,12 +1890,8 @@ describe("dashboard submission behavior", () => {
     await Bun.sleep(0);
     component.handleInput("l");
     component.handleInput("l");
-    component.handleInput("j");
-    component.handleInput("j");
-    component.handleInput("j");
-    component.handleInput("j");
-    component.handleInput("j");
-    component.handleInput("j");
+    // Actions: workspace, terminal, agent, reset-agent, rename, note, add-child, delete.
+    for (let step = 0; step < 7; step += 1) component.handleInput("j");
     component.handleInput("\r");
     await Bun.sleep(0);
     const warning = component.render(180).join("\n");
@@ -1420,9 +1925,11 @@ describe("dashboard submission behavior", () => {
     const component = dashboardComponent(client);
     await Bun.sleep(0);
     const before = client.snapshotCalls;
+    // Opening the dashboard already refreshed daemon state once.
+    expect(client.refreshCalls).toBe(1);
     component.handleInput("r");
     await Bun.sleep(0);
-    expect(client.refreshCalls).toBe(1);
+    expect(client.refreshCalls).toBe(2);
     expect(client.snapshotCalls).toBe(before + 1);
     expect(client.retryCalls).toHaveLength(0);
     component.dispose();
@@ -1446,6 +1953,56 @@ describe("dashboard submission behavior", () => {
     expect(client.renameCalls).toEqual([
       { topicId: ID_A, name: "Alpha2", requestId: expect.any(String) },
     ]);
+    component.dispose();
+  });
+
+  test("creates a child Topic from the Parent Topic side view", async () => {
+    const client = new FakeDashboardClient([topic(ID_A, "Alpha")]);
+    const resolved: ResolvedChildTopicCreationInput = {
+      parentTopicId: ID_A,
+      name: "Templates",
+      branch: "templates",
+      startPoint: { commit: "a".repeat(40), sourceCheckout: "/work/Alpha" },
+    };
+    const resolveCalls: unknown[] = [];
+    const component = new WorkDashboardComponent({
+      tui: { terminal: { rows: 40 }, requestRender: () => undefined } as never,
+      connect: async () => client,
+      done: () => undefined,
+      resolveChildInput: async (input) => {
+        resolveCalls.push(input);
+        return resolved;
+      },
+    });
+    await Bun.sleep(0);
+    component.handleInput("\r");
+    // Actions: workspace, terminal, agent, reset-agent, rename, note, add-child.
+    for (let step = 0; step < 6; step += 1) component.handleInput("j");
+    component.handleInput("\r");
+    expect(component.render(80).join("\n")).toContain("ADD CHILD TOPIC");
+
+    component.handleInput("Templates");
+    component.handleInput("\r");
+    expect(component.render(80).join("\n")).toContain("Start Point");
+    component.handleInput("HEAD~1");
+    component.handleInput("\r");
+    component.handleInput("\r");
+    const review = component.render(80).join("\n");
+    expect(review).toContain("Start Point: HEAD~1");
+    expect(review).toContain("Branch: templates");
+    component.handleInput("\r");
+    await Bun.sleep(0);
+
+    expect(resolveCalls).toEqual([
+      {
+        parentTopicId: ID_A,
+        name: "Templates",
+        startPoint: "HEAD~1",
+        sourceCheckout: "/work/Alpha",
+        branch: "templates",
+      },
+    ]);
+    expect(client.createChildCalls).toEqual([{ input: resolved, requestId: expect.any(String) }]);
     component.dispose();
   });
 
