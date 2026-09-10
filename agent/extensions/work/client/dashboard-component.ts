@@ -72,9 +72,9 @@ export interface DashboardClient {
     requestId?: string,
     timeoutMs?: number,
   ): Promise<TopicMutationResult>;
-  setTopicFocus(
+  moveTopicPartition(
     topicId: string,
-    focused: boolean,
+    direction: "up" | "down",
     requestId?: string,
     timeoutMs?: number,
   ): Promise<TopicMutationResult>;
@@ -634,10 +634,10 @@ function requestMutation(
         mutation.requestId,
         MUTATION_TIMEOUT_MS,
       );
-    case "set-focus":
-      return client.setTopicFocus(
+    case "move-partition":
+      return client.moveTopicPartition(
         action.topicId,
-        action.focused,
+        action.direction,
         mutation.requestId,
         MUTATION_TIMEOUT_MS,
       );
@@ -719,10 +719,8 @@ function actionResultMessage(result: WorkActionResult): string {
       return `Topic renamed to ${result.topic.name}.`;
     case "note-updated":
       return result.topic.note === undefined ? "Topic Note removed." : "Topic Note saved.";
-    case "refocused":
-      return result.topic.focused
-        ? `Focused Topic ${result.topic.name}.`
-        : `Unfocused Topic ${result.topic.name}.`;
+    case "repartitioned":
+      return `Moved Topic family ${result.topic.name}.`;
     case "chain-changed":
       return `Integration Chain of Topic ${result.topic.name} updated.`;
     case "migration-preview":

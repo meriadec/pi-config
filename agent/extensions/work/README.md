@@ -24,23 +24,26 @@ The `pi-workd` daemon runs `gh` for repository clone and pull request discovery.
 2. Run `/work`.
 3. Set `WORK_BASE` if requested.
 4. Press `a` to add a Topic. Enter its name, `owner/repository`, and Branch. Wizard fields support paste and standard text editing. At the repository stage the wizard lists the Known repositories declared in your config; type to fuzzy-match, use `↑`/`↓` to highlight a row, and press `tab` to complete it into the field. `enter` always submits the typed text, so a completion needs the explicit `tab`.
-5. Select a Topic to open the action rail. **Copy Branch Name** is the first action and copies the exact Branch name to the system clipboard. Press `n` from the Topic list to add or edit its Topic Note. Press `m` to open or focus its resumable Main Agent directly. Press `o` to focus its i3 workspace directly. Press `p` to open its pull request in a browser. Press `r` to refresh local repository state and start a background pull request refresh. Press `Shift+J` to Unfocus the selected Topic and `Shift+K` to Focus it: Focused Topics stay in the upper part, Unfocused ones sit below a blank separator, and the selection follows the moved Topic. New Topics start Focused.
+5. Select a Topic to open the action rail. **Copy Branch Name** is the first action and copies the exact Branch name to the system clipboard. Press `n` from the Topic list to add or edit its Topic Note. Press `m` to open or focus its resumable Main Agent directly. Press `o` to focus its i3 workspace directly. Press `p` to open its pull request in a browser. Press `r` to refresh local repository state and start a background pull request refresh. Press `Shift+J` to move the selected Topic family to the Partition below and `Shift+K` to move it to the Partition above. If no Partition exists in that direction, the move creates one. Empty Partitions disappear, blank lines separate the remaining Partitions, and selection follows the moved Topic.
 6. Use the action rail to access the workspace, open a terminal, or select **Start New Main Agent**. A new Main Agent gets an empty Pi session. Its previous session file is kept. When `/track-pr` polls in that session, the Main Agent column shows `tracking-pr` instead of `waiting-for-human`. A parent-owned Delegation Job has the semantic state `thinking-sub`, which the Topic row and detail show as the violet, shimmering label `thinking (sub)`. This state stays on the Topic's parent Main Agent lease; it does not create a child lease or replace the Topic's Main Agent session reference. Display precedence is Main Agent `thinking`, then `thinking (sub)`, then `tracking-pr`, then `waiting-for-human`. When a higher-precedence activity settles, the next live activity becomes visible. A ready Topic whose recorded Worktree directory no longer exists is an Orphan Topic; the Setup column shows `orphan` in bright red. When a Topic branch has a pull request, the Topic list shows its number as an underlined `#<number>` link with a progressive status. The status shows the highest-signal condition first: `merged`, `closed`, `draft`, `ci-failing` (checks are red), `feedback` (an unresolved review thread or a changes-requested review), `checks` (CI still running), `approved` (the formal review decision is approved), `ready` (Copilot reviewed and all threads are resolved), `reviewing` (a requested reviewer has not submitted yet), and finally `clear` (CI is green, no review is pending, and no thread is unresolved). The `PR` column and the **Open Pull Request in Browser** action are present only while a pull request exists.
 7. You can also add or edit a Topic Note, rename the Topic, retry setup, or delete only the Topic record from the action rail. With details closed, a Topic Note is shown in yellow in the **Note** column directly after the Topic title; the compact layout keeps it inline. In the wide list, Topic and status columns use their longest visible value, while Note receives spare width and shrinks first with an ellipsis. With details open, the list hides the Note and the detail view shows it in the same yellow. A Note is one line and at most 200 characters; saving an empty Note removes it. **Rename Topic** opens a prompt for a new display name; it changes only the Topic name, never its Branch, Worktree, or repository.
 
 Durable Parent Topic data decides the visual family. A family is one level deep, its children
 render in Integration Chain order from the Integration Branch end to the Parent Topic end, and a
 pending child stays at the position that its Integration Target records. `Shift+J` and `Shift+K`
-move the complete family with one keypress and keep the selection. **Add Child Topic** in the side
-view of a Parent Topic asks for a name, a Start Point on the Parent Topic Branch, and an optional
-Branch; an empty Branch leaves the deterministic name-to-Branch conversion to the daemon. A child
-Topic never offers **Add Child Topic**.
+move the complete family across one Partition boundary with one keypress and keep the selection.
+Partition order is the dominant sort key; Main Agent activity and names keep their existing sort
+behavior inside each Partition. New root Topics join the first Partition. **Add Child Topic** in the
+side view of a Parent Topic asks for a name, a Start Point on the Parent Topic Branch, and an optional
+Branch; an empty Branch leaves the deterministic name-to-Branch conversion to the daemon. A new
+child joins its Parent Topic's Partition, and a child Topic never offers **Add Child Topic**.
 
 The side view also repairs a family without a manifest edit. **Change Parent Topic** and **Move in
 Integration Chain** open a chooser: `j`/`k` or `↑`/`↓` move, `enter` applies, and `esc` cancels.
 **Change Parent Topic** takes the Topic out of its old chain, inserts it into the new family at the
-position that current Git ancestry gives, and adopts the new family's Focus. **Remove Parent Topic**
-reconnects the old chain and makes the Topic a root against the repository Integration Branch.
+position that current Git ancestry gives, and adopts the new family's Partition. **Remove Parent Topic**
+reconnects the old chain, keeps the Topic in its current Partition, and makes it a root against the
+repository Integration Branch.
 **Move in Integration Chain** detaches one child and inserts it before one chosen chain node; when
 current ancestry does not support the new edge, the daemon asks for one confirmation first and the
 moved edge then reads Behind or Conflict. **Reset Integration Target** on a Parent Topic rebuilds
@@ -64,8 +67,8 @@ created, and is then persisted in `~/work/config.json`. A later Branch switch in
 does not change it.
 
 A Topic that durable data does not place keeps the legacy name hierarchy: Topic names can form a
-visual hierarchy with the exact `>` separator. When the exact parent Topic exists in the same Focus
-part, the list keeps the family together and replaces repeated parent prefixes with tree
+visual hierarchy with the exact `>` separator. When the exact parent Topic exists in the same
+Partition, the list keeps the family together and replaces repeated parent prefixes with tree
 connectors. An active child moves its family but stays below its parent. This display does not
 change the stored Topic names.
 
@@ -75,16 +78,16 @@ The daemon detects unresolved legacy `>` families at startup by name only. It ch
 then. While one such family exists, the side view offers **Migrate Legacy Name Hierarchies**.
 
 The action first asks the daemon for a read-only preview. The preview matches each `>` name to the
-unique Topic of the same repository whose name equals the parent part, ignores Focus while matching,
-and orders the children only when current Git ancestry gives one unambiguous order. It shows every
+unique Topic of the same repository whose name equals the parent part, ignores Partition while
+matching, and orders the children only when current Git ancestry gives one unambiguous order. It shows every
 proposed Parent Topic and Integration Target, and every skipped Topic with a short reason
 (`no-parent-match`, `ambiguous-name-match`, `cross-repository`, `nested-child`, `not-ready`,
 `ambiguous-ancestry`). `j`/`k` or `↑`/`↓` scroll, `esc` cancels, and `enter` approves. Nothing is
 written before that approval.
 
 An approved run writes Topic metadata only: the Parent Topic link, the Integration Target, and the
-active chain state. Names, Notes, Focus, Main Agent references, setup state, Branches, Worktrees, and
-Repository Recipes stay unchanged, and no Branch or Worktree command runs. Each family is applied
+active chain state. Names, Notes, Partitions, Main Agent references, setup state, Branches, Worktrees,
+and Repository Recipes stay unchanged, and no Branch or Worktree command runs. Each family is applied
 independently, so an ambiguous family never blocks a safe one. When every legacy family is resolved,
 the name-based rendering disappears by itself.
 

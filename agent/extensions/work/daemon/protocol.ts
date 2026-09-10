@@ -4,6 +4,7 @@ import type {
   ActionId,
   ChildTopicCreationRequest,
   IntegrationTarget,
+  PartitionDirection,
   PullRequestRef,
   TopicCreationRequest,
   TopicManifest,
@@ -15,7 +16,7 @@ import type { IntegrationStatus } from "./integration-status.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 19 as const;
+export const WORK_PROTOCOL_VERSION = 20 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 
@@ -35,7 +36,7 @@ export type RequestAction =
   | "topic.retry"
   | "topic.rename"
   | "topic.set-note"
-  | "topic.set-focus"
+  | "topic.move-partition"
   | "topic.delete"
   | "workspace.access"
   | "terminal.open"
@@ -71,7 +72,11 @@ export type WorkRequest =
   | (RequestBase & { action: "topic.move-in-chain"; topicId: string; target: IntegrationTarget })
   | (RequestBase & { action: "topic.rename"; topicId: string; name: string })
   | (RequestBase & { action: "topic.set-note"; topicId: string; note: string })
-  | (RequestBase & { action: "topic.set-focus"; topicId: string; focused: boolean })
+  | (RequestBase & {
+      action: "topic.move-partition";
+      topicId: string;
+      direction: PartitionDirection;
+    })
   | (RequestBase & {
       action:
         | "topic.retry"
@@ -359,16 +364,18 @@ export function parseRequest(text: string): WorkRequest {
           id,
         ),
       };
-    case "topic.set-focus":
-      if (typeof value["focused"] !== "boolean") {
-        throw new ProtocolError("invalid-arguments", "Focused must be a boolean.", id);
+    case "topic.move-partition": {
+      const direction = value["direction"];
+      if (direction !== "up" && direction !== "down") {
+        throw new ProtocolError("invalid-arguments", "Partition direction must be up or down.", id);
       }
       return {
         ...base,
-        action: "topic.set-focus",
+        action: "topic.move-partition",
         topicId: shortString(value["topicId"], "invalid-arguments", "Topic id is required.", id),
-        focused: value["focused"],
+        direction,
       };
+    }
     case "topic.change-parent":
       return {
         ...base,

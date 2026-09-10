@@ -73,7 +73,17 @@ export function createTopicStore(paths: WorkPaths, options: TopicStoreOptions = 
       throw dataError("Cannot read topic manifest.", error);
     }
     try {
-      return parseTopicManifest(JSON.parse(text), id);
+      const stored: unknown = JSON.parse(text);
+      const topic = parseTopicManifest(stored, id);
+      if (
+        stored !== null &&
+        typeof stored === "object" &&
+        !Array.isArray(stored) &&
+        (!Object.hasOwn(stored, "partition") || Object.hasOwn(stored, "focused"))
+      ) {
+        await writeJsonAtomic(paths.topicManifest(id), topic);
+      }
+      return topic;
     } catch (error) {
       if (error instanceof WorkDataError) throw error;
       throw dataError("Topic manifest is not valid JSON.", error);
@@ -116,6 +126,15 @@ export function createTopicStore(paths: WorkPaths, options: TopicStoreOptions = 
         }
         const existing = await list();
         assertUnique(existing.topics, input.repository, input.branch);
+        const firstPartition =
+          existing.topics.length === 0
+            ? 0
+            : Math.min(...existing.topics.map((topic) => topic.partition));
+        const parentPartition =
+          placement === undefined
+            ? undefined
+            : existing.topics.find((topic) => topic.id === placement.parentTopicId)?.partition;
+        const partition = parentPartition ?? firstPartition;
         const id = idGenerator();
         assertTopicId(id);
         const timestamp = now().toISOString();
@@ -133,7 +152,7 @@ export function createTopicStore(paths: WorkPaths, options: TopicStoreOptions = 
               setupCommandsRun: false,
             },
             worktreePath: null,
-            focused: true,
+            partition,
             ...(placement === undefined ? {} : placement),
             mainAgent: { sessionId: id, sessionFile: null },
             createdAt: timestamp,

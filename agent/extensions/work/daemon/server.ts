@@ -261,12 +261,12 @@ export class WorkDaemon {
             request.note,
           );
           break;
-        case "topic.set-focus":
-          result = await this.requireTopicService().setFocus(
+        case "topic.move-partition":
+          result = await this.requireTopicService().movePartition(
             request.clientId,
             request.id,
             request.topicId,
-            request.focused,
+            request.direction,
           );
           break;
         case "topic.change-parent":

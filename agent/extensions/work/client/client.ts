@@ -16,6 +16,7 @@ import { boundMessage } from "../shared/domain.ts";
 import type {
   ChildTopicCreationRequest,
   IntegrationTarget,
+  PartitionDirection,
   TopicCreationRequest,
   WorkFailureDetails,
 } from "../shared/domain.ts";
@@ -164,15 +165,15 @@ export class WorkClient {
     ) as Promise<TopicMutationResult>;
   }
 
-  setTopicFocus(
+  moveTopicPartition(
     topicId: string,
-    focused: boolean,
+    direction: PartitionDirection,
     requestId?: string,
     timeoutMs?: number,
   ): Promise<TopicMutationResult> {
     return this.request(
-      "topic.set-focus",
-      { topicId, focused },
+      "topic.move-partition",
+      { topicId, direction },
       timeoutMs,
       requestId,
     ) as Promise<TopicMutationResult>;

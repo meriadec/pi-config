@@ -43,8 +43,8 @@ describe("legacy family detection", () => {
     expect(detection.skipped).toEqual([]);
   });
 
-  test("ignores Focus while matching names", () => {
-    const topics = legacyFamily().map((entry, index) => ({ ...entry, focused: index === 0 }));
+  test("ignores Partition while matching names", () => {
+    const topics = legacyFamily().map((entry, index) => ({ ...entry, partition: index }));
     expect(detectLegacyFamilies(topics).families).toHaveLength(1);
   });
 

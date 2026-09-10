@@ -72,7 +72,7 @@ export interface LegacyDetection {
 
 /**
  * Finds unresolved legacy families by name only. Matching uses the unique same-repository
- * Topic whose name equals the parent part of a ` > ` name, and it ignores Focus. Detection
+ * Topic whose name equals the parent part of a ` > ` name, and it ignores Partition. Detection
  * asks no Git question and changes nothing, so the daemon can run it at startup.
  */
 export function detectLegacyFamilies(topics: readonly LegacyTopic[]): LegacyDetection {

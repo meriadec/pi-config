@@ -100,7 +100,7 @@ function ready(): Extract<TopicMutationResult, { status: "ready" }> {
       },
       worktreePath: "/work/revault/foo-bar",
       mainAgent: { sessionId: "", sessionFile: null },
-      focused: true,
+      partition: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     },

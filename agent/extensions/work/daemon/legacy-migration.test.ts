@@ -207,14 +207,14 @@ describe("legacy migration apply", () => {
     expect(foo.integrationTarget).toEqual({ kind: "integration-branch" });
     expect(bar.integrationTarget).toEqual({ kind: "topic", topicId: item.foo.id });
     expect(parent.integrationTarget).toEqual({ kind: "topic", topicId: item.bar.id });
-    // Names, Focus, Branches, Worktrees, and setup state stay exactly as they were.
+    // Names, Partitions, Branches, Worktrees, and setup state stay exactly as they were.
     expect([foo.name, bar.name, parent.name]).toEqual([item.foo.name, item.bar.name, "Parent"]);
     expect([foo.branch, bar.branch, parent.branch]).toEqual(["foo", "bar", "parent"]);
     expect([foo.worktreePath, parent.worktreePath]).toEqual([
       item.foo.worktreePath,
       item.parent.worktreePath,
     ]);
-    expect(foo.focused).toBe(item.foo.focused);
+    expect(foo.partition).toBe(item.foo.partition);
     expect(parent.mainAgent).toEqual(item.parent.mainAgent);
     expect(item.provisioner.requests).toHaveLength(provisions);
     expect(item.service.snapshot().legacyFamilies).toBe(0);

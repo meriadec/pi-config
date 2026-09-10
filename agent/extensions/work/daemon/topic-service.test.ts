@@ -709,25 +709,46 @@ describe("Topic Service daemon integration", () => {
     await expect(item.client.renameTopic(topic.id, "   ")).rejects.toThrow();
   });
 
-  test("sets and clears Topic Focus, persisting the durable flag", async () => {
+  test("moves a Topic between durable Partitions", async () => {
     const item = await world();
-    const created = await item.client.createTopic({
+    await item.client.createTopic({
       name: "Hot topic",
-      branch: "feat-focus",
+      branch: "feat-partition",
       repository: "LedgerHQ/revault",
     });
-    expect(created.status).toBe("ready");
-    const topic = (await item.client.snapshot()).topics[0]!;
-    // New Topics are born Focused.
-    expect(topic.focused).toBe(true);
+    await item.client.createTopic({
+      name: "Other topic",
+      branch: "feat-other",
+      repository: "LedgerHQ/revault",
+    });
+    const topic = (await item.client.snapshot()).topics.find(
+      (candidate) => candidate.branch === "feat-partition",
+    )!;
+    expect(topic.partition).toBe(0);
 
-    const unfocused = await item.client.setTopicFocus(topic.id, false);
-    expect(unfocused.status).toBe("refocused");
-    expect((await item.client.snapshot()).topics[0]!.focused).toBe(false);
+    const movedDown = await item.client.moveTopicPartition(topic.id, "down");
+    expect(movedDown.status).toBe("repartitioned");
+    expect(
+      (await item.client.snapshot()).topics.find((candidate) => candidate.id === topic.id)
+        ?.partition,
+    ).toBe(1);
 
-    const refocused = await item.client.setTopicFocus(topic.id, true);
-    expect(refocused.status).toBe("refocused");
-    expect((await item.client.snapshot()).topics[0]!.focused).toBe(true);
+    await item.client.createTopic({
+      name: "New first",
+      branch: "feat-new-first",
+      repository: "LedgerHQ/revault",
+    });
+    expect(
+      (await item.client.snapshot()).topics.find(
+        (candidate) => candidate.branch === "feat-new-first",
+      )?.partition,
+    ).toBe(0);
+
+    const movedUp = await item.client.moveTopicPartition(topic.id, "up");
+    expect(movedUp.status).toBe("repartitioned");
+    expect(
+      (await item.client.snapshot()).topics.every((candidate) => candidate.partition === 0),
+    ).toBeTrue();
   });
 
   test("runs independent Topic creation concurrently", async () => {

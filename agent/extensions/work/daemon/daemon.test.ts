@@ -162,6 +162,27 @@ describe("work daemon", () => {
     expect(() => parseRequest(request(42))).toThrow(ProtocolError);
   });
 
+  test("accepts Partition movement and rejects the removed Focus action", () => {
+    const base = {
+      version: WORK_PROTOCOL_VERSION,
+      kind: "request",
+      id: "partition",
+      clientId: "dashboard",
+      topicId: "123e4567-e89b-42d3-a456-426614174000",
+    };
+    expect(
+      parseRequest(JSON.stringify({ ...base, action: "topic.move-partition", direction: "down" })),
+    ).toMatchObject({ action: "topic.move-partition", direction: "down" });
+    expect(() =>
+      parseRequest(
+        JSON.stringify({ ...base, action: "topic.move-partition", direction: "sideways" }),
+      ),
+    ).toThrow(ProtocolError);
+    expect(() =>
+      parseRequest(JSON.stringify({ ...base, action: "topic.set-focus", focused: true })),
+    ).toThrow(ProtocolError);
+  });
+
   test("correlates requests and returns clear daemon errors", async () => {
     const { socket } = await startDaemon();
     const raw = await connectRaw(socket);

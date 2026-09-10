@@ -498,32 +498,37 @@ describe("child Topic lifecycle", () => {
     expect(chain(item)).toEqual(["integration", "B", "Parent"]);
     expect(topicByName(item, "B").integrationTarget).toEqual({ kind: "integration-branch" });
   });
-  test("Focus and Unfocus move the complete family", async () => {
+  test("Partition movement moves the complete family", async () => {
     const item = await world();
     await createChild(item, "B", "feat-b", PARENT_HISTORY[1]!);
+    await rootTopic(item, "Other", "feat-other", [sha("other")]);
     const child = topicByName(item, "B");
 
-    // Unfocus through the child; the Parent Topic follows, so the family never splits.
-    expect((await item.service.setFocus("test-client", "focus-1", child.id, false)).status).toBe(
-      "refocused",
-    );
-    expect(item.service.snapshot().topics.every((topic) => !topic.focused)).toBeTrue();
-
-    // Focus through the Parent Topic; the child follows.
     expect(
-      (await item.service.setFocus("test-client", "focus-2", item.parent.id, true)).status,
-    ).toBe("refocused");
-    expect(item.service.snapshot().topics.every((topic) => topic.focused)).toBeTrue();
+      (await item.service.movePartition("test-client", "partition-1", child.id, "down")).status,
+    ).toBe("repartitioned");
+    await createChild(item, "C", "feat-c", PARENT_HISTORY[2]!);
+    expect(
+      item.service
+        .snapshot()
+        .topics.filter((topic) => topic.partition === 1)
+        .map((topic) => topic.name),
+    ).toEqual(["Parent", "B", "C"]);
+
+    expect(
+      (await item.service.movePartition("test-client", "partition-2", item.parent.id, "up")).status,
+    ).toBe("repartitioned");
+    expect(item.service.snapshot().topics.every((topic) => topic.partition === 0)).toBeTrue();
   });
 });
 
 describe("chain maintenance actions", () => {
-  test("changes the Parent Topic, reconnects the old chain, and adopts the new Focus", async () => {
+  test("changes the Parent Topic, reconnects the old chain, and adopts the new Partition", async () => {
     const item = await world();
     await createChild(item, "B", "feat-b", PARENT_HISTORY[1]!);
     await createChild(item, "C", "feat-c", PARENT_HISTORY[2]!);
     const adopter = await rootTopic(item, "Adopter", "feat-adopter", [sha("c1")]);
-    await item.service.setFocus("test-client", "focus-adopter", adopter.id, false);
+    await item.service.movePartition("test-client", "partition-adopter", adopter.id, "down");
     const child = topicByName(item, "B");
 
     const result = await item.service.changeParent(
@@ -536,8 +541,8 @@ describe("chain maintenance actions", () => {
     expect(result.status).toBe("chain-changed");
     expect(familyChain(item.service, item.parent.id)).toEqual(["integration", "C", "Parent"]);
     expect(familyChain(item.service, adopter.id)).toEqual(["integration", "B", "Adopter"]);
-    // The moved Topic joins the Focus of the family that adopts it.
-    expect(topicByName(item, "B").focused).toBeFalse();
+    // The moved Topic joins the Partition of the family that adopts it.
+    expect(topicByName(item, "B").partition).toBe(topicByName(item, "Adopter").partition);
     expect(topicByName(item, "C").integrationTarget).toEqual({ kind: "integration-branch" });
     expect(validateTopicGraph(chainTopics(item))).toBeUndefined();
   });

@@ -151,6 +151,9 @@ export function pullRequestStatus(ref: PullRequestRef): PullRequestStatus {
 /** Chain participation of a Topic. A pending Topic is not yet part of the active chain. */
 export type TopicChainState = "active" | "pending";
 
+/** Direction in which a Topic family crosses one Partition boundary. */
+export type PartitionDirection = "up" | "down";
+
 /**
  * Durable link to the Branch that a Topic must contain. A Topic Target keeps chain
  * order stable when a rebase changes commit SHAs.
@@ -169,11 +172,10 @@ export interface TopicManifest {
   worktreePath: string | null;
   mainAgent: MainAgentReference;
   /**
-   * Focus partition: Focused Topics render in the upper part, Unfocused ones
-   * below the separator. A per-Topic attribute, not a container. Absent means Focused,
-   * so new Topics and manifests predating Focus start Focused.
+   * Durable position of the anonymous Partition that contains this Topic family.
+   * Equal values share one Partition; lower values render first.
    */
-  focused: boolean;
+  partition: number;
   /**
    * Parent Topic of a one-level family. Absent means that the Topic is a root Topic.
    * A Parent Topic and its children always belong to the same repository.
@@ -270,6 +272,8 @@ const TOPIC_KEYS = new Set([
   "setup",
   "worktreePath",
   "mainAgent",
+  "partition",
+  // Legacy field accepted only so stored Focus manifests can migrate.
   "focused",
   "parentTopicId",
   "originCommit",
@@ -536,10 +540,22 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
   };
   if (reason !== undefined) setup.reason = reason;
 
+  const partitionValue = value["partition"];
+  if (partitionValue !== undefined && !Number.isSafeInteger(partitionValue)) {
+    throw new WorkDataError("invalid-topic", "Topic partition must be a safe integer.");
+  }
   const focusedValue = value["focused"];
   if (focusedValue !== undefined && typeof focusedValue !== "boolean") {
-    throw new WorkDataError("invalid-topic", "Topic focused must be boolean.");
+    throw new WorkDataError("invalid-topic", "Legacy Topic focused must be boolean.");
   }
+  if (partitionValue !== undefined && focusedValue !== undefined) {
+    throw new WorkDataError(
+      "invalid-topic",
+      "Topic manifest must not contain both partition and focused.",
+    );
+  }
+  // Legacy Focus maps to the first two Partitions. Older manifests join the first.
+  const partition = (partitionValue as number | undefined) ?? (focusedValue === false ? 1 : 0);
   const noteValue = value["note"];
   if (noteValue !== undefined && typeof noteValue !== "string") {
     throw new WorkDataError("invalid-topic", "Topic Note must be a string.");
@@ -548,8 +564,6 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
   if (noteValue !== undefined && note !== noteValue) {
     throw new WorkDataError("invalid-topic", "Stored Topic Note must be non-empty and normalized.");
   }
-  // A manifest predating Focus has no flag; it starts in the Focused part.
-  const focused = focusedValue ?? true;
 
   const parentTopicId = value["parentTopicId"];
   if (parentTopicId !== undefined) {
@@ -591,7 +605,7 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
     repository,
     setup,
     worktreePath,
-    focused,
+    partition,
     ...(parentTopicId === undefined ? {} : { parentTopicId }),
     ...(originCommit === undefined ? {} : { originCommit }),
     ...(integrationTarget === undefined ? {} : { integrationTarget }),

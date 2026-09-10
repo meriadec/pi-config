@@ -68,7 +68,7 @@ function manifest(id = ID_A): TopicManifest {
       setupCommandsRun: false,
     },
     worktreePath: null,
-    focused: true,
+    partition: 0,
     mainAgent: { sessionId: id, sessionFile: null },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
@@ -158,6 +158,19 @@ describe("domain validation", () => {
       parseTopicManifest({ ...manifest(), branch: undefined, slug: "feat/legacy" }),
     ).toThrow("unknown field: slug");
     expect(() => parseTopicManifest(manifest(), ID_B)).toThrow("do not match");
+  });
+
+  test("converts legacy Focus values into the first two Partitions", () => {
+    const { partition: _partition, ...legacy } = manifest();
+    expect(parseTopicManifest({ ...legacy, focused: true }).partition).toBe(0);
+    expect(parseTopicManifest({ ...legacy, focused: false }).partition).toBe(1);
+    expect(parseTopicManifest(legacy).partition).toBe(0);
+    expect(() => parseTopicManifest({ ...manifest(), focused: true })).toThrow(
+      "must not contain both partition and focused",
+    );
+    expect(() => parseTopicManifest({ ...manifest(), partition: 0.5 })).toThrow(
+      "partition must be a safe integer",
+    );
   });
 
   test("defaults a legacy manifest without setupCommandsRun to already handled", () => {
@@ -423,6 +436,18 @@ describe("topic persistence", () => {
     ).rejects.toMatchObject({
       code: "duplicate-topic",
     });
+  });
+
+  test("rewrites a legacy Focus manifest with durable Partition data", async () => {
+    const paths = await temporaryPaths();
+    await mkdir(paths.topicDirectory(ID_A), { recursive: true });
+    const { partition: _partition, ...legacy } = manifest(ID_A);
+    await writeFile(paths.topicManifest(ID_A), JSON.stringify({ ...legacy, focused: false }));
+
+    expect((await createTopicStore(paths).load(ID_A)).partition).toBe(1);
+    const stored = JSON.parse(await readFile(paths.topicManifest(ID_A), "utf8"));
+    expect(stored.partition).toBe(1);
+    expect(stored.focused).toBeUndefined();
   });
 
   test("allows the same branch in different repositories", async () => {

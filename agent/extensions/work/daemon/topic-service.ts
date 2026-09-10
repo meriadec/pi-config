@@ -42,6 +42,7 @@ import type {
   ChildTopicCreationRequest,
   ConfigStore,
   IntegrationTarget,
+  PartitionDirection,
   PullRequestRef,
   TopicCreationRequest,
   TopicDiagnostic,
@@ -137,7 +138,7 @@ export type TopicMutationResult =
   | { status: "ready"; topic: TopicManifest }
   | { status: "renamed"; topic: TopicManifest }
   | { status: "note-updated"; topic: TopicManifest }
-  | { status: "refocused"; topic: TopicManifest }
+  | { status: "repartitioned"; topic: TopicManifest }
   | { status: "chain-changed"; topic: TopicManifest }
   | { status: "deleted"; topicId: string }
   | { status: "rejected"; topicId: string }
@@ -545,11 +546,13 @@ export class TopicService {
             { existingTopicId: existing.id, existingTopicName: existing.name },
           );
         }
-        const created = await this.options.topics.create({
-          name: input.name,
-          branch: input.branch,
-          repository: input.repository,
-        });
+        const created = await this.serializeTopic("$partitions", () =>
+          this.options.topics.create({
+            name: input.name,
+            branch: input.branch,
+            repository: input.repository,
+          }),
+        );
         this.topicById.set(created.id, created);
         this.emit({ type: "topic-added", topic: created });
         return created;
@@ -649,9 +652,11 @@ export class TopicService {
       );
     }
     const integrationTarget = await this.planPendingPlacement(parent, originCommit, repositoryPath);
-    const created = await this.options.topics.create(
-      { name: request.name, branch: request.branch, repository: parent.repository },
-      { parentTopicId: parent.id, originCommit, integrationTarget, chainState: "pending" },
+    const created = await this.serializeTopic("$partitions", () =>
+      this.options.topics.create(
+        { name: request.name, branch: request.branch, repository: parent.repository },
+        { parentTopicId: parent.id, originCommit, integrationTarget, chainState: "pending" },
+      ),
     );
     this.topicById.set(created.id, created);
     this.emit({ type: "topic-added", topic: created });
@@ -986,7 +991,7 @@ export class TopicService {
   /**
    * Moves one Topic into the family of another root Topic. The Topic leaves its old chain,
    * enters the new family at the position that current Git ancestry gives, and adopts the
-   * new family's Focus.
+   * new family's Partition.
    */
   changeParent(
     clientId: string,
@@ -1266,7 +1271,11 @@ export class TopicService {
     } finally {
       this.clearOperation(topic.id);
     }
-    if (action.kind === "change-parent") await this.adoptFamilyFocus(action.newParentTopicId);
+    if (action.kind === "change-parent") {
+      await this.serializeTopic("$partitions", () =>
+        this.adoptFamilyPartition(action.newParentTopicId),
+      );
+    }
     this.clearDiagnostic(topic.id, PENDING_CHAIN_CODE);
     await this.refreshIntegrationStatuses();
     return { status: "chain-changed", topic: this.topicById.get(topic.id) ?? topic };
@@ -1346,13 +1355,13 @@ export class TopicService {
     );
   }
 
-  /** A moved Topic joins the Focus of the family that adopts it. */
-  private async adoptFamilyFocus(parentTopicId: string): Promise<void> {
+  /** A moved Topic joins the Partition of the family that adopts it. */
+  private async adoptFamilyPartition(parentTopicId: string): Promise<void> {
     const parent = this.topicById.get(parentTopicId);
     if (parent === undefined) return;
     for (const member of this.familyMembers(parentTopicId)) {
-      if (member.focused === parent.focused) continue;
-      await this.writeFocus(member.id, parent.focused);
+      if (member.partition === parent.partition) continue;
+      await this.writePartition(member.id, parent.partition);
     }
   }
 
@@ -1368,31 +1377,58 @@ export class TopicService {
     return topic;
   }
 
-  /**
-   * Sets the Focus of one Topic and of its complete one-level family, so a Parent Topic and
-   * its children never split across the Focus separator. It is idempotent per Topic.
-   */
-  setFocus(
+  /** Moves one complete Topic family across one Partition boundary. */
+  movePartition(
     clientId: string,
     requestId: string,
     topicId: string,
-    focused: boolean,
+    direction: PartitionDirection,
   ): Promise<TopicMutationResult> {
-    return this.deduplicate(clientId, requestId, `set-focus:${topicId}:${focused}`, () =>
-      this.serializeTopic(topicId, async () => {
-        const topic = await this.writeFocus(topicId, focused);
-        for (const member of this.familyMembers(topicId)) {
-          if (member.id === topic.id) continue;
-          await this.writeFocus(member.id, focused);
+    return this.deduplicate(clientId, requestId, `move-partition:${topicId}:${direction}`, () =>
+      this.serializeTopic("$partitions", async () => {
+        const selected = this.topicById.get(topicId);
+        if (selected === undefined) {
+          throw new WorkDataError("topic-not-found", "Topic does not exist.");
         }
-        return { status: "refocused", topic };
+        const family = this.familyMembers(topicId);
+        if (family.length === this.topicById.size) {
+          return { status: "repartitioned", topic: selected };
+        }
+        const partitions = [
+          ...new Set([...this.topicById.values()].map((item) => item.partition)),
+        ].toSorted((left, right) => left - right);
+        const sourceIndex = partitions.indexOf(selected.partition);
+        const delta = direction === "up" ? -1 : 1;
+        const adjacent = partitions[sourceIndex + delta];
+        const familyIds = new Set(family.map((member) => member.id));
+        if (
+          adjacent === undefined &&
+          [...this.topicById.values()].every(
+            (item) => item.partition !== selected.partition || familyIds.has(item.id),
+          )
+        ) {
+          return { status: "repartitioned", topic: selected };
+        }
+        const partition = adjacent ?? selected.partition + delta;
+        if (!Number.isSafeInteger(partition)) {
+          throw new WorkDataError(
+            "partition-limit",
+            "A new outer Partition cannot be represented safely.",
+          );
+        }
+        let moved = selected;
+        for (const member of family) {
+          const updated = await this.writePartition(member.id, partition);
+          if (updated.id === selected.id) moved = updated;
+        }
+        return { status: "repartitioned", topic: moved };
       }),
     ) as Promise<TopicMutationResult>;
   }
 
-  private async writeFocus(topicId: string, focused: boolean): Promise<TopicManifest> {
+  private async writePartition(topicId: string, partition: number): Promise<TopicManifest> {
     const topic = await this.options.topics.update(topicId, (current) =>
-      current.focused === focused ? current : { ...current, focused },
+      current.partition === partition ? current : { ...current, partition },
     );
     this.topicById.set(topic.id, topic);
     this.emit({ type: "topic-changed", topic });

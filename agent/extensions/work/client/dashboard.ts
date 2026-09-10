@@ -17,6 +17,7 @@ import {
   pullRequestStatus,
   type MainAgentState,
   type IntegrationTarget,
+  type PartitionDirection,
   type PullRequestRef,
   type TopicManifest,
 } from "../shared/domain.ts";
@@ -412,7 +413,7 @@ export type DashboardAction =
     }
   | { type: "rename"; topicId: string; name: string }
   | { type: "set-note"; topicId: string; note: string }
-  | { type: "set-focus"; topicId: string; focused: boolean }
+  | { type: "move-partition"; topicId: string; direction: PartitionDirection }
   | { type: "confirm"; token: string }
   | { type: "reject"; token: string };
 
@@ -424,9 +425,8 @@ export function submissionKey(action: DashboardAction): string {
     case "create":
     case "create-child":
       return "create";
-    case "set-focus":
-      // Key by target state so a rapid Unfocus then Focus of one Topic never coalesce.
-      return `focus:${action.topicId}:${action.focused}`;
+    case "move-partition":
+      return `partition:${action.topicId}:${action.direction}`;
     case "confirm":
     case "reject":
       return `confirm:${action.token}`;
@@ -477,7 +477,7 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
     return openNotePrompt(state);
   }
   if ((data === "J" || data === "K") && state.focus === "list") {
-    return setSelectedTopicFocus(state, data === "K");
+    return moveSelectedTopicPartition(state, data === "K" ? "up" : "down");
   }
   if (data === "m" && state.focus === "list" && !isSelectedTopicBusy(state)) {
     const action = topicActions(state).find((item) => item.id === "agent");
@@ -1121,21 +1121,17 @@ function renderList(state: DashboardState, width: number, height: number): strin
       lines.push("", truncateToWidth("No Topics yet.", width));
     } else {
       // Render only the visible window. A large Topic store must not create an unbounded frame.
-      // A blank separator splits the Focused part from the Unfocused part; it appears
-      // only at the transition inside the window, so one blank line of capacity is reserved
-      // when both parts exist.
-      const focusedCount = view.topics.filter((topic) => topic.focused).length;
-      const bothParts = focusedCount > 0 && focusedCount < view.topics.length;
-      const capacity = Math.max(1, height - lines.length - 5 - (bothParts ? 1 : 0));
-      const visible = visibleTopics(view.topics, state.selectedTopicId, capacity);
+      const capacity = Math.max(1, height - lines.length - 5);
+      const visible = visibleTopicsWithinRows(view.topics, state.selectedTopicId, capacity);
       const displayNames = topicHierarchyNames(view.topics, visible);
-      let previousFocused: boolean | undefined;
+      let previousPartition: number | undefined;
       for (const topic of visible) {
-        if (previousFocused === true && !topic.focused) lines.push("");
+        if (previousPartition !== undefined && previousPartition !== topic.partition)
+          lines.push("");
         lines.push(
           renderTopicRow(state, topic, displayNames.get(topic.id) ?? topic.name, width, columns),
         );
-        previousFocused = topic.focused;
+        previousPartition = topic.partition;
       }
     }
     for (const diagnostic of state.diagnostics.slice(0, 3)) {
@@ -1150,7 +1146,7 @@ function renderList(state: DashboardState, width: number, height: number): strin
   lines.push(truncateToWidth(status, width));
   lines.push(
     truncateToWidth(
-      "a Add · j/k or ↑/↓ move · ⇧J/⇧K focus · enter actions · n Note · o workspace · t terminal · m Main Agent · p PR · r refresh · esc quit",
+      "a Add · j/k or ↑/↓ move · ⇧J/⇧K partition · enter actions · n Note · o workspace · t terminal · m Main Agent · p PR · r refresh · esc quit",
       width,
     ),
   );
@@ -1172,6 +1168,22 @@ function visibleTopics(
     Math.min(topics.length - capacity, selected - Math.floor(capacity / 2)),
   );
   return topics.slice(start, start + capacity);
+}
+
+/** Maximizes visible Topics while accounting for blank Partition-separator rows. */
+function visibleTopicsWithinRows(
+  topics: readonly TopicManifest[],
+  selectedTopicId: string | undefined,
+  rowCapacity: number,
+): readonly TopicManifest[] {
+  for (let capacity = Math.min(topics.length, rowCapacity); capacity > 0; capacity -= 1) {
+    const visible = visibleTopics(topics, selectedTopicId, capacity);
+    const separators = visible
+      .slice(1)
+      .filter((topic, index) => topic.partition !== visible[index]!.partition).length;
+    if (visible.length + separators <= rowCapacity) return visible;
+  }
+  return visibleTopics(topics, selectedTopicId, 1);
 }
 
 const TOPIC_PATH_SEPARATOR = " > ";
@@ -1210,7 +1222,7 @@ function topicHierarchy(topics: readonly TopicManifest[]): TopicHierarchy {
   );
   const topicsByName = new Map<string, TopicManifest[]>();
   for (const topic of legacy) {
-    const key = hierarchyNameKey(topic.focused, topic.name);
+    const key = hierarchyNameKey(topic.partition, topic.name);
     const matches = topicsByName.get(key) ?? [];
     matches.push(topic);
     topicsByName.set(key, matches);
@@ -1226,8 +1238,8 @@ function topicHierarchy(topics: readonly TopicManifest[]): TopicHierarchy {
 
 /**
  * The Parent Topic that durable data records, or undefined when it cannot render a family:
- * a missing Parent Topic, a second hierarchy level, another repository, or a Focus that
- * differs and would split the family across the Focus separator.
+ * a missing Parent Topic, a second hierarchy level, another repository, or a Partition that
+ * differs and would split the family across a Partition separator.
  */
 function durableParentTopic(
   topic: TopicManifest,
@@ -1239,7 +1251,7 @@ function durableParentTopic(
   if (parent === undefined) return undefined;
   if (parent.parentTopicId !== undefined) return undefined;
   if (parent.repository !== topic.repository) return undefined;
-  if (parent.focused !== topic.focused) return undefined;
+  if (parent.partition !== topic.partition) return undefined;
   return parent;
 }
 
@@ -1303,14 +1315,14 @@ function nearestTopicParent(
   let candidate = topic.name;
   while (candidate.includes(TOPIC_PATH_SEPARATOR)) {
     candidate = candidate.slice(0, candidate.lastIndexOf(TOPIC_PATH_SEPARATOR));
-    const matches = topicsByName.get(hierarchyNameKey(topic.focused, candidate));
+    const matches = topicsByName.get(hierarchyNameKey(topic.partition, candidate));
     if (matches?.length === 1) return matches[0];
   }
   return undefined;
 }
 
-function hierarchyNameKey(focused: boolean, name: string): string {
-  return `${focused ? "focused" : "unfocused"}\0${name}`;
+function hierarchyNameKey(partition: number, name: string): string {
+  return `${partition}\0${name}`;
 }
 
 function isLastHierarchyChild(
@@ -1813,27 +1825,36 @@ function moveSelection(state: DashboardState, delta: number): DashboardInputResu
   };
 }
 
-/**
- * Sets the Focus of the selected Topic's complete family with one keypress. Idempotent: a
- * no-op when the family already has that Focus. It updates optimistically and re-sorts so the
- * family visibly crosses the separator; the daemon `topic-changed` events later reconcile.
- * Selection stays on the same Topic.
- */
-function setSelectedTopicFocus(state: DashboardState, focused: boolean): DashboardInputResult {
+/** Moves the selected complete Topic family across one Partition boundary. */
+function moveSelectedTopicPartition(
+  state: DashboardState,
+  direction: PartitionDirection,
+): DashboardInputResult {
   const topic = state.topics.find((item) => item.id === state.selectedTopicId);
   if (topic === undefined) return { state, exit: false };
   const family = topicFamilyIds(state.topics, topic);
-  if (state.topics.every((item) => !family.has(item.id) || item.focused === focused)) {
+  if (family.size === state.topics.length) return { state, exit: false };
+  const partitions = [...new Set(state.topics.map((item) => item.partition))].toSorted(
+    (left, right) => left - right,
+  );
+  const delta = direction === "up" ? -1 : 1;
+  const adjacent = partitions[partitions.indexOf(topic.partition) + delta];
+  if (
+    adjacent === undefined &&
+    state.topics.every((item) => item.partition !== topic.partition || family.has(item.id))
+  ) {
     return { state, exit: false };
   }
+  const partition = adjacent ?? topic.partition + delta;
+  if (!Number.isSafeInteger(partition)) return { state, exit: false };
   const topics = sortTopics(
-    state.topics.map((item) => (family.has(item.id) ? { ...item, focused } : item)),
+    state.topics.map((item) => (family.has(item.id) ? { ...item, partition } : item)),
     state.mainAgents,
   );
   return {
     state: { ...state, topics },
     exit: false,
-    action: { type: "set-focus", topicId: topic.id, focused },
+    action: { type: "move-partition", topicId: topic.id, direction },
   };
 }
 
@@ -2267,7 +2288,7 @@ function sortTopics(
 
   const roots = topics.filter((topic) => !parents.has(topic.id));
   roots.sort((left, right) => {
-    if (left.focused !== right.focused) return left.focused ? -1 : 1;
+    if (left.partition !== right.partition) return left.partition - right.partition;
     return comparePeers(left, right);
   });
   const sorted: TopicManifest[] = [];

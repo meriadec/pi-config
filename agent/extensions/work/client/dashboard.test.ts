@@ -72,7 +72,7 @@ function topic(
   id: string,
   name: string,
   setup: TopicManifest["setup"]["state"] = "ready",
-  focused = true,
+  partition = 0,
   note?: string,
 ) {
   return {
@@ -90,7 +90,7 @@ function topic(
       ...(setup === "setup-failed" ? { reason: "wt failed" } : {}),
     },
     worktreePath: setup === "ready" ? `/work/${name}` : null,
-    focused,
+    partition,
     mainAgent: { sessionId: id, sessionFile: null },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
@@ -524,12 +524,12 @@ describe("dashboard state and navigation", () => {
     expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B]);
   });
 
-  test("Focus partitions the list above active-agent bubbling, then Focused sort holds", () => {
+  test("Partition order stays above active-agent bubbling", () => {
     let state = hydrateDashboard(
       initialDashboardState(),
-      snapshot([topic(ID_A, "Alpha", "ready", true), topic(ID_B, "Beta", "ready", false)]),
+      snapshot([topic(ID_A, "Alpha", "ready", 0), topic(ID_B, "Beta", "ready", 1)]),
     );
-    // Beta is Unfocused, so even a running Main Agent keeps it below the Focused Alpha.
+    // Beta stays in the later Partition even while its Main Agent runs.
     state = reduceDashboardEvent(state, {
       type: "main-agent-changed",
       agent: { topicId: ID_B, sessionId: ID_B, state: "thinking", connected: true },
@@ -558,44 +558,75 @@ describe("dashboard state and navigation", () => {
     expect(stripSgr(restored!)).not.toContain("orphan");
   });
 
-  test("Shift+J Unfocuses and Shift+K Focuses the selection, following the moved Topic", () => {
+  test("Shift+J and Shift+K move between Partitions and follow the selected Topic", () => {
     let state = hydrateDashboard(
       initialDashboardState(),
       snapshot([topic(ID_A, "Alpha"), topic(ID_B, "Beta")]),
     );
-    // Unfocus Alpha: it sinks below Beta, selection follows, and an action is dispatched.
     const down = handleDashboardInput(state, "J");
-    expect(down.action).toEqual({ type: "set-focus", topicId: ID_A, focused: false });
+    expect(down.action).toEqual({ type: "move-partition", topicId: ID_A, direction: "down" });
     state = down.state;
     expect(state.topics.map((item) => item.id)).toEqual([ID_B, ID_A]);
     expect(state.selectedTopicId).toBe(ID_A);
-    expect(state.topics.find((item) => item.id === ID_A)?.focused).toBe(false);
-    // Shift+J again is an idempotent no-op: no further action.
+    expect(state.topics.find((item) => item.id === ID_A)?.partition).toBe(1);
+
+    // Moving the only family in the last Partition farther down cannot change the arrangement.
     expect(handleDashboardInput(state, "J").action).toBeUndefined();
-    // Refocus Alpha: it rises back above Beta.
+
     const up = handleDashboardInput(state, "K");
-    expect(up.action).toEqual({ type: "set-focus", topicId: ID_A, focused: true });
+    expect(up.action).toEqual({ type: "move-partition", topicId: ID_A, direction: "up" });
     state = up.state;
     expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B]);
+    expect(state.topics.every((item) => item.partition === 0)).toBeTrue();
   });
 
-  test("renders a blank separator only between a non-empty Focused and Unfocused part", () => {
-    const both = hydrateDashboard(
+  test("moves into the adjacent Partition and drops an empty source Partition", () => {
+    let state = hydrateDashboard(
       initialDashboardState(),
-      snapshot([topic(ID_A, "Alpha", "ready", true), topic(ID_B, "Beta", "ready", false)]),
+      snapshot([
+        topic(ID_A, "Alpha", "ready", 0),
+        topic(ID_B, "Beta", "ready", 1),
+        topic(ID_E, "Echo", "ready", 2),
+      ]),
     );
-    const rendered = renderDashboard(both, 100, 24);
+    state = { ...state, selectedTopicId: ID_B };
+
+    state = handleDashboardInput(state, "J").state;
+    expect(state.topics.map((item) => [item.name, item.partition])).toEqual([
+      ["Alpha", 0],
+      ["Beta", 2],
+      ["Echo", 2],
+    ]);
+
+    state = handleDashboardInput(state, "K").state;
+    expect(state.topics.map((item) => [item.name, item.partition])).toEqual([
+      ["Alpha", 0],
+      ["Beta", 0],
+      ["Echo", 2],
+    ]);
+  });
+
+  test("renders one blank separator between each non-empty Partition", () => {
+    const partitioned = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([
+        topic(ID_A, "Alpha", "ready", 0),
+        topic(ID_B, "Beta", "ready", 1),
+        topic(ID_E, "Echo", "ready", 2),
+      ]),
+    );
+    const rendered = renderDashboard(partitioned, 100, 24);
     const alphaRow = rendered.findIndex((line) => line.includes("Alpha"));
     const betaRow = rendered.findIndex((line) => line.includes("Beta"));
-    expect(rendered[betaRow - 1]?.trim()).toBe("");
+    const echoRow = rendered.findIndex((line) => line.includes("Echo"));
     expect(betaRow).toBe(alphaRow + 2);
+    expect(echoRow).toBe(betaRow + 2);
 
-    // All Focused: no separator between the two rows.
-    const allFocused = hydrateDashboard(
+    const onePartition = hydrateDashboard(
       initialDashboardState(),
       snapshot([topic(ID_A, "Alpha"), topic(ID_B, "Beta")]),
     );
-    const rows = renderDashboard(allFocused, 100, 24);
+    const rows = renderDashboard(onePartition, 100, 24);
     const a = rows.findIndex((line) => line.includes("Alpha"));
     const b = rows.findIndex((line) => line.includes("Beta"));
     expect(b).toBe(a + 1);
@@ -694,7 +725,7 @@ describe("dashboard state and navigation", () => {
   test("edits a Topic Note from the n shortcut and removes it with blank text", () => {
     let state = hydrateDashboard(
       initialDashboardState(),
-      snapshot([topic(ID_A, "Alpha", "ready", true, "Waiting for Tom")]),
+      snapshot([topic(ID_A, "Alpha", "ready", 0, "Waiting for Tom")]),
     );
 
     state = handleDashboardInput(state, "n").state;
@@ -727,7 +758,7 @@ describe("dashboard state and navigation", () => {
   test("renders the Topic Note in a yellow column after the Topic title", () => {
     const state = hydrateDashboard(
       initialDashboardState(),
-      snapshot([topic(ID_A, "Alpha", "ready", true, "waiting for Tom")]),
+      snapshot([topic(ID_A, "Alpha", "ready", 0, "waiting for Tom")]),
     );
     const rendered = renderDashboard(state, 100, 24);
     const header = stripSgr(rendered[1]!);
@@ -742,7 +773,7 @@ describe("dashboard state and navigation", () => {
     const longNote = "x".repeat(80);
     const longState = hydrateDashboard(
       initialDashboardState(),
-      snapshot([topic(ID_A, "Alpha", "ready", true, longNote)]),
+      snapshot([topic(ID_A, "Alpha", "ready", 0, longNote)]),
     );
     const longRow = stripSgr(
       renderDashboard(longState, 220, 24).find((line) => line.includes("Alpha"))!,
@@ -765,7 +796,7 @@ describe("dashboard state and navigation", () => {
 
     state = hydrateDashboard(
       state,
-      snapshot([topic(ID_A, "Alpha", "ready", true, "private context")]),
+      snapshot([topic(ID_A, "Alpha", "ready", 0, "private context")]),
     );
     const lines = renderDashboard(state, 160, 24);
     const listHeader = stripSgr(lines[1]!).split("│", 1)[0]!;
@@ -983,7 +1014,7 @@ describe("dashboard state and navigation", () => {
     expect(shortRow.endsWith("stopped")).toBeTrue();
 
     const beta = {
-      ...topic(ID_B, "Beta", "setup-failed", true, "x".repeat(80)),
+      ...topic(ID_B, "Beta", "setup-failed", 0, "x".repeat(80)),
       repository: "owner/a-repository-name-beyond-the-cap",
     };
     state = hydrateDashboard(state, snapshot([alpha, beta]));
@@ -1344,7 +1375,7 @@ describe("dashboard state and navigation", () => {
     });
   });
 
-  test("Focus and Unfocus move the complete family and keep the selection", () => {
+  test("Partition movement moves the complete family and keeps the selection", () => {
     const parent = familyTopic(ID_A, "Parent", {
       integrationTarget: { kind: "topic", topicId: ID_B },
     });
@@ -1356,17 +1387,20 @@ describe("dashboard state and navigation", () => {
     let state = hydrateDashboard(initialDashboardState(), snapshot([parent, child, other]));
     state = { ...state, selectedTopicId: ID_B };
 
-    const unfocused = handleDashboardInput(state, "J");
-    expect(unfocused.action).toEqual({ type: "set-focus", topicId: ID_B, focused: false });
-    expect(unfocused.state.selectedTopicId).toBe(ID_B);
-    expect(unfocused.state.topics.filter((item) => !item.focused).map((item) => item.id)).toEqual([
-      ID_A,
-      ID_B,
-    ]);
-    // The family stays together above the separator again after Focus.
-    const refocused = handleDashboardInput(unfocused.state, "K");
-    expect(refocused.state.topics.every((item) => item.focused)).toBeTrue();
-    expect(refocused.state.topics.map((item) => item.id)).toEqual([ID_E, ID_A, ID_B]);
+    const moved = handleDashboardInput(state, "J");
+    expect(moved.action).toEqual({
+      type: "move-partition",
+      topicId: ID_B,
+      direction: "down",
+    });
+    expect(moved.state.selectedTopicId).toBe(ID_B);
+    expect(
+      moved.state.topics.filter((item) => item.partition === 1).map((item) => item.id),
+    ).toEqual([ID_A, ID_B]);
+
+    const restored = handleDashboardInput(moved.state, "K");
+    expect(restored.state.topics.every((item) => item.partition === 0)).toBeTrue();
+    expect(restored.state.topics.map((item) => item.id)).toEqual([ID_E, ID_A, ID_B]);
   });
 
   test("renders narrow and wide dashboards without exceeding terminal width", () => {
@@ -1402,7 +1436,7 @@ class FakeDashboardClient implements DashboardClient {
   retryCalls: Array<{ topicId: string; requestId?: string }> = [];
   renameCalls: Array<{ topicId: string; name: string; requestId?: string }> = [];
   noteCalls: Array<{ topicId: string; note: string; requestId?: string }> = [];
-  setFocusCalls: Array<{ topicId: string; focused: boolean; requestId?: string }> = [];
+  partitionCalls: Array<{ topicId: string; direction: "up" | "down"; requestId?: string }> = [];
   actionCalls: Array<{
     type: "delete" | "workspace" | "terminal" | "agent" | "reset-agent" | "pull-request";
     topicId: string;
@@ -1493,17 +1527,17 @@ class FakeDashboardClient implements DashboardClient {
     return this.noteResult;
   }
 
-  async setTopicFocus(
+  async moveTopicPartition(
     topicId: string,
-    focused: boolean,
+    direction: "up" | "down",
     requestId?: string,
   ): Promise<TopicMutationResult> {
-    this.setFocusCalls.push({
+    this.partitionCalls.push({
       topicId,
-      focused,
+      direction,
       ...(requestId === undefined ? {} : { requestId }),
     });
-    return { status: "refocused", topic: { ...topic(topicId, "Alpha"), focused } };
+    return { status: "repartitioned", topic: topic(topicId, "Alpha", "ready", 1) };
   }
 
   async deleteTopic(topicId: string, requestId?: string): Promise<TopicMutationResult> {
@@ -1672,7 +1706,7 @@ describe("dashboard submission behavior", () => {
     const client = new FakeDashboardClient();
     client.noteResult = {
       status: "note-updated",
-      topic: topic(ID_A, "Alpha", "ready", true, "waiting for Tom"),
+      topic: topic(ID_A, "Alpha", "ready", 0, "waiting for Tom"),
     };
     const component = dashboardComponent(client);
     await Bun.sleep(0);

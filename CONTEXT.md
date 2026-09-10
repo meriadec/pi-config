@@ -57,8 +57,12 @@ The single ordered path from the Integration Branch through the children of one 
 _Avoid_: stack, dependency tree, hierarchy
 
 **Parent Topic**:
-The root Topic of a one-level family. It owns visual hierarchy and family Focus; a child Topic can never have children.
+The root Topic of a one-level family. It owns visual hierarchy and Partition membership for the family; a child Topic can never have children.
 _Avoid_: parent branch, epic, group
+
+**Partition**:
+A durable ordered part of the dashboard Topic list. Each complete Topic family belongs to one Partition.
+_Avoid_: Focus, group, section, lane
 
 **Origin Commit**:
 The immutable commit of a Parent Topic Branch at which a child Topic Branch started. It is provenance and duplicate protection only; it never defines chain order or Integration Status.

@@ -10,8 +10,7 @@ A durable unit of work bound to one `owner/repo` repository and one Branch, with
 and Main Agent. Stored as a manifest under `~/work/topics/<topic-id>/topic.json`.
 
 **Topic Note**:
-A durable, optional free-text annotation on one Topic. It gives human context without changing the
-Topic's name, identity, hierarchy, Focus, or sort order.
+A durable, optional free-text annotation on one Topic. It gives human context without changing the Topic's name, identity, hierarchy, Partition, or sort order.
 _Avoid_: comment, status message.
 
 **Base checkout**:
@@ -30,10 +29,8 @@ The immutable Start Point recorded for a child Topic. It supplies creation prove
 duplicate child Start Points; it does not select Integration Targets or determine Integration Status.
 
 **Parent Topic**:
-The optional full-feature Topic that contains a child checkpoint Topic. Parent and child belong to
-the same repository. A child cannot itself be a Parent Topic. The relationship controls visual
-hierarchy and family Focus. It does not directly select the child's Integration Target. A Parent
-Topic cannot be deleted while it has children.
+The optional full-feature Topic that contains a child checkpoint Topic. It owns visual hierarchy and Partition membership for the family; a child cannot itself be a Parent Topic.
+_Avoid_: parent branch, epic, group.
 
 **Integration Branch**:
 The local repository Branch into which a Topic family is expected to integrate. It is the first
@@ -93,15 +90,9 @@ together, but a child never moves above its parent. Topic names do not define or
 hierarchy.
 _Avoid_: Topic name hierarchy, name path.
 
-**Focus**:
-The durable follow-state of a Topic hierarchy subtree: **Focused** (the upper part) or **Unfocused**
-(the lower part, below a blank separator). The two on-screen lists are only a rendering of this
-state. Focus is the dominant sort key. Topic hierarchy families stay together. A family with an
-active Main Agent comes before an inactive family; active descendant subtrees come before inactive
-sibling subtrees, and names break ties. Shift+K focuses the selected Topic and all descendants;
-Shift+J unfocuses them. Selection follows the selected Topic. A Topic with no recorded state is
-Focused, so new Topics and Topics from older manifests start Focused.
-_Avoid_: hot list, pinned, archived, two lists.
+**Partition**:
+A durable ordered part of the dashboard Topic list. Each complete Topic family belongs to one Partition.
+_Avoid_: Focus, group, section, lane.
 
 **Known repository**:
 An `owner/repo` repository already declared in `~/work/config.json` (a key of the Repository
@@ -135,11 +126,7 @@ durable data.
 _Avoid_: Topic name hierarchy, name path.
 
 **Legacy migration**:
-The read-only preview and the approved, metadata-only application that move legacy name hierarchies
-to durable Parent Topic and Integration Target data. Matching uses the unique same-repository parent
-name and ignores Focus; ordering uses unambiguous Git ancestry only. It preserves names, Notes,
-Focus, Main Agent references, setup state, Branches, Worktrees, and Repository Recipes, and it never
-runs a Git history or Worktree mutation.
+The previewed, approved metadata move from a Legacy name hierarchy to durable Parent Topic and Integration Target data. It ignores and preserves Partition membership.
 _Avoid_: name import, automatic migration.
 
 **Migration journal**:
