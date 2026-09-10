@@ -1333,33 +1333,31 @@ interface TopicColumns {
   mainAgent: number;
 }
 
-const MIN_TOPIC_NAME_WIDTH = 12;
+const MIN_NOTE_WIDTH = 4;
 const COLUMN_GAPS_WIDTH = 8; // Selection prefix plus six inter-column spaces.
 
-/** Uses only the space needed by current values, up to stable readability caps. */
+/**
+ * Gives Topic and status columns their natural longest-value width. Note receives all
+ * remaining width and is the only wide column that can shrink before compact layout.
+ */
 function wideTopicColumns(state: DashboardState, width: number): TopicColumns | undefined {
   const showNote = !state.sidebarOpen;
-  const note = showNote
-    ? columnWidth(
-        "NOTE",
-        state.topics.map((topic) => topic.note ?? ""),
-        100,
-      )
-    : 0;
+  const displayNames = topicHierarchyNames(state.topics, state.topics);
+  const name = columnWidth(
+    "TOPIC",
+    state.topics.map((topic) => displayNames.get(topic.id) ?? topic.name),
+  );
   const repository = columnWidth(
     "REPOSITORY",
     state.topics.map((topic) => topic.repository),
-    32,
   );
   const pullRequest = columnWidth(
     "PR",
     state.topics.map((topic) => pullRequestCell(state.pullRequests[topic.id])),
-    18,
   );
   const setup = columnWidth(
     "SETUP",
     state.topics.map((topic) => setupCell(state, topic)),
-    14,
   );
   const mainAgent = columnWidth(
     "MAIN AGENT",
@@ -1367,21 +1365,17 @@ function wideTopicColumns(state: DashboardState, width: number): TopicColumns | 
       const agent = state.mainAgents.find((item) => item.topicId === topic.id)?.state ?? "stopped";
       return mainAgentDisplayLabel(agent);
     }),
-    17,
   );
   const integration = visibleWidth(INTEGRATION_HEADER);
   const gaps = COLUMN_GAPS_WIDTH - (showNote ? 0 : 1);
-  const name = width - gaps - integration - note - repository - pullRequest - setup - mainAgent;
-  return name < MIN_TOPIC_NAME_WIDTH
-    ? undefined
-    : { name, integration, note, repository, pullRequest, setup, mainAgent };
+  const fixedWidth = gaps + integration + name + repository + pullRequest + setup + mainAgent;
+  const note = showNote ? width - fixedWidth : 0;
+  if (showNote ? note < MIN_NOTE_WIDTH : fixedWidth > width) return undefined;
+  return { name, integration, note, repository, pullRequest, setup, mainAgent };
 }
 
-function columnWidth(header: string, values: readonly string[], maximum: number): number {
-  return Math.min(
-    maximum,
-    Math.max(visibleWidth(header), ...values.map((value) => visibleWidth(value))),
-  );
+function columnWidth(header: string, values: readonly string[]): number {
+  return Math.max(visibleWidth(header), ...values.map((value) => visibleWidth(value)));
 }
 
 function renderWideHeader(columns: TopicColumns): string {

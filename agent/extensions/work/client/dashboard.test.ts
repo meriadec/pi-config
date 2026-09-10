@@ -967,7 +967,7 @@ describe("dashboard state and navigation", () => {
     }
   });
 
-  test("gives spare table width to Topic names and right-aligns Main Agent status", () => {
+  test("gives spare table width to Notes and shrinks them before natural-width columns", () => {
     const alpha = { ...topic(ID_A, "Alpha"), repository: "o/a" };
     let state = hydrateDashboard(initialDashboardState(), snapshot([alpha]));
     const shortHeader = stripSgr(renderDashboard(state, 100, 24)[1]!);
@@ -975,13 +975,15 @@ describe("dashboard state and navigation", () => {
       renderDashboard(state, 100, 24).find((line) => line.includes("Alpha"))!,
     );
 
-    // Header-sized auxiliary columns leave 67 cells for the Topic name.
+    // Topic and fixed columns use their longest header or value. Note gets all spare width.
+    expect(shortHeader.indexOf("TOPIC")).toBe(4);
+    expect(shortHeader.indexOf("NOTE")).toBe(10);
     expect(shortHeader.indexOf("REPOSITORY")).toBe(70);
     expect(shortRow).toHaveLength(100);
     expect(shortRow.endsWith("stopped")).toBeTrue();
 
     const beta = {
-      ...topic(ID_B, "Beta", "setup-failed"),
+      ...topic(ID_B, "Beta", "setup-failed", true, "x".repeat(80)),
       repository: "owner/a-repository-name-beyond-the-cap",
     };
     state = hydrateDashboard(state, snapshot([alpha, beta]));
@@ -989,15 +991,16 @@ describe("dashboard state and navigation", () => {
       type: "main-agent-changed",
       agent: { topicId: ID_B, sessionId: ID_B, state: "waiting-for-human", connected: true },
     });
-    const cappedHeader = stripSgr(renderDashboard(state, 100, 24)[1]!);
+    const naturalHeader = stripSgr(renderDashboard(state, 100, 24)[1]!);
     const betaRow = stripSgr(
       renderDashboard(state, 100, 24).find((line) => line.includes("Beta"))!,
     );
 
-    // Auxiliary values grow only to their caps. The Repository cap is wide enough for
-    // common owner/repo names, and the Topic name still gets every spare cell.
-    expect(cappedHeader.indexOf("REPOSITORY")).toBe(34);
-    expect(betaRow).toContain("owner/a-repository-name");
+    // Wider fixed values shrink Note from 59 to 17 cells. Its value receives the ellipsis,
+    // while Repository and Main Agent keep their complete longest values.
+    expect(naturalHeader.indexOf("REPOSITORY")).toBe(28);
+    expect(betaRow).toContain(`${"x".repeat(14)}...`);
+    expect(betaRow).toContain("owner/a-repository-name-beyond-the-cap");
     expect(betaRow).toHaveLength(100);
     expect(betaRow.endsWith("waiting-for-human")).toBeTrue();
   });
