@@ -69,6 +69,7 @@ export interface TopicNoteState {
 }
 
 export type TopicActionId =
+  | "copy-branch"
   | "workspace"
   | "terminal"
   | "agent"
@@ -394,6 +395,7 @@ export type DashboardAction =
         | "reset-chain";
       topicId: string;
     }
+  | { type: "copy-branch"; topicId: string; branch: string }
   | { type: "change-parent"; topicId: string; parentTopicId: string }
   | { type: "migrate-legacy-preview" }
   | { type: "migrate-legacy"; parentTopicIds: readonly string[] }
@@ -1960,6 +1962,11 @@ function topicActions(
     unavailable: boolean;
   }> = [
     {
+      id: "copy-branch",
+      label: "Copy Branch Name",
+      unavailable: false,
+    },
+    {
       id: "workspace",
       label: "Access Topic Workspace",
       unavailable: denied.includes("workspace"),
@@ -2063,10 +2070,18 @@ function invokeTopicAction(
   action: { id: TopicActionId; label: string },
 ): DashboardInputResult {
   if (action.id === "migrate-legacy") return requestMigrationPreview(state);
+  const topic = state.topics.find((item) => item.id === state.selectedTopicId);
+  if (topic === undefined) return { state, exit: false };
+  if (action.id === "copy-branch") {
+    return {
+      state: { ...state, message: "Copying Branch name…" },
+      exit: false,
+      action: { type: "copy-branch", topicId: topic.id, branch: topic.branch },
+    };
+  }
   // Rename, Note, Add Child Topic, and the chain choosers open a view instead of one
   // daemon submission.
   if (
-    state.selectedTopicId === undefined ||
     action.id === "rename" ||
     action.id === "note" ||
     action.id === "add-child" ||
@@ -2078,11 +2093,11 @@ function invokeTopicAction(
   return {
     state: {
       ...state,
-      submissions: { ...state.submissions, [state.selectedTopicId]: action.id },
+      submissions: { ...state.submissions, [topic.id]: action.id },
       message: `${action.label}…`,
     },
     exit: false,
-    action: { type: action.id, topicId: state.selectedTopicId },
+    action: { type: action.id, topicId: topic.id },
   };
 }
 

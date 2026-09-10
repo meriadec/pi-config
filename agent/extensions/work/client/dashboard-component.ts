@@ -7,6 +7,7 @@ import {
   type Focusable,
   type TUI,
 } from "@earendil-works/pi-tui";
+import { copyTextToClipboard } from "../../shared/clipboard.ts";
 import type { DaemonSnapshot, WorkEvent } from "../daemon/protocol.ts";
 import type { IntegrationTarget, NewTopic } from "../shared/domain.ts";
 import {
@@ -148,6 +149,8 @@ export interface DashboardComponentOptions {
   clearInterval?: typeof globalThis.clearInterval;
   /** Resolves child Start Points through Git; the local resolver is the default. */
   resolveChildInput?: typeof resolveChildTopicCreationInput;
+  /** Copies a Branch name; the shared native and OSC 52 adapter is the default. */
+  copyToClipboard?: typeof copyTextToClipboard;
 }
 
 /** Owns the dashboard client subscription for one full-screen /work view. */
@@ -258,7 +261,8 @@ export class WorkDashboardComponent implements Component, Focusable {
     this.syncWizardInput();
     this.syncRenameInput();
     this.syncNoteInput();
-    if (result.action !== undefined) this.beginAction(result.action);
+    if (result.action?.type === "copy-branch") void this.copyBranchName(result.action.branch);
+    else if (result.action !== undefined) this.beginAction(result.action);
     if (result.refresh === true) void this.forceRefresh();
     if (result.exit) {
       this.dispose();
@@ -421,7 +425,19 @@ export class WorkDashboardComponent implements Component, Focusable {
     });
   }
 
-  private beginAction(action: DashboardAction): void {
+  private async copyBranchName(branch: string): Promise<void> {
+    try {
+      await (this.options.copyToClipboard ?? copyTextToClipboard)(branch);
+      if (this.disposed) return;
+      this.state = { ...this.state, message: `Copied branch name: ${branch}` };
+    } catch (error) {
+      if (this.disposed) return;
+      this.state = { ...this.state, message: `Could not copy branch name: ${errorMessage(error)}` };
+    }
+    this.options.tui.requestRender();
+  }
+
+  private beginAction(action: RemoteDashboardAction): void {
     const key = submissionKey(action);
     if (this.mutations.has(key)) return;
     if (this.client === undefined) {
@@ -578,8 +594,10 @@ export class WorkDashboardComponent implements Component, Focusable {
   }
 }
 
+type RemoteDashboardAction = Exclude<DashboardAction, { type: "copy-branch" }>;
+
 interface PendingMutation {
-  action: DashboardAction;
+  action: RemoteDashboardAction;
   requestId: string;
   key: string;
 }

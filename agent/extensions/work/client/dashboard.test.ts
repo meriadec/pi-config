@@ -772,6 +772,20 @@ describe("dashboard state and navigation", () => {
     expect(rendered).not.toContain("Note: private context");
   });
 
+  test("offers Copy Branch Name as the first Topic action", () => {
+    let state = hydrateDashboard(initialDashboardState(), snapshot([topic(ID_A, "Alpha")]));
+
+    state = handleDashboardInput(state, "l").state;
+
+    expect(state.focusedAction).toBe(0);
+    expect(stripSgr(renderDashboard(state, 100, 24).join("\n"))).toContain("> Copy Branch Name");
+    expect(handleDashboardInput(state, "\r").action).toEqual({
+      type: "copy-branch",
+      topicId: ID_A,
+      branch: "feat-Alpha",
+    });
+  });
+
   test("opens the action rail on its first available action and supports navigation", () => {
     let state = hydrateDashboard(
       initialDashboardState(),
@@ -785,7 +799,7 @@ describe("dashboard state and navigation", () => {
     state = handleDashboardInput(state, "l").state;
     expect(state.sidebarOpen).toBeTrue();
     expect(state.focus).toBe("actions");
-    expect(state.focusedAction).toBe(1);
+    expect(state.focusedAction).toBe(0);
     state = handleDashboardInput(state, "h").state;
     expect(state.focus).toBe("detail");
     state = handleDashboardInput(state, "l").state;
@@ -837,7 +851,7 @@ describe("dashboard state and navigation", () => {
   test("offers a new Main Agent action in the action rail", () => {
     let state = hydrateDashboard(initialDashboardState(), snapshot([topic(ID_A, "Alpha")]));
     state = handleDashboardInput(state, "l").state;
-    for (let index = 0; index < 3; index += 1) state = handleDashboardInput(state, "j").state;
+    for (let index = 0; index < 4; index += 1) state = handleDashboardInput(state, "j").state;
 
     expect(handleDashboardInput(state, "\r").action).toEqual({
       type: "reset-agent",
@@ -881,13 +895,14 @@ describe("dashboard state and navigation", () => {
     state = handleDashboardInput(state, "l").state;
     expect(state.focus).toBe("actions");
     state = handleDashboardInput(state, "j").state;
-    expect(state.focusedAction).toBe(1);
+    state = handleDashboardInput(state, "j").state;
+    expect(state.focusedAction).toBe(2);
     const terminal = handleDashboardInput(state, "\r");
     expect(terminal.action).toEqual({ type: "terminal", topicId: ID_A });
 
     const readyState = { ...terminal.state, submissions: {} };
     state = handleDashboardInput(readyState, "\x1b[A").state;
-    expect(state.focusedAction).toBe(0);
+    expect(state.focusedAction).toBe(1);
     expect(handleDashboardInput(state, "\r").action).toEqual({
       type: "workspace",
       topicId: ID_A,
@@ -901,6 +916,7 @@ describe("dashboard state and navigation", () => {
     });
     state = handleDashboardInput(state, "l").state;
     state = handleDashboardInput(state, "l").state;
+    state = handleDashboardInput(state, "j").state;
     state = handleDashboardInput(state, "j").state;
     expect(handleDashboardInput(state, "\r").action).toBeUndefined();
     const rendered = renderDashboard(state, 100, 24).join("\n");
@@ -1783,6 +1799,7 @@ describe("dashboard submission behavior", () => {
     component.handleInput("l");
     component.handleInput("l");
     component.handleInput("j");
+    component.handleInput("j");
     component.handleInput("\r");
     await Bun.sleep(0);
     expect(client.actionCalls[0]?.type).toBe("terminal");
@@ -1796,7 +1813,7 @@ describe("dashboard submission behavior", () => {
     const component = dashboardComponent(client);
     await Bun.sleep(0);
     component.handleInput("l");
-    for (let index = 0; index < 3; index += 1) component.handleInput("j");
+    for (let index = 0; index < 4; index += 1) component.handleInput("j");
     component.handleInput("\r");
     await Bun.sleep(0);
 
@@ -1821,16 +1838,9 @@ describe("dashboard submission behavior", () => {
     const component = dashboardComponent(client);
     await Bun.sleep(0);
     component.handleInput("l");
-    for (let step = 0; step < 20; step += 1) {
-      if (component.snapshotState().migration !== undefined) break;
-      const view = stripSgr(component.render(120).join("\n"));
-      if (view.includes("> Migrate Legacy Name Hierarchies")) {
-        component.handleInput("\r");
-        await Bun.sleep(0);
-        break;
-      }
-      component.handleInput("j");
-    }
+    for (let step = 0; step < 8; step += 1) component.handleInput("j");
+    component.handleInput("\r");
+    await Bun.sleep(0);
     expect(client.migrationCalls.map((call) => call.type)).toEqual(["preview"]);
     expect(component.snapshotState().migration?.preview.families).toHaveLength(1);
 
@@ -1863,6 +1873,7 @@ describe("dashboard submission behavior", () => {
     component.handleInput("l");
     component.handleInput("l");
     component.handleInput("j");
+    component.handleInput("j");
     component.handleInput("\r");
     first.disconnect?.(new Error("socket lost"));
     await Bun.sleep(0);
@@ -1883,6 +1894,7 @@ describe("dashboard submission behavior", () => {
     component.handleInput("l");
     component.handleInput("l");
     component.handleInput("j");
+    component.handleInput("j");
     component.handleInput("\r");
     await Bun.sleep(0);
     expect(component.render(100).join("\n")).toContain("Open Terminal · unavailable");
@@ -1895,8 +1907,8 @@ describe("dashboard submission behavior", () => {
     await Bun.sleep(0);
     component.handleInput("l");
     component.handleInput("l");
-    // Actions: workspace, terminal, agent, reset-agent, rename, note, add-child, delete.
-    for (let step = 0; step < 7; step += 1) component.handleInput("j");
+    // Actions: copy, workspace, terminal, agent, reset-agent, rename, note, add-child, delete.
+    for (let step = 0; step < 8; step += 1) component.handleInput("j");
     component.handleInput("\r");
     await Bun.sleep(0);
     const warning = component.render(180).join("\n");
@@ -1915,9 +1927,9 @@ describe("dashboard submission behavior", () => {
       const rail = component.render(80).join("\n");
       expect(rail).toContain("Retry Setup");
       expect(rail).not.toContain("Retry Setup (r)");
-      // Actions: workspace, terminal, agent, reset-agent, rename, note, retry, delete.
-      for (let i = 0; i < 6; i += 1) component.handleInput("j");
-      expect(component.snapshotState().focusedAction).toBe(6);
+      // Actions: copy, workspace, terminal, agent, reset-agent, rename, note, retry, delete.
+      for (let i = 0; i < 7; i += 1) component.handleInput("j");
+      expect(component.snapshotState().focusedAction).toBe(7);
       component.handleInput("\r");
       await Bun.sleep(0);
       expect(client.retryCalls).toHaveLength(1);
@@ -1943,12 +1955,30 @@ describe("dashboard submission behavior", () => {
     component.dispose();
   });
 
+  test("copies the exact Branch name from the first Topic action", async () => {
+    const copied: string[] = [];
+    const client = new FakeDashboardClient([topic(ID_A, "Alpha")]);
+    const component = dashboardComponent(client, async (text) => {
+      copied.push(text);
+    });
+    await Bun.sleep(0);
+
+    component.handleInput("\r");
+    component.handleInput("\r");
+    await Bun.sleep(0);
+
+    expect(copied).toEqual(["feat-Alpha"]);
+    expect(component.snapshotState().message).toBe("Copied branch name: feat-Alpha");
+    component.dispose();
+  });
+
   test("renames a Topic through the actions prompt", async () => {
     const client = new FakeDashboardClient([topic(ID_A, "Alpha")]);
     const component = dashboardComponent(client);
     await Bun.sleep(0);
     component.handleInput("\r");
     expect(component.render(80).join("\n")).toContain("Rename Topic");
+    component.handleInput("j");
     component.handleInput("j");
     component.handleInput("j");
     component.handleInput("j");
@@ -1984,8 +2014,8 @@ describe("dashboard submission behavior", () => {
     });
     await Bun.sleep(0);
     component.handleInput("\r");
-    // Actions: workspace, terminal, agent, reset-agent, rename, note, add-child.
-    for (let step = 0; step < 6; step += 1) component.handleInput("j");
+    // Actions: copy, workspace, terminal, agent, reset-agent, rename, note, add-child.
+    for (let step = 0; step < 7; step += 1) component.handleInput("j");
     component.handleInput("\r");
     expect(component.render(80).join("\n")).toContain("ADD CHILD TOPIC");
 
@@ -2019,6 +2049,7 @@ describe("dashboard submission behavior", () => {
     const component = dashboardComponent(client);
     await Bun.sleep(0);
     component.handleInput("\r");
+    component.handleInput("j");
     component.handleInput("j");
     component.handleInput("j");
     component.handleInput("j");
@@ -2099,11 +2130,15 @@ describe("dashboard subscription lifecycle", () => {
   });
 });
 
-function dashboardComponent(client: FakeDashboardClient): WorkDashboardComponent {
+function dashboardComponent(
+  client: FakeDashboardClient,
+  copyToClipboard?: (text: string) => Promise<void>,
+): WorkDashboardComponent {
   return new WorkDashboardComponent({
-    tui: { terminal: { rows: 20 }, requestRender: () => undefined } as never,
+    tui: { terminal: { rows: 24 }, requestRender: () => undefined } as never,
     connect: async () => client,
     done: () => undefined,
+    ...(copyToClipboard === undefined ? {} : { copyToClipboard }),
   });
 }
 
