@@ -574,6 +574,36 @@ describe("Topic Service daemon integration", () => {
     expect(openedUrls).toEqual(["https://github.com/LedgerHQ/revault/pull/42?b=feat-has-pr"]);
   });
 
+  test("returns a local refresh while one pull request refresh continues", async () => {
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const observer = {
+      async discover() {
+        calls += 1;
+        if (calls > 1) await gate;
+        return null;
+      },
+    } as unknown as PullRequestObserver;
+    const item = await world({}, { pullRequests: observer });
+    await item.client.createTopic({
+      name: "Refresh independently",
+      branch: "feat-refresh-independently",
+      repository: "LedgerHQ/revault",
+    });
+    expect(calls).toBe(1);
+
+    const first = await item.client.refresh(100).catch((error: unknown) => error);
+    const second = await item.client.refresh(100).catch((error: unknown) => error);
+    release();
+
+    expect(first).toEqual({ refreshed: true });
+    expect(second).toEqual({ refreshed: true });
+    expect(calls).toBe(2);
+  });
+
   test("reports unavailable when a Topic has no known pull request", async () => {
     const observer = {
       async discover() {

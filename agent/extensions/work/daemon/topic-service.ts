@@ -238,6 +238,7 @@ export class TopicService {
   private readonly orphanedTopicIds = new Set<string>();
   private readonly integrationStatusById = new Map<string, IntegrationStatus>();
   private pullRequestTimer: ReturnType<typeof setInterval> | undefined;
+  private pullRequestRefresh: Promise<void> | undefined;
   private worktreeTimer: ReturnType<typeof setInterval> | undefined;
   private readonly topicQueues = new Map<string, Promise<void>>();
   private readonly creationQueues = new Map<string, Promise<void>>();
@@ -305,9 +306,9 @@ export class TopicService {
     if (this.options.pullRequests !== undefined && this.pullRequestTimer === undefined) {
       const start = this.options.setInterval ?? globalThis.setInterval;
       this.pullRequestTimer = start(() => {
-        void this.refreshAllPullRequests();
+        void this.refreshPullRequests();
       }, this.pullRequestPollIntervalMs);
-      void this.refreshAllPullRequests();
+      void this.refreshPullRequests();
     }
   }
 
@@ -367,9 +368,17 @@ export class TopicService {
     return topic;
   }
 
-  /** Forces an immediate re-poll of every Topic's pull request, outside the timer cadence. */
-  async refreshPullRequests(): Promise<void> {
-    await this.refreshAllPullRequests();
+  /**
+   * Starts or joins one full pull request refresh. The timer and explicit refresh share this
+   * single flight, so slow GitHub calls never create overlapping passes.
+   */
+  refreshPullRequests(): Promise<void> {
+    if (this.pullRequestRefresh !== undefined) return this.pullRequestRefresh;
+    const refresh = this.refreshAllPullRequests().finally(() => {
+      if (this.pullRequestRefresh === refresh) this.pullRequestRefresh = undefined;
+    });
+    this.pullRequestRefresh = refresh;
+    return refresh;
   }
 
   /** Re-checks recorded Worktree paths immediately, outside the poll cadence. */

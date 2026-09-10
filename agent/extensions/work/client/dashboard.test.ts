@@ -1925,7 +1925,7 @@ describe("dashboard submission behavior", () => {
     }
   });
 
-  test("r forces a daemon pull request refresh instead of retrying", async () => {
+  test("r refreshes local state and starts a pull request refresh", async () => {
     const client = new FakeDashboardClient([topic(ID_A, "Alpha", "setup-failed")]);
     const component = dashboardComponent(client);
     await Bun.sleep(0);
@@ -1937,6 +1937,9 @@ describe("dashboard submission behavior", () => {
     expect(client.refreshCalls).toBe(2);
     expect(client.snapshotCalls).toBe(before + 1);
     expect(client.retryCalls).toHaveLength(0);
+    expect(component.render(80).join("\n")).toContain(
+      "Local repository state refreshed; pull requests are updating.",
+    );
     component.dispose();
   });
 

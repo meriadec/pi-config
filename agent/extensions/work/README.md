@@ -54,11 +54,14 @@ next broken edge. Topic detail adds the text status, Integration Target, Integra
 and behind counts, pending chain state, and one bounded diagnostic.
 
 Integration Status is observed from committed local Branch tips only. The daemon reads it when it
-starts, when `/work` opens, when you press `r`, and when chain metadata changes. It uses no timer,
-no file watcher, and no network: `fetch`, `pull`, `rebase`, `merge`, `reset`, `cherry-pick`, a
-Branch movement, and a temporary Worktree never run. The repository Integration Branch is inferred
-once, when the first Topic of that repository is created, and is then persisted in
-`~/work/config.json`. A later Branch switch in the Base checkout does not change it.
+starts, when `/work` opens, when you press `r`, and when chain metadata changes. An explicit refresh
+first checks Worktree presence and Integration Branches, then Integration Status. It returns this
+local result while one single-flight pull request refresh continues in the daemon and publishes
+progressive events. Integration Status uses no timer, no file watcher, and no network: `fetch`,
+`pull`, `rebase`, `merge`, `reset`, `cherry-pick`, a Branch movement, and a temporary Worktree never
+run. The repository Integration Branch is inferred once, when the first Topic of that repository is
+created, and is then persisted in `~/work/config.json`. A later Branch switch in the Base checkout
+does not change it.
 
 A Topic that durable data does not place keeps the legacy name hierarchy: Topic names can form a
 visual hierarchy with the exact `>` separator. When the exact parent Topic exists in the same Focus

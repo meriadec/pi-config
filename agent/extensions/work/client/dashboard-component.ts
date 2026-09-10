@@ -526,7 +526,7 @@ export class WorkDashboardComponent implements Component, Focusable {
     }
   }
 
-  /** Forces the daemon to re-poll pull request state now, then re-hydrates from the snapshot. */
+  /** Refreshes local repository state, starts the daemon's background PR pass, then re-hydrates. */
   private async forceRefresh(): Promise<void> {
     const client = this.client;
     if (client === undefined) {
@@ -534,7 +534,7 @@ export class WorkDashboardComponent implements Component, Focusable {
       this.options.tui.requestRender();
       return;
     }
-    this.state = { ...this.state, message: "Refreshing pull request state…" };
+    this.state = { ...this.state, message: "Refreshing local repository state…" };
     this.options.tui.requestRender();
     try {
       await client.refresh();
@@ -544,7 +544,10 @@ export class WorkDashboardComponent implements Component, Focusable {
     if (this.disposed || this.client !== client) return;
     await this.refresh();
     if (!this.disposed && this.client === client) {
-      this.state = { ...this.state, message: "Pull request state refreshed." };
+      this.state = {
+        ...this.state,
+        message: "Local repository state refreshed; pull requests are updating.",
+      };
       this.options.tui.requestRender();
     }
   }

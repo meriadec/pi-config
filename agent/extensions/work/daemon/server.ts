@@ -205,15 +205,19 @@ export class WorkDaemon {
         case "snapshot":
           result = this.snapshot();
           break;
-        case "refresh":
+        case "refresh": {
+          const topics = this.requireTopicService();
+          // Refresh local prerequisites before Integration Status. The client can use the
+          // result at once while the bounded network refresh continues in the daemon.
           await Promise.all([
-            this.requireTopicService().refreshPullRequests(),
-            this.requireTopicService().refreshWorktreePresence(),
-            this.requireTopicService().refreshIntegrationBranches(),
-            this.requireTopicService().refreshIntegrationStatuses(),
+            topics.refreshWorktreePresence(),
+            topics.refreshIntegrationBranches(),
           ]);
+          await topics.refreshIntegrationStatuses();
+          void topics.refreshPullRequests();
           result = { refreshed: true };
           break;
+        }
         case "subscribe":
           // Install the subscription and take its baseline in one synchronous turn. Events
           // written after this response always have a later revision than the snapshot.
