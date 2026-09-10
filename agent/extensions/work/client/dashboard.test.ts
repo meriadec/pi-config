@@ -756,10 +756,10 @@ describe("dashboard state and navigation", () => {
     expect(narrow).toContain("\x1b[33m");
   });
 
-  test("offers Add Note and Edit Note in the action rail without showing Note details", () => {
+  test("moves a Topic Note from the list column into the open detail view", () => {
     let state = hydrateDashboard(initialDashboardState(), snapshot([topic(ID_A, "Alpha")]));
     state = handleDashboardInput(state, "l").state;
-    let rendered = stripSgr(renderDashboard(state, 100, 24).join("\n"));
+    let rendered = stripSgr(renderDashboard(state, 120, 24).join("\n"));
     expect(rendered).toContain("Add Note");
     expect(rendered).not.toContain("Note:");
 
@@ -767,9 +767,15 @@ describe("dashboard state and navigation", () => {
       state,
       snapshot([topic(ID_A, "Alpha", "ready", true, "private context")]),
     );
-    rendered = stripSgr(renderDashboard(state, 100, 24).join("\n"));
+    const lines = renderDashboard(state, 160, 24);
+    const listHeader = stripSgr(lines[1]!).split("│", 1)[0]!;
+    const topicRow = lines.find((line) => line.includes("Alpha"))!.split("│", 1)[0]!;
+    rendered = stripSgr(lines.join("\n"));
+
     expect(rendered).toContain("Edit Note");
-    expect(rendered).not.toContain("Note: private context");
+    expect(listHeader).not.toContain("NOTE");
+    expect(stripSgr(topicRow)).not.toContain("private context");
+    expect(lines.join("\n")).toContain("Note: \x1b[33mprivate context\x1b[39m");
   });
 
   test("offers Copy Branch Name as the first Topic action", () => {

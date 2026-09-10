@@ -1338,11 +1338,14 @@ const COLUMN_GAPS_WIDTH = 8; // Selection prefix plus six inter-column spaces.
 
 /** Uses only the space needed by current values, up to stable readability caps. */
 function wideTopicColumns(state: DashboardState, width: number): TopicColumns | undefined {
-  const note = columnWidth(
-    "NOTE",
-    state.topics.map((topic) => topic.note ?? ""),
-    100,
-  );
+  const showNote = !state.sidebarOpen;
+  const note = showNote
+    ? columnWidth(
+        "NOTE",
+        state.topics.map((topic) => topic.note ?? ""),
+        100,
+      )
+    : 0;
   const repository = columnWidth(
     "REPOSITORY",
     state.topics.map((topic) => topic.repository),
@@ -1367,8 +1370,8 @@ function wideTopicColumns(state: DashboardState, width: number): TopicColumns | 
     17,
   );
   const integration = visibleWidth(INTEGRATION_HEADER);
-  const name =
-    width - COLUMN_GAPS_WIDTH - integration - note - repository - pullRequest - setup - mainAgent;
+  const gaps = COLUMN_GAPS_WIDTH - (showNote ? 0 : 1);
+  const name = width - gaps - integration - note - repository - pullRequest - setup - mainAgent;
   return name < MIN_TOPIC_NAME_WIDTH
     ? undefined
     : { name, integration, note, repository, pullRequest, setup, mainAgent };
@@ -1382,7 +1385,8 @@ function columnWidth(header: string, values: readonly string[], maximum: number)
 }
 
 function renderWideHeader(columns: TopicColumns): string {
-  return `  ${pad(INTEGRATION_HEADER, columns.integration)} ${pad("TOPIC", columns.name)} ${pad("NOTE", columns.note)} ${pad("REPOSITORY", columns.repository)} ${pad("PR", columns.pullRequest)} ${pad("SETUP", columns.setup)} ${padLeft("MAIN AGENT", columns.mainAgent)}`;
+  const note = columns.note === 0 ? "" : ` ${pad("NOTE", columns.note)}`;
+  return `  ${pad(INTEGRATION_HEADER, columns.integration)} ${pad("TOPIC", columns.name)}${note} ${pad("REPOSITORY", columns.repository)} ${pad("PR", columns.pullRequest)} ${pad("SETUP", columns.setup)} ${padLeft("MAIN AGENT", columns.mainAgent)}`;
 }
 
 function renderTopicRow(
@@ -1413,13 +1417,15 @@ function renderTopicRow(
     const setupSegment = setup === "" ? "" : ` · ${setup}`;
     const leading = `${prefix}${integration} ${displayName}`;
     const suffix = `${setupSegment} · ${agentCell}${link}`;
-    const note = renderTopicNote(topic.note, width - visibleWidth(`${leading}${suffix}`));
+    const note = state.sidebarOpen
+      ? ""
+      : renderTopicNote(topic.note, width - visibleWidth(`${leading}${suffix}`));
     const row = truncateToWidth(`${leading}${note}${suffix}`, width);
     const styled = inactive ? dim(row) : row;
     return selected ? highlight(styled, width) : styled;
   }
-  const noteCell = renderTopicNoteCell(topic.note, columns.note);
-  const row = `${prefix}${pad(integration, columns.integration)} ${pad(displayName, columns.name)} ${noteCell} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
+  const noteCell = columns.note === 0 ? "" : ` ${renderTopicNoteCell(topic.note, columns.note)}`;
+  const row = `${prefix}${pad(integration, columns.integration)} ${pad(displayName, columns.name)}${noteCell} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
   const styled = inactive ? dim(row) : row;
   return selected ? highlight(styled, width) : styled;
 }
@@ -1590,6 +1596,7 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
     [
       state.focus === "detail" ? "> DETAIL" : "  DETAIL",
       `Name: ${topic.name}`,
+      ...(topic.note === undefined ? [] : [`Note: ${yellow(topic.note)}`]),
       `Branch: ${topic.branch}`,
       `Repository: ${topic.repository}`,
       `Base: ${state.baseCheckouts[topic.id] ?? "not observable"}`,
