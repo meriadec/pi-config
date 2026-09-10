@@ -1380,7 +1380,7 @@ function columnWidth(header: string, values: readonly string[], maximum: number)
 }
 
 function renderWideHeader(columns: TopicColumns): string {
-  return `  ${pad("TOPIC", columns.name)} ${pad(INTEGRATION_HEADER, columns.integration)} ${pad("NOTE", columns.note)} ${pad("REPOSITORY", columns.repository)} ${pad("PR", columns.pullRequest)} ${pad("SETUP", columns.setup)} ${padLeft("MAIN AGENT", columns.mainAgent)}`;
+  return `  ${pad(INTEGRATION_HEADER, columns.integration)} ${pad("TOPIC", columns.name)} ${pad("NOTE", columns.note)} ${pad("REPOSITORY", columns.repository)} ${pad("PR", columns.pullRequest)} ${pad("SETUP", columns.setup)} ${padLeft("MAIN AGENT", columns.mainAgent)}`;
 }
 
 function renderTopicRow(
@@ -1409,17 +1409,15 @@ function renderTopicRow(
   if (columns === undefined) {
     const link = pullRequest === undefined ? "" : ` · ${pullRequestCell(pullRequest)}`;
     const setupSegment = setup === "" ? "" : ` · ${setup}`;
-    const suffix = ` ${integration}${setupSegment} · ${agentCell}${link}`;
-    const note = renderTopicNote(
-      topic.note,
-      width - visibleWidth(`${prefix}${displayName}${suffix}`),
-    );
-    const row = truncateToWidth(`${prefix}${displayName}${note}${suffix}`, width);
+    const leading = `${prefix}${integration} ${displayName}`;
+    const suffix = `${setupSegment} · ${agentCell}${link}`;
+    const note = renderTopicNote(topic.note, width - visibleWidth(`${leading}${suffix}`));
+    const row = truncateToWidth(`${leading}${note}${suffix}`, width);
     const styled = inactive ? dim(row) : row;
     return selected ? highlight(styled, width) : styled;
   }
   const noteCell = renderTopicNoteCell(topic.note, columns.note);
-  const row = `${prefix}${pad(displayName, columns.name)} ${pad(integration, columns.integration)} ${noteCell} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
+  const row = `${prefix}${pad(integration, columns.integration)} ${pad(displayName, columns.name)} ${noteCell} ${pad(topic.repository, columns.repository)} ${pad(pullRequestCell(pullRequest), columns.pullRequest)} ${pad(setup, columns.setup)} ${padLeft(agentCell, columns.mainAgent)}`;
   const styled = inactive ? dim(row) : row;
   return selected ? highlight(styled, width) : styled;
 }

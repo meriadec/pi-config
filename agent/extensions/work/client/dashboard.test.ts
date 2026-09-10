@@ -98,6 +98,7 @@ function topic(
 }
 
 // Nerd Font glyphs of the Integration Status column.
+const INTEGRATION_HEADER = "\uF47F";
 const CURRENT_GLYPH = "\uF058";
 const CONFLICT_GLYPH = "\uF071";
 const UNKNOWN_GLYPH = "\uF059";
@@ -991,9 +992,9 @@ describe("dashboard state and navigation", () => {
     );
 
     const tree = stripSgr(renderDashboard(state, 120, 24).join("\n"));
-    expect(tree).toContain("    ├─ 01 - Templates");
-    expect(tree).toContain("    │  └─ Tests");
-    expect(tree).toContain("    └─ 02 - Validation");
+    expect(tree).toContain(`${UNKNOWN_GLYPH}   ├─ 01 - Templates`);
+    expect(tree).toContain(`${UNKNOWN_GLYPH}   │  └─ Tests`);
+    expect(tree).toContain(`${UNKNOWN_GLYPH}   └─ 02 - Validation`);
     expect(tree).not.toContain("Tokenization > 01");
 
     // An active child bubbles its whole family, but it stays below its parent.
@@ -1003,7 +1004,7 @@ describe("dashboard state and navigation", () => {
     });
     expect(state.topics.map((topic) => topic.id)).toEqual([ID_A, ID_B, ID_C, ID_D, ID_E]);
     const activeTree = stripSgr(renderDashboard(state, 120, 24).join("\n"));
-    expect(activeTree).toContain("    ├─ 01 - Templates");
+    expect(activeTree).toContain(`${UNKNOWN_GLYPH}   ├─ 01 - Templates`);
     expect(activeTree).not.toContain("Tokenization > 01");
   });
 
@@ -1071,11 +1072,15 @@ describe("dashboard state and navigation", () => {
     const rows = renderDashboard(state, 120, 24);
     const rowOf = (name: string) => rows.find((line) => line.includes(name))!;
 
+    expect(stripSgr(rows[1]!)).toStartWith(`  ${INTEGRATION_HEADER} TOPIC`);
+    expect(stripSgr(rowOf("first")).slice(2)).toStartWith(`${CONFLICT_GLYPH}   ├─ first`);
     expect(rowOf("first")).toContain(`\x1b[31m${CONFLICT_GLYPH}`);
     expect(rowOf("second")).toContain(`\x1b[32m${CURRENT_GLYPH}`);
     expect(rowOf("Parent")).toContain(`\x1b[32m${CURRENT_GLYPH}`);
     // A setup-failed pending child keeps its position and reads Unknown.
-    expect(stripSgr(rowOf("pending-child"))).toContain(UNKNOWN_GLYPH);
+    expect(stripSgr(rowOf("pending-child")).slice(2)).toStartWith(
+      `${UNKNOWN_GLYPH}   └─ pending-child`,
+    );
     expect(state.topics.map((item) => item.id)).toEqual([ID_A, ID_B, ID_C, ID_D]);
   });
 
