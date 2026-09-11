@@ -6,4 +6,4 @@ A Topic family uses two durable relationships: a one-level Parent Topic relation
 
 ## Consequences
 
-Integration status uses local committed Branch tips only. It is calculated with Git graph commands and `git merge-tree`, not Worktrunk status or temporary Worktrees. Automatic chain changes require unambiguous ancestry; explicit side-view actions repair exceptional cases. The daemon never fetches, rebases, merges, resets, cherry-picks, or moves an existing Branch as part of integration management.
+Integration status uses local committed Branch tips only. It is calculated with Git graph commands and `git merge-tree`, not Worktrunk status or temporary Worktrees. Automatic chain changes require unambiguous ancestry; explicit side-view actions repair exceptional cases. Integration Chain maintenance does not move Branches. ADR-0002 adds a separate, explicit, guarded action that can rebase one Topic Branch.

@@ -68,11 +68,12 @@ import { unknownIntegrationStatus } from "./integration-status.ts";
 import type { IntegrationStatus, IntegrationStatusObserver } from "./integration-status.ts";
 import type { PullRequestObserver } from "./pull-request-observer.ts";
 import type { ProvisionRequest, ProvisionResult, TopicProvisioner } from "./provisioner.ts";
+import type { GitWorktreeController, GitWorktreeState } from "./git-worktree.ts";
 
 const CONFIRMATION_TTL_MS = 60_000;
 const MAX_DEDUPLICATED_REQUESTS = 1_000;
 const PULL_REQUEST_POLL_INTERVAL_MS = 60_000;
-const WORKTREE_POLL_INTERVAL_MS = 2_000;
+const WORKTREE_POLL_INTERVAL_MS = 30_000;
 const MAX_DIAGNOSTICS = 100;
 /** Diagnostic code of a ready child Topic that is still outside the active chain. */
 const PENDING_CHAIN_CODE = "chain-pending";
@@ -86,7 +87,8 @@ export interface TopicOperation {
     | "open-terminal"
     | "open-agent"
     | "reset-agent"
-    | "change-chain";
+    | "change-chain"
+    | "rebase";
   state: "running" | "confirmation-required";
   /** Live sub-step, for example a `setup N/M` Repository Recipe phase. */
   detail?: string;
@@ -103,6 +105,8 @@ export interface TopicServiceSnapshot {
   integrationBranches: Readonly<Record<string, string>>;
   /** Observed Integration Status per Topic id. */
   integrationStatuses: Readonly<Record<string, IntegrationStatus>>;
+  /** Last observed local Git state per Topic id. */
+  gitWorktreeStates: Readonly<Record<string, GitWorktreeState>>;
   deniedActions: Readonly<Record<string, readonly ActionId[]>>;
   pullRequests: Readonly<Record<string, PullRequestRef>>;
   /** Ready Topics whose recorded Worktree path is not an existing directory. */
@@ -123,6 +127,7 @@ export type TopicServiceEvent =
   | { type: "main-agent-opened"; topicId: string; result: MainAgentActionResult }
   | { type: "pull-request-changed"; topicId: string; pullRequest: PullRequestRef | null }
   | { type: "worktree-presence-changed"; topicId: string; orphaned: boolean }
+  | { type: "git-worktree-state-changed"; topicId: string; state: GitWorktreeState | null }
   | { type: "integration-status-changed"; topicId: string; status: IntegrationStatus }
   | { type: "operation-changed"; topicId: string; operation: TopicOperation | null };
 
@@ -141,6 +146,7 @@ export type TopicMutationResult =
   | { status: "note-updated"; topic: TopicManifest }
   | { status: "repartitioned"; topic: TopicManifest }
   | { status: "chain-changed"; topic: TopicManifest }
+  | { status: "rebased"; topic: TopicManifest }
   | { status: "deleted"; topicId: string }
   | { status: "rejected"; topicId: string }
   | {
@@ -216,6 +222,8 @@ export interface TopicServiceOptions {
   integrationBranches?: IntegrationBranchResolver;
   /** Observes local Integration Status from committed Branch tips. */
   integrationStatuses?: IntegrationStatusObserver;
+  /** Inspects and explicitly rebases local Topic Worktrees. */
+  gitWorktrees?: GitWorktreeController;
   /** Answers committed Git ancestry questions for Integration Chain placement. */
   ancestry?: BranchAncestryReader;
   /** Owns pre-migration manifest backups and the durable legacy migration journal. */
@@ -239,6 +247,7 @@ export class TopicService {
   private readonly pullRequestById = new Map<string, PullRequestRef>();
   private readonly orphanedTopicIds = new Set<string>();
   private readonly integrationStatusById = new Map<string, IntegrationStatus>();
+  private readonly gitWorktreeStateById = new Map<string, GitWorktreeState>();
   private pullRequestTimer: ReturnType<typeof setInterval> | undefined;
   private pullRequestRefresh: Promise<void> | undefined;
   private worktreeTimer: ReturnType<typeof setInterval> | undefined;
@@ -288,10 +297,11 @@ export class TopicService {
     await this.refreshWorktreePresence();
     await this.refreshIntegrationBranches();
     await this.refreshIntegrationStatuses();
+    await this.refreshGitWorktreeStates();
     if (this.worktreeTimer === undefined) {
       const start = this.options.setInterval ?? globalThis.setInterval;
       this.worktreeTimer = start(() => {
-        void this.refreshWorktreePresence();
+        void this.refreshLocalHealth();
       }, this.worktreePollIntervalMs);
     }
 
@@ -345,6 +355,7 @@ export class TopicService {
       ),
       integrationBranches: integrationBranchMap(this.config),
       integrationStatuses: Object.fromEntries(this.integrationStatusById),
+      gitWorktreeStates: Object.fromEntries(this.gitWorktreeStateById),
       deniedActions: Object.fromEntries(
         [...this.topicById.values()].map((topic) => [
           topic.id,
@@ -367,6 +378,7 @@ export class TopicService {
     this.topicById.set(topic.id, topic);
     this.emit({ type: "topic-changed", topic });
     await this.refreshTopicWorktreePresence(topic);
+    await this.refreshTopicGitWorktreeState(topic);
     return topic;
   }
 
@@ -387,6 +399,40 @@ export class TopicService {
   async refreshWorktreePresence(): Promise<void> {
     await Promise.all(
       [...this.topicById.values()].map((topic) => this.refreshTopicWorktreePresence(topic)),
+    );
+  }
+
+  /** Runs the ordered, low-cost checks used by the 30-second local health poll. */
+  async refreshLocalHealth(): Promise<void> {
+    await this.refreshWorktreePresence();
+    await this.refreshGitOperations();
+  }
+
+  /** Re-observes full local Git state for explicit refresh and action eligibility. */
+  async refreshGitWorktreeStates(): Promise<void> {
+    await Promise.all(
+      [...this.topicById.values()].map((topic) => this.refreshTopicGitWorktreeState(topic)),
+    );
+  }
+
+  /** Re-observes only in-progress operations for the low-cost local health poll. */
+  async refreshGitOperations(): Promise<void> {
+    const controller = this.options.gitWorktrees;
+    if (controller === undefined) return;
+    await Promise.all(
+      [...this.topicById.values()].map(async (topic) => {
+        if (!this.canInspectWorktree(topic)) {
+          this.publishGitWorktreeState(topic.id, null);
+          return;
+        }
+        const operation = await controller.inspectOperation(topic.worktreePath!);
+        const current = this.gitWorktreeStateById.get(topic.id) ?? {};
+        const { operation: _operation, ...withoutOperation } = current;
+        this.publishGitWorktreeState(topic.id, {
+          ...withoutOperation,
+          ...(operation === undefined ? {} : { operation }),
+        });
+      }),
     );
   }
 
@@ -494,6 +540,35 @@ export class TopicService {
     if (orphaned) this.orphanedTopicIds.add(topic.id);
     else this.orphanedTopicIds.delete(topic.id);
     this.emit({ type: "worktree-presence-changed", topicId: topic.id, orphaned });
+  }
+
+  private async refreshTopicGitWorktreeState(
+    topic: TopicManifest,
+  ): Promise<GitWorktreeState | undefined> {
+    const controller = this.options.gitWorktrees;
+    if (controller === undefined || !this.canInspectWorktree(topic)) {
+      this.publishGitWorktreeState(topic.id, null);
+      return undefined;
+    }
+    const state = await controller.inspect(topic.worktreePath!);
+    this.publishGitWorktreeState(topic.id, state);
+    return state;
+  }
+
+  private canInspectWorktree(topic: TopicManifest): boolean {
+    return (
+      topic.setup.state === "ready" &&
+      topic.worktreePath !== null &&
+      !this.orphanedTopicIds.has(topic.id)
+    );
+  }
+
+  private publishGitWorktreeState(topicId: string, state: GitWorktreeState | null): void {
+    const current = this.gitWorktreeStateById.get(topicId);
+    if (state === null) this.gitWorktreeStateById.delete(topicId);
+    else this.gitWorktreeStateById.set(topicId, state);
+    if (sameGitWorktreeState(current, state ?? undefined)) return;
+    this.emit({ type: "git-worktree-state-changed", topicId, state });
   }
 
   private async refreshAllPullRequests(): Promise<void> {
@@ -1475,6 +1550,123 @@ export class TopicService {
     );
   }
 
+  rebaseTopic(clientId: string, requestId: string, topicId: string): Promise<TopicMutationResult> {
+    return this.deduplicate(clientId, requestId, `rebase:${topicId}`, async () => {
+      const initial = await this.reloadTopic(topicId);
+      const target = initial.integrationTarget ?? this.defaultIntegrationTarget(initial);
+      const topicIds = [topicId, ...(target?.kind === "topic" ? [target.topicId] : [])];
+      return this.serializeTopics(topicIds, () => this.rebaseTopicSerial(topicId));
+    }) as Promise<TopicMutationResult>;
+  }
+
+  private async rebaseTopicSerial(topicId: string): Promise<TopicMutationResult> {
+    this.config = await this.options.config.load();
+    const topic = await this.reloadTopic(topicId);
+    requireReadyWorktree(topic);
+    await this.refreshTopicWorktreePresence(topic);
+    const observer = this.options.integrationStatuses;
+    const controller = this.options.gitWorktrees;
+    if (observer === undefined || controller === undefined) {
+      throw new WorkDataError("unavailable", "Topic rebase control is not available.");
+    }
+    const status = await this.observeIntegrationStatus(observer, topic);
+    if (!sameIntegrationStatus(this.integrationStatusById.get(topic.id), status)) {
+      this.integrationStatusById.set(topic.id, status);
+      this.emit({ type: "integration-status-changed", topicId: topic.id, status });
+    }
+    if (status.kind !== "behind") {
+      throw new WorkDataError("rebase-unavailable", integrationStatusRebaseReason(status));
+    }
+    const pullRequest = this.pullRequestById.get(topic.id);
+    if (pullRequest?.state === "open") {
+      throw new WorkDataError(
+        "rebase-unavailable",
+        `Topic has open pull request #${pullRequest.number}.`,
+      );
+    }
+    const agent = this.options.mainAgent?.snapshot().find((item) => item.topicId === topic.id);
+    if (agent !== undefined && ["starting", "thinking", "thinking-sub"].includes(agent.state)) {
+      throw new WorkDataError(
+        "rebase-unavailable",
+        `Main Agent is ${agent.state === "thinking-sub" ? "thinking (sub)" : agent.state}.`,
+      );
+    }
+    const worktree = await this.refreshTopicGitWorktreeState(topic);
+    if (worktree === undefined) {
+      throw new WorkDataError("rebase-unavailable", "Worktree state is not available.");
+    }
+    if (worktree.operation !== undefined) {
+      throw new WorkDataError(
+        "rebase-unavailable",
+        `${gitOperationLabel(worktree.operation)} is already in progress.`,
+      );
+    }
+    if (worktree.clean !== true) {
+      throw new WorkDataError(
+        "rebase-unavailable",
+        worktree.clean === false
+          ? "Worktree has local changes."
+          : "Worktree state is not available.",
+      );
+    }
+    if (worktree.checkedOutBranch !== topic.branch) {
+      throw new WorkDataError(
+        "rebase-unavailable",
+        `Worktree must have Branch ${topic.branch} checked out.`,
+      );
+    }
+    const target = this.integrationTargetBranch(topic);
+    if ("unknown" in target) {
+      throw new WorkDataError(
+        "rebase-unavailable",
+        target.unknown.detail ?? "Integration Target is unavailable.",
+      );
+    }
+    const targetLink = topic.integrationTarget ?? this.defaultIntegrationTarget(topic);
+    if (targetLink?.kind === "topic") {
+      const targetTopic = await this.reloadTopic(targetLink.topicId);
+      await this.refreshTopicWorktreePresence(targetTopic);
+      if (this.canInspectWorktree(targetTopic)) {
+        const targetOperation = await controller.inspectOperation(targetTopic.worktreePath!);
+        const current = this.gitWorktreeStateById.get(targetTopic.id) ?? {};
+        const { operation: _operation, ...withoutOperation } = current;
+        this.publishGitWorktreeState(targetTopic.id, {
+          ...withoutOperation,
+          ...(targetOperation === undefined ? {} : { operation: targetOperation }),
+        });
+        if (targetOperation !== undefined) {
+          throw new WorkDataError(
+            "rebase-unavailable",
+            `Integration Target has ${gitOperationLabel(targetOperation)} in progress.`,
+          );
+        }
+      }
+    }
+    this.setOperation({
+      topicId,
+      kind: "rebase",
+      state: "running",
+      detail: `rebasing onto ${target.branch}`,
+    });
+    let result;
+    try {
+      result = await controller.rebase(topic.worktreePath!, target.branch);
+    } finally {
+      this.clearOperation(topicId);
+      await this.refreshTopicGitWorktreeState(topic);
+      await this.refreshIntegrationStatuses();
+    }
+    if (result.status === "rebased") return { status: "rebased", topic };
+    const reason =
+      result.reason ??
+      (result.status === "timeout"
+        ? "Git rebase timed out and may still require manual recovery."
+        : result.status === "cancelled"
+          ? "Git rebase was cancelled and may still require manual recovery."
+          : "Git rebase failed.");
+    return { status: result.status, reason, topic };
+  }
+
   openPullRequest(
     clientId: string,
     requestId: string,
@@ -1743,6 +1935,7 @@ export class TopicService {
     this.emit({ type: "setup-changed", topic: result.topic });
     this.emit({ type: "topic-changed", topic: result.topic });
     await this.refreshTopicWorktreePresence(result.topic);
+    await this.refreshTopicGitWorktreeState(result.topic);
 
     if (result.status === "confirmation-required") {
       if (originalRequest === "startup") {
@@ -1857,6 +2050,9 @@ export class TopicService {
         this.emit({ type: "pull-request-changed", topicId, pullRequest: null });
       }
       this.integrationStatusById.delete(topicId);
+      if (this.gitWorktreeStateById.delete(topicId)) {
+        this.emit({ type: "git-worktree-state-changed", topicId, state: null });
+      }
       this.emit({ type: "topic-removed", topicId });
       await this.refreshIntegrationStatuses();
       return { status: "deleted", topicId };
@@ -1977,6 +2173,15 @@ export class TopicService {
 
   private async serializeTopic<T>(topicId: string, operation: () => Promise<T>): Promise<T> {
     return serializeIn(this.topicQueues, topicId, operation);
+  }
+
+  private serializeTopics<T>(topicIds: readonly string[], operation: () => Promise<T>): Promise<T> {
+    return [...new Set(topicIds)]
+      .toSorted()
+      .reduceRight<() => Promise<T>>(
+        (run, key) => () => this.serializeTopic(key, run),
+        operation,
+      )();
   }
 
   private emit(event: TopicServiceEvent): void {
@@ -2110,6 +2315,35 @@ function sameIntegrationStatus(
     left.behind === right.behind &&
     left.detail === right.detail
   );
+}
+
+function sameGitWorktreeState(
+  left: GitWorktreeState | undefined,
+  right: GitWorktreeState | undefined,
+): boolean {
+  return (
+    left?.clean === right?.clean &&
+    left?.checkedOutBranch === right?.checkedOutBranch &&
+    left?.operation?.kind === right?.operation?.kind &&
+    left?.operation?.conflict === right?.operation?.conflict
+  );
+}
+
+function integrationStatusRebaseReason(status: IntegrationStatus): string {
+  switch (status.kind) {
+    case "current":
+      return "Topic is already Current.";
+    case "conflict":
+      return "Integration Status is Conflict.";
+    case "unknown":
+      return status.detail ?? "Integration Status is Unknown.";
+    case "behind":
+      return "Topic can be rebased.";
+  }
+}
+
+function gitOperationLabel(operation: NonNullable<GitWorktreeState["operation"]>): string {
+  return `${operation.kind}${operation.conflict ? " conflict" : " pending"}`;
 }
 
 function validateCreationRequest(input: TopicCreationRequest): void {

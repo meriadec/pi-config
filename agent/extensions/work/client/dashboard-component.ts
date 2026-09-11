@@ -60,6 +60,11 @@ export interface DashboardClient {
     timeoutMs?: number,
   ): Promise<TopicMutationResult>;
   retryTopic(topicId: string, requestId?: string, timeoutMs?: number): Promise<TopicMutationResult>;
+  rebaseTopic(
+    topicId: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult>;
   renameTopic(
     topicId: string,
     name: string,
@@ -665,6 +670,8 @@ function requestMutation(
       return createChildTopic(client, action.input, mutation.requestId, resolveChildInput);
     case "retry":
       return client.retryTopic(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
+    case "rebase":
+      return client.rebaseTopic(action.topicId, mutation.requestId, MUTATION_TIMEOUT_MS);
     case "rename":
       return client.renameTopic(
         action.topicId,
@@ -768,6 +775,8 @@ function actionResultMessage(result: WorkActionResult): string {
       return `Moved Topic family ${result.topic.name}.`;
     case "chain-changed":
       return `Integration Chain of Topic ${result.topic.name} updated.`;
+    case "rebased":
+      return `Rebased ${result.topic.branch} onto its Integration Target.`;
     case "migration-preview":
       return "Legacy migration preview.";
     case "migration-applied": {

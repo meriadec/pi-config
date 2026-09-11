@@ -214,6 +214,7 @@ export class WorkDaemon {
             topics.refreshIntegrationBranches(),
           ]);
           await topics.refreshIntegrationStatuses();
+          await topics.refreshGitWorktreeStates();
           void topics.refreshPullRequests();
           result = { refreshed: true };
           break;
@@ -240,6 +241,13 @@ export class WorkDaemon {
           break;
         case "topic.retry":
           result = await this.requireTopicService().retry(
+            request.clientId,
+            request.id,
+            request.topicId,
+          );
+          break;
+        case "topic.rebase":
+          result = await this.requireTopicService().rebaseTopic(
             request.clientId,
             request.id,
             request.topicId,

@@ -28,6 +28,7 @@ import type {
   IntegrationStatusObserver,
   IntegrationStatusRequest,
 } from "./integration-status.ts";
+import type { GitWorktreeController } from "./git-worktree.ts";
 import { WorkDaemon } from "./server.ts";
 import { TopicService } from "./topic-service.ts";
 import type { TopicServiceEvent } from "./topic-service.ts";
@@ -141,6 +142,8 @@ async function world(
   extras: {
     pullRequests?: PullRequestObserver;
     desktop?: DesktopController;
+    integrationStatuses?: IntegrationStatusObserver;
+    gitWorktrees?: GitWorktreeController;
   } = {},
 ): Promise<World> {
   const root = await mkdtemp(join(tmpdir(), "work-topic-service-test-"));
@@ -157,6 +160,9 @@ async function world(
   let now = Date.parse("2026-01-01T00:00:00.000Z");
   const resetSessions: string[] = [];
   const mainAgent = {
+    snapshot() {
+      return [];
+    },
     async reset(topic: TopicManifest) {
       const sessionId = "123e4567-e89b-42d3-a456-426614174099";
       resetSessions.push(sessionId);
@@ -166,7 +172,7 @@ async function world(
       }));
       return { kind: "launched" as const, workspace: 1, message: "Started a new Main Agent." };
     },
-  } as MainAgentManager;
+  } as unknown as MainAgentManager;
   const service = new TopicService({
     config,
     topics,
@@ -176,6 +182,10 @@ async function world(
     confirmationTtlMs: 100,
     ...(extras.pullRequests === undefined ? {} : { pullRequests: extras.pullRequests }),
     ...(extras.desktop === undefined ? {} : { desktop: extras.desktop }),
+    ...(extras.integrationStatuses === undefined
+      ? {}
+      : { integrationStatuses: extras.integrationStatuses }),
+    ...(extras.gitWorktrees === undefined ? {} : { gitWorktrees: extras.gitWorktrees }),
   });
   const daemon = new WorkDaemon({
     socketPath: paths.socket,
@@ -374,7 +384,10 @@ describe("Topic Service daemon integration", () => {
       "/checkouts/revault",
       "/checkouts/revault",
     ]);
-    expect(observed.map((request) => request.branch)).toEqual(["feat-child", "feat-parent"]);
+    expect(observed.map((request) => request.branch).toSorted()).toEqual([
+      "feat-child",
+      "feat-parent",
+    ]);
     expect(events.filter((event) => event.type === "integration-status-changed").length).toBe(4);
   });
 
@@ -619,6 +632,64 @@ describe("Topic Service daemon integration", () => {
     const topicId = (ready as { topic: TopicManifest }).topic.id;
     const opened = await item.client.openPullRequest(topicId);
     expect(opened).toMatchObject({ kind: "unavailable" });
+  });
+
+  test("blocks Topic rebase when a known open pull request exists", async () => {
+    const pullRequests = {
+      async discover() {
+        return {
+          number: 42,
+          url: "https://github.com/LedgerHQ/revault/pull/42",
+          state: "open" as const,
+          draft: false,
+          ci: "passing" as const,
+          reviewPending: false,
+          copilotReviewed: false,
+          changesRequested: false,
+          approved: false,
+          unresolvedThreads: 0,
+        };
+      },
+    } as unknown as PullRequestObserver;
+    const integrationStatuses = {
+      async observe(request: IntegrationStatusRequest): Promise<IntegrationStatus> {
+        return { kind: "behind", target: request.targetBranch, ahead: 1, behind: 1 };
+      },
+    } as IntegrationStatusObserver;
+    let rebaseCalls = 0;
+    const gitWorktrees = {
+      async inspect() {
+        return { clean: true, checkedOutBranch: "feat-has-pr" };
+      },
+      async inspectOperation() {
+        return undefined;
+      },
+      async rebase() {
+        rebaseCalls += 1;
+        return { status: "rebased" as const };
+      },
+    } satisfies GitWorktreeController;
+    const item = await world({}, { pullRequests, integrationStatuses, gitWorktrees });
+    await createConfigStore(item.paths).update((current) => ({
+      ...current,
+      repositories: {
+        ...current.repositories,
+        "LedgerHQ/revault": { setupCommands: [], integrationBranch: "main" },
+      },
+    }));
+    const created = await item.client.createTopic({
+      name: "Has PR",
+      branch: "feat-has-pr",
+      repository: "LedgerHQ/revault",
+    });
+    if (created.status !== "ready") throw new Error("Expected a ready Topic.");
+    await item.service.refreshPullRequests();
+
+    await expect(item.client.rebaseTopic(created.topic.id)).rejects.toMatchObject({
+      code: "rebase-unavailable",
+      message: "Topic has open pull request #42.",
+    });
+    expect(rebaseCalls).toBe(0);
   });
 
   test("reports setup failure and retries it", async () => {

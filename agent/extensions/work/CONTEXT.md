@@ -59,6 +59,11 @@ conflict. **Unknown** means that a reliable result is not available. Uncommitted
 and remote state do not affect this status.
 _Avoid_: worktree state, Git status.
 
+**Git Operation State**:
+The current rebase, merge, cherry-pick, or revert state of a Topic Worktree. It is observed local
+state, separate from the committed Integration Status and the durable Setup State.
+_Avoid_: Integration Status, Setup State.
+
 **Source checkout**:
 The Git worktree in which a client resolves a Start Point. It can have a different path from the
 Base checkout, but it must share the Base checkout's local clone and Git object database. It is

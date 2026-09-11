@@ -24,7 +24,7 @@ The `pi-workd` daemon runs `gh` for repository clone and pull request discovery.
 2. Run `/work`.
 3. Set `WORK_BASE` if requested.
 4. Press `a` to add a Topic. Enter its name, `owner/repository`, and Branch. Wizard fields support paste and standard text editing. At the repository stage the wizard lists the Known repositories declared in your config; type to fuzzy-match, use `↑`/`↓` to highlight a row, and press `tab` to complete it into the field. `enter` always submits the typed text, so a completion needs the explicit `tab`.
-5. Select a Topic to open the action rail. **Copy Branch Name** is the first action and copies the exact Branch name to the system clipboard. Press `n` from the Topic list to add or edit its Topic Note. Press `m` to open or focus its resumable Main Agent directly. Press `o` to focus its i3 workspace directly. Press `p` to open its pull request in a browser. Press `r` to refresh local repository state and start a background pull request refresh. Press `Shift+J` or `Shift+K` to move the selected Topic family by one Partition arrangement step. A family that shares a Partition first moves into a new adjacent Partition. A family that is alone then merges into the next Partition. An outward move from a shared outer Partition creates a new outer Partition; an outward move from a lone outer Partition does nothing. Empty Partitions disappear, blank lines separate the remaining Partitions, and selection follows the moved Topic.
+5. Select a Topic to open the action rail. **Copy Branch Name** is the first action and copies the exact Branch name to the system clipboard. Press `n` from the Topic list to add or edit its Topic Note. Press `s` to rebase a Behind Topic Branch onto its direct Integration Target. Press `m` to open or focus its resumable Main Agent directly. Press `o` to focus its i3 workspace directly. Press `p` to open its pull request in a browser. Press `r` to refresh local repository state and start a background pull request refresh. Press `Shift+J` or `Shift+K` to move the selected Topic family by one Partition arrangement step. A family that shares a Partition first moves into a new adjacent Partition. A family that is alone then merges into the next Partition. An outward move from a shared outer Partition creates a new outer Partition; an outward move from a lone outer Partition does nothing. Empty Partitions disappear, blank lines separate the remaining Partitions, and selection follows the moved Topic.
 6. Use the action rail to access the workspace, open a terminal, or select **Start New Main Agent**. A new Main Agent gets an empty Pi session. Its previous session file is kept. When `/track-pr` polls in that session, the Main Agent column shows `tracking-pr` instead of `waiting-for-human`. A parent-owned Delegation Job has the semantic state `thinking-sub`, which the Topic row and detail show as the violet, shimmering label `thinking (sub)`. This state stays on the Topic's parent Main Agent lease; it does not create a child lease or replace the Topic's Main Agent session reference. Display precedence is Main Agent `thinking`, then `thinking (sub)`, then `tracking-pr`, then `waiting-for-human`. When a higher-precedence activity settles, the next live activity becomes visible. A ready Topic whose recorded Worktree directory no longer exists is an Orphan Topic; the Setup column shows `orphan` in bright red. When a Topic branch has a pull request, the Topic list shows its number as an underlined `#<number>` link with a progressive status. The status shows the highest-signal condition first: `merged`, `closed`, `draft`, `ci-failing` (checks are red), `feedback` (an unresolved review thread or a changes-requested review), `checks` (CI still running), `approved` (the formal review decision is approved), `ready` (Copilot reviewed and all threads are resolved), `reviewing` (a requested reviewer has not submitted yet), and finally `clear` (CI is green, no review is pending, and no thread is unresolved). The `PR` column and the **Open Pull Request in Browser** action are present only while a pull request exists.
 7. You can also add or edit a Topic Note, rename the Topic, retry setup, or delete only the Topic record from the action rail. With details closed, a Topic Note is shown in yellow in the **Note** column directly after the Topic title; the compact layout keeps it inline. In the wide list, Topic and status columns use their longest visible value, while Note receives spare width and shrinks first with an ellipsis. With details open, the list hides the Note and the detail view shows it in the same yellow. A Note is one line and at most 200 characters; saving an empty Note removes it. **Rename Topic** opens a prompt for a new display name; it changes only the Topic name, never its Branch, Worktree, or repository.
 
@@ -50,7 +50,7 @@ current ancestry does not support the new edge, the daemon asks for one confirma
 moved edge then reads Behind or Conflict. **Reset Integration Target** on a Parent Topic rebuilds
 the family's chain from current ancestry and refuses an ambiguous family. Deleting an active child
 hands its Integration Target to its successor; a Parent Topic with children cannot be deleted.
-None of these actions runs fetch, pull, rebase, merge, reset, cherry-pick, or a Branch movement.
+These Integration Chain maintenance actions do not move Branches. **Rebase onto Integration Target** is a separate action that runs only when the selected Topic is Behind, has no known open pull request, has a clean Worktree with its Topic Branch checked out, has no Git operation in progress, and has no Main Agent that is starting or thinking. It runs plain `git rebase <Integration Target Branch>` without fetching or asking for confirmation. It changes only the selected Topic Branch.
 
 The narrow `` column shows local Integration Status: `` Current in green, `` Behind in yellow,
 `` Conflict in red, and `` Unknown dim. In a rebase cascade the first yellow or red row is the
@@ -58,14 +58,19 @@ next broken edge. Topic detail adds the text status, Integration Target, Integra
 and behind counts, pending chain state, and one bounded diagnostic.
 
 Integration Status is observed from committed local Branch tips only. The daemon reads it when it
-starts, when `/work` opens, when you press `r`, and when chain metadata changes. An explicit refresh
-first checks Worktree presence and Integration Branches, then Integration Status. It returns this
-local result while one single-flight pull request refresh continues in the daemon and publishes
-progressive events. Integration Status uses no timer, no file watcher, and no network: `fetch`,
-`pull`, `rebase`, `merge`, `reset`, `cherry-pick`, a Branch movement, and a temporary Worktree never
-run. The repository Integration Branch is inferred once, when the first Topic of that repository is
-created, and is then persisted in `~/work/config.json`. A later Branch switch in the Base checkout
-does not change it.
+starts, when `/work` opens, when you press `r`, after a rebase, and when chain metadata changes. An
+explicit refresh first checks Worktree presence and Integration Branches, then Integration Status and
+local Git Worktree state. It returns this local result while one single-flight pull request refresh
+continues in the daemon and publishes progressive events. Integration Status observation uses no
+timer, file watcher, or network and never changes a Branch. The explicit rebase action is the only
+dashboard integration action that changes Git history. The repository Integration Branch is inferred
+once, when the first Topic of that repository is created, and is then persisted in
+`~/work/config.json`. A later Branch switch in the Base checkout does not change it.
+
+The daemon checks Worktree presence and in-progress Git operations every 30 seconds. A stopped
+rebase, merge, cherry-pick, or revert appears in bright red in the Setup column as its Git Operation
+State. A rebase with unmerged paths reads `rebase conflict`; another paused rebase reads
+`rebase pending`. The daemon does not continue or abort these operations.
 
 A Topic that durable data does not place keeps the legacy name hierarchy: Topic names can form a
 visual hierarchy with the exact `>` separator. When the exact parent Topic exists in the same
@@ -308,20 +313,15 @@ Do not delete `~/work`, repositories, base checkouts, worktrees, branches, Pi se
 
 ### Repair an Integration Chain
 
-The daemon never repairs Git history for you. Use these steps when the `` column is not green.
+The daemon can repair one safe edge at a time. Use these steps when the `` column is not green.
 
 1. Refresh first: open `/work` or press `r`. The status comes from committed local Branch tips, so
    an old value disappears as soon as the daemon reads Git again.
-2. Repair the cascade from the top. The first yellow (` Behind) or red (` Conflict) row is the
-   next broken edge; Topic detail names its Integration Target. Rebase that Topic Branch by hand in
-   its own Worktree, then refresh:
-
-   ```sh
-   cd <worktree of the first broken Topic>
-   git rebase <Integration Target branch>
-   ```
-
-   Each repaired edge moves the cascade one step further, up to the Parent Topic.
+2. Repair the cascade from the top. The first yellow (`` Behind) or red (`` Conflict) row is the
+   next broken edge; Topic detail names its Integration Target. Select a Behind Topic and press `s`.
+   The daemon revalidates all guardrails, then rebases that one Topic Branch onto its local target.
+   Each repaired edge moves the cascade one step further, up to the Parent Topic. A rebase that stops
+   remains in progress and appears as a red Git Operation State for manual handling.
 
 3. `` Unknown always states its reason in Topic detail:
    - _Topic setup is not finished_: use **Retry Setup**.
@@ -348,7 +348,7 @@ Version 1 does not provide:
 
 - Topic types or lifecycle phases
 - GitHub notification ingestion
-- pull request creation, monitoring, rebasing, conflict resolution, or commit-stack refinement
+- pull request creation, automatic conflict resolution, or commit-stack refinement
 - development servers, Kubernetes, or manual-test recipes
 - Delegation Jobs or headless agents
 - non-systemd Linux, non-i3 window managers, or non-kitty terminals

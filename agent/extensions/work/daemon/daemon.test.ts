@@ -162,8 +162,24 @@ describe("work daemon", () => {
     expect(() => parseRequest(request(42))).toThrow(ProtocolError);
   });
 
-  test("changes protocol version for insertable Partition movement", () => {
-    expect(WORK_PROTOCOL_VERSION).toBe(21);
+  test("changes protocol version for Topic rebasing", () => {
+    expect(WORK_PROTOCOL_VERSION).toBe(22);
+  });
+
+  test("accepts the Topic rebase action", () => {
+    const message = JSON.stringify({
+      version: WORK_PROTOCOL_VERSION,
+      kind: "request",
+      id: "rebase",
+      clientId: "dashboard",
+      action: "topic.rebase",
+      topicId: "123e4567-e89b-42d3-a456-426614174000",
+    });
+
+    expect(parseRequest(message)).toMatchObject({
+      action: "topic.rebase",
+      topicId: "123e4567-e89b-42d3-a456-426614174000",
+    });
   });
 
   test("accepts Partition movement and rejects the removed Focus action", () => {

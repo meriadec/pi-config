@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -19,6 +19,7 @@ import type {
 import { BranchAncestryReader } from "./branch-ancestry.ts";
 import { IntegrationBranchResolver } from "./integration-branch.ts";
 import { IntegrationStatusObserver } from "./integration-status.ts";
+import { LocalGitWorktreeController } from "./git-worktree.ts";
 import { LegacyMigrationJournal } from "./legacy-migration.ts";
 import type { ProvisionRequest, ProvisionResult } from "./provisioner.ts";
 import { TopicService } from "./topic-service.ts";
@@ -118,6 +119,7 @@ interface World {
   provisioner: GitWorktreeProvisioner;
   /** Number of live timers that the Service started. */
   timers: () => number;
+  timerDelays: () => readonly number[];
   parent: TopicManifest;
 }
 
@@ -155,19 +157,22 @@ async function world(options: WorldOptions = {}): Promise<World> {
   const runner = new RecordingProcessRunner();
   const provisioner = new GitWorktreeProvisioner(topics, scenario.repository, worktreeBase);
   const timers = new Set<object>();
+  const timerDelays: number[] = [];
   const service = new TopicService({
     config,
     topics,
     provisioner,
     integrationBranches: new IntegrationBranchResolver({ config, runner }),
     integrationStatuses: new IntegrationStatusObserver({ runner }),
+    gitWorktrees: new LocalGitWorktreeController({ runner }),
     ancestry: new BranchAncestryReader({ runner }),
     migrations: new LegacyMigrationJournal({ paths }),
-    setInterval: ((): ReturnType<typeof setInterval> => {
+    setInterval: ((_handler: () => void, delay?: number): ReturnType<typeof setInterval> => {
       const handle = {};
       timers.add(handle);
+      if (delay !== undefined) timerDelays.push(delay);
       return handle as unknown as ReturnType<typeof setInterval>;
-    }) as unknown as typeof globalThis.setInterval,
+    }) as typeof globalThis.setInterval,
     clearInterval: ((handle: object) => timers.delete(handle)) as unknown as typeof clearInterval,
   });
   await service.start();
@@ -184,6 +189,7 @@ async function world(options: WorldOptions = {}): Promise<World> {
     runner,
     provisioner,
     timers: () => timers.size,
+    timerDelays: () => timerDelays,
     parent: undefined as unknown as TopicManifest,
   };
   if (options.parentTopic !== false) {
@@ -307,6 +313,64 @@ describe("Integration Chain workflow", () => {
     expectNoGitMutation(item);
   });
 
+  test("rebases only the selected Topic onto its local Integration Target", async () => {
+    const item = await world();
+    await item.repository.commit("main-new.txt", "integration advanced");
+    await item.service.refreshIntegrationStatuses();
+    expect(statusOf(item, "Parent")).toBe("behind main 4/1");
+
+    const result = await item.service.rebaseTopic("test-client", "rebase-parent", item.parent.id);
+
+    expect(result.status).toBe("rebased");
+    expect(statusOf(item, "Parent")).toBe("current main 4/0");
+    expect(
+      await item.repository.git("merge-base", "--is-ancestor", "main", item.parent.branch),
+    ).toBe("");
+    expect(item.runner.mutatingRequests.map((request) => request.args)).toContainEqual([
+      "rebase",
+      "main",
+    ]);
+  });
+
+  test("rejects a rebase when the selected Topic Worktree is dirty", async () => {
+    const item = await world();
+    const worktree = worktreeOf(item, "Parent");
+    await item.repository.commit("main-new.txt", "integration advanced");
+    await writeFile(join(worktree, "untracked.txt"), "local work\n", "utf8");
+
+    await expect(
+      item.service.rebaseTopic("test-client", "dirty-rebase", item.parent.id),
+    ).rejects.toMatchObject({ code: "rebase-unavailable", message: "Worktree has local changes." });
+    expect(item.runner.mutatingRequests.map((request) => request.args[0])).not.toContain("rebase");
+    expect(item.service.snapshot().gitWorktreeStates[item.parent.id]?.clean).toBeFalse();
+  });
+
+  test("leaves an unexpected rebase conflict in progress and publishes its Git state", async () => {
+    const item = await world();
+    const worktree = worktreeOf(item, "Parent");
+    // The final trees agree, so merge-tree reports Behind. Rebase still conflicts while it
+    // applies the intermediate Topic commit one commit at a time.
+    await item.repository.commit("base.txt", "topic intermediate", worktree);
+    await item.repository.commit("base.txt", "shared final", worktree);
+    await item.repository.commit("base.txt", "shared final");
+    await item.service.refreshIntegrationStatuses();
+    expect(statusOf(item, "Parent").startsWith("behind main")).toBeTrue();
+
+    const result = await item.service.rebaseTopic("test-client", "rebase-conflict", item.parent.id);
+
+    expect(result.status).toBe("failed");
+    expect(item.service.snapshot().gitWorktreeStates[item.parent.id]?.operation).toEqual({
+      kind: "rebase",
+      conflict: true,
+    });
+    expect(await item.repository.git("-C", worktree, "status", "--porcelain")).not.toBe("");
+    const restarted = await restart(item, { idleProvisioner: true });
+    expect(restarted.snapshot().gitWorktreeStates[item.parent.id]?.operation).toEqual({
+      kind: "rebase",
+      conflict: true,
+    });
+  });
+
   test("shows Conflict for a predicted conflict and Unknown without usable local data", async () => {
     const item = await world();
     const { checkpoints, repository } = item.scenario;
@@ -315,6 +379,9 @@ describe("Integration Chain workflow", () => {
     await repository.commit("parent-1.txt", "integration rewrite");
     await item.service.refreshIntegrationStatuses();
     expect(statusOf(item, "B")).toBe("conflict main 2/1");
+    await expect(
+      item.service.rebaseTopic("test-client", "blocked-conflict", topicByName(item, "B").id),
+    ).rejects.toMatchObject({ code: "rebase-unavailable" });
 
     // A ready Topic whose recorded Worktree disappeared cannot be observed.
     await rm(worktreeOf(item, "B"), { recursive: true, force: true });
@@ -429,14 +496,15 @@ describe("Integration Chain workflow", () => {
     expectNoGitMutation(item);
   });
 
-  test("refreshes on demand without a timer, a watcher, or a fetch", async () => {
+  test("refreshes Integration Status on demand without a timer, watcher, or fetch", async () => {
     const item = await world();
     await createChild(item, "B", "feat-b", item.scenario.checkpoints[1]!);
-    // Only the Worktree presence poll exists; Integration state has no timer of its own.
+    // Only the local health poll exists; Integration Status has no timer of its own.
     const timersAfterStart = item.timers();
+    expect(item.timerDelays()).toContain(30_000);
     item.runner.clear();
 
-    // Dashboard open and the `r` key drive the same explicit refresh sequence.
+    // Exercise the Integration Status part of the explicit dashboard refresh sequence.
     await item.service.refreshWorktreePresence();
     await item.service.refreshIntegrationBranches();
     await item.service.refreshIntegrationStatuses();
@@ -663,6 +731,7 @@ async function restart(
       runner: item.runner,
     }),
     integrationStatuses: new IntegrationStatusObserver({ runner: item.runner }),
+    gitWorktrees: new LocalGitWorktreeController({ runner: item.runner }),
     ancestry: new BranchAncestryReader({ runner: item.runner }),
     migrations: new LegacyMigrationJournal({ paths: item.paths }),
   });

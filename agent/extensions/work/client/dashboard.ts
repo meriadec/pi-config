@@ -26,6 +26,7 @@ import { displayChildOrder } from "../shared/integration-chain.ts";
 import { planPartitionMove } from "../shared/partition.ts";
 import type { LegacyMigrationFamily, LegacyMigrationPreview } from "../shared/legacy-migration.ts";
 import type { IntegrationStatus, IntegrationStatusKind } from "../daemon/integration-status.ts";
+import type { GitOperationState, GitWorktreeState } from "../daemon/git-worktree.ts";
 import { defaultBranchForTopicName } from "../shared/topic-creation.ts";
 
 export { defaultBranchForTopicName } from "../shared/topic-creation.ts";
@@ -76,6 +77,7 @@ export type TopicActionId =
   | "terminal"
   | "agent"
   | "reset-agent"
+  | "rebase"
   | "pull-request"
   | "rename"
   | "note"
@@ -133,6 +135,8 @@ export interface DashboardState {
   integrationStatuses: Readonly<Record<string, IntegrationStatus>>;
   /** Configured Integration Branch per `owner/repo`, absent while none is inferred yet. */
   integrationBranches: Readonly<Record<string, string>>;
+  /** Last observed local Git state per Topic id. */
+  gitWorktreeStates: Readonly<Record<string, GitWorktreeState>>;
   unavailableActions: Readonly<Record<string, readonly TopicActionId[]>>;
   /** Topic ids whose recorded Worktree directory is missing. */
   orphanedTopicIds: readonly string[];
@@ -185,6 +189,7 @@ export function initialDashboardState(): DashboardState {
     pullRequests: {},
     integrationStatuses: {},
     integrationBranches: {},
+    gitWorktreeStates: {},
     unavailableActions: {},
     orphanedTopicIds: [],
     legacyFamilies: 0,
@@ -247,6 +252,7 @@ export function hydrateDashboard(state: DashboardState, snapshot: DaemonSnapshot
     pullRequests: { ...(snapshot.pullRequests ?? state.pullRequests) },
     integrationStatuses: { ...(snapshot.integrationStatuses ?? state.integrationStatuses) },
     integrationBranches: { ...(snapshot.integrationBranches ?? state.integrationBranches) },
+    gitWorktreeStates: { ...(snapshot.gitWorktreeStates ?? state.gitWorktreeStates) },
     orphanedTopicIds: snapshot.orphanedTopicIds
       ? [...snapshot.orphanedTopicIds]
       : state.orphanedTopicIds,
@@ -284,12 +290,14 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
       const pullRequests = { ...state.pullRequests };
       const integrationStatuses = { ...state.integrationStatuses };
       const unavailableActions = { ...state.unavailableActions };
+      const gitWorktreeStates = { ...state.gitWorktreeStates };
       const orphanedTopicIds = state.orphanedTopicIds.filter((id) => id !== event.topicId);
       delete workspaces[event.topicId];
       delete baseCheckouts[event.topicId];
       delete pullRequests[event.topicId];
       delete integrationStatuses[event.topicId];
       delete unavailableActions[event.topicId];
+      delete gitWorktreeStates[event.topicId];
       return stabilizeSelection(
         {
           ...state,
@@ -299,6 +307,7 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
           pullRequests,
           integrationStatuses,
           unavailableActions,
+          gitWorktreeStates,
           orphanedTopicIds,
         },
         state.topics.findIndex((topic) => topic.id === event.topicId),
@@ -351,6 +360,12 @@ export function reduceDashboardEvent(state: DashboardState, event: WorkEvent): D
       else orphanedTopicIds.delete(event.topicId);
       return { ...state, orphanedTopicIds: [...orphanedTopicIds] };
     }
+    case "git-worktree-state-changed": {
+      const gitWorktreeStates = { ...state.gitWorktreeStates };
+      if (event.state === null) delete gitWorktreeStates[event.topicId];
+      else gitWorktreeStates[event.topicId] = event.state;
+      return { ...state, gitWorktreeStates };
+    }
     case "integration-status-changed":
       return {
         ...state,
@@ -392,6 +407,7 @@ export type DashboardAction =
         | "agent"
         | "reset-agent"
         | "pull-request"
+        | "rebase"
         | "delete"
         | "remove-parent"
         | "reset-chain";
@@ -496,6 +512,17 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
     const action = topicActions(state).find((item) => item.id === "terminal");
     if (action !== undefined && !action.unavailable) return invokeTopicAction(state, action);
   }
+  if (data === "s" && state.focus === "list" && !isSelectedTopicBusy(state)) {
+    const action = topicActions(state).find((item) => item.id === "rebase");
+    if (action === undefined) return { state, exit: false };
+    if (action.unavailable) {
+      return {
+        state: { ...state, message: action.reason ?? "Rebase is unavailable." },
+        exit: false,
+      };
+    }
+    return invokeTopicAction(state, action);
+  }
   if ((data === "q" || data === "Q") && state.sidebarOpen) {
     return {
       state: { ...state, sidebarOpen: false, focus: "list" },
@@ -514,7 +541,13 @@ export function handleDashboardInput(state: DashboardState, data: string): Dashb
   if (matchesKey(data, Key.enter) && state.selectedTopicId !== undefined) {
     if (state.focus === "actions" && !isSelectedTopicBusy(state)) {
       const action = topicActions(state)[state.focusedAction];
-      if (action === undefined || action.unavailable) return { state, exit: false };
+      if (action === undefined) return { state, exit: false };
+      if (action.unavailable) {
+        return {
+          state: { ...state, message: action.reason ?? "Action is unavailable." },
+          exit: false,
+        };
+      }
       if (action.id === "rename") return openRenamePrompt(state);
       if (action.id === "note") return openNotePrompt(state);
       if (action.id === "add-child") return openChildWizard(state);
@@ -1147,7 +1180,7 @@ function renderList(state: DashboardState, width: number, height: number): strin
   lines.push(truncateToWidth(status, width));
   lines.push(
     truncateToWidth(
-      "a Add · j/k or ↑/↓ move · ⇧J/⇧K partition · enter actions · n Note · o workspace · t terminal · m Main Agent · p PR · r refresh · esc quit",
+      "a Add · j/k or ↑/↓ move · ⇧J/⇧K partition · enter actions · n Note · s rebase · o workspace · t terminal · m Main Agent · p PR · r refresh · esc quit",
       width,
     ),
   );
@@ -1469,11 +1502,13 @@ function renderTopicNoteCell(note: string | undefined, width: number): string {
 }
 
 function setupCell(state: DashboardState, topic: TopicManifest): string {
-  // A live Repository Recipe phase replaces the durable setup state. An Orphan Topic
-  // replaces a settled ready state with a bright warning.
+  // A live operation replaces the durable setup state. An Orphan Topic and an in-progress
+  // Git operation replace a settled ready state with a bright warning.
   const operationDetail = state.operations.find((item) => item.topicId === topic.id)?.detail;
   if (operationDetail !== undefined) return operationDetail;
   if (state.orphanedTopicIds.includes(topic.id)) return brightRed("orphan");
+  const gitOperation = state.gitWorktreeStates[topic.id]?.operation;
+  if (gitOperation !== undefined) return brightRed(gitOperationLabel(gitOperation));
   return topic.setup.state === "ready" ? "" : topic.setup.state;
 }
 
@@ -1612,6 +1647,9 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
         : [`Pull Request: ${pullRequestCell(state.pullRequests[topic.id])}`]),
       `Worktree: ${topic.worktreePath ?? "not ready"}${state.orphanedTopicIds.includes(topic.id) ? ` · ${brightRed("orphan")}` : ""}`,
       `Setup: ${setupDetail ?? topic.setup.state}`,
+      ...(state.gitWorktreeStates[topic.id]?.operation === undefined
+        ? []
+        : [`Git: ${brightRed(gitOperationLabel(state.gitWorktreeStates[topic.id]!.operation!))}`]),
       ...integrationDetailLines(state, topic),
       `Main Agent: ${renderMainAgentStatus(agent?.state ?? "stopped", state.shimmerPhase)}`,
       `Workspace: ${state.workspaces[topic.id] ?? "not observable"}`,
@@ -1620,7 +1658,9 @@ function renderSidebar(state: DashboardState, width: number, height: number): st
       state.focus === "actions" ? "> ACTIONS" : "  ACTIONS",
       ...actions.map((action, index) => {
         const pointer = state.focus === "actions" && index === state.focusedAction ? ">" : " ";
-        return `${pointer} ${action.label}${action.unavailable ? " · unavailable" : ""}`;
+        return `${pointer} ${action.label}${
+          action.unavailable ? ` · ${action.reason ?? "unavailable"}` : ""
+        }`;
       }),
       "",
       "j/k move · h/l focus · enter invoke · q close details · esc quit",
@@ -1961,18 +2001,19 @@ function chainMaintenanceActions(
   return actions;
 }
 
-function topicActions(
-  state: DashboardState,
-): readonly { id: TopicActionId; label: string; unavailable: boolean }[] {
+interface TopicActionView {
+  id: TopicActionId;
+  label: string;
+  unavailable: boolean;
+  reason?: string;
+}
+
+function topicActions(state: DashboardState): readonly TopicActionView[] {
   const topic = state.topics.find((item) => item.id === state.selectedTopicId);
   if (topic === undefined) return [];
   const denied = state.unavailableActions[topic.id] ?? [];
   const ready = topic.setup.state === "ready" && topic.worktreePath !== null;
-  const actions: Array<{
-    id: TopicActionId;
-    label: string;
-    unavailable: boolean;
-  }> = [
+  const actions: TopicActionView[] = [
     {
       id: "copy-branch",
       label: "Copy Branch Name",
@@ -1997,6 +2038,11 @@ function topicActions(
       id: "reset-agent",
       label: "Start New Main Agent",
       unavailable: !ready || denied.includes("reset-agent"),
+    },
+    {
+      id: "rebase",
+      label: "Rebase onto Integration Target",
+      ...rebaseAvailability(state, topic),
     },
   ];
   if (state.pullRequests[topic.id] !== undefined) {
@@ -2042,6 +2088,63 @@ function topicActions(
   return actions;
 }
 
+function rebaseAvailability(
+  state: DashboardState,
+  topic: TopicManifest,
+): Pick<TopicActionView, "unavailable" | "reason"> {
+  if (topic.setup.state !== "ready" || topic.worktreePath === null) {
+    return { unavailable: true, reason: "Topic setup is not ready" };
+  }
+  if (state.orphanedTopicIds.includes(topic.id)) {
+    return { unavailable: true, reason: "Worktree is missing" };
+  }
+  const status = state.integrationStatuses[topic.id];
+  if (status?.kind !== "behind") {
+    const reason =
+      status?.kind === "current"
+        ? "Already Current"
+        : status?.kind === "conflict"
+          ? "Integration conflict"
+          : (status?.detail ?? "Integration Status is Unknown");
+    return { unavailable: true, reason };
+  }
+  const pullRequest = state.pullRequests[topic.id];
+  if (pullRequest?.state === "open") {
+    return { unavailable: true, reason: `Open pull request #${pullRequest.number}` };
+  }
+  const worktree = state.gitWorktreeStates[topic.id];
+  if (worktree?.operation !== undefined) {
+    return { unavailable: true, reason: `${gitOperationLabel(worktree.operation)} in progress` };
+  }
+  if (worktree?.clean !== true) {
+    return {
+      unavailable: true,
+      reason: worktree?.clean === false ? "Worktree has local changes" : "Worktree state unknown",
+    };
+  }
+  if (worktree.checkedOutBranch !== topic.branch) {
+    return { unavailable: true, reason: `Branch ${topic.branch} is not checked out` };
+  }
+  if (topic.integrationTarget?.kind === "topic") {
+    const targetOperation = state.gitWorktreeStates[topic.integrationTarget.topicId]?.operation;
+    if (targetOperation !== undefined) {
+      return {
+        unavailable: true,
+        reason: `Integration Target has ${gitOperationLabel(targetOperation)} in progress`,
+      };
+    }
+  }
+  const agent = state.mainAgents.find((item) => item.topicId === topic.id);
+  if (agent !== undefined && ["starting", "thinking", "thinking-sub"].includes(agent.state)) {
+    return { unavailable: true, reason: `Main Agent is ${mainAgentDisplayLabel(agent.state)}` };
+  }
+  return { unavailable: false };
+}
+
+function gitOperationLabel(operation: GitOperationState): string {
+  return `${operation.kind}${operation.conflict ? " conflict" : " pending"}`;
+}
+
 function moveFocus(state: DashboardState, delta: number): DashboardInputResult {
   if (!state.sidebarOpen) {
     if (delta > 0 && state.selectedTopicId !== undefined) return openActionRail(state);
@@ -2079,7 +2182,7 @@ function firstAvailableActionIndex(state: DashboardState): number {
 
 function invokeTopicAction(
   state: DashboardState,
-  action: { id: TopicActionId; label: string },
+  action: Pick<TopicActionView, "id" | "label">,
 ): DashboardInputResult {
   if (action.id === "migrate-legacy") return requestMigrationPreview(state);
   const topic = state.topics.find((item) => item.id === state.selectedTopicId);

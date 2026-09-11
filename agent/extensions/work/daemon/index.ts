@@ -1,5 +1,6 @@
 export * from "./branch-ancestry.ts";
 export * from "./desktop.ts";
+export * from "./git-worktree.ts";
 export * from "./integration-branch.ts";
 export * from "./integration-status.ts";
 export * from "./legacy-migration.ts";

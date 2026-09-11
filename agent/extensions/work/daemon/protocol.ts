@@ -13,10 +13,11 @@ import type {
 } from "../shared/domain.ts";
 import type { TopicDiagnostic } from "../shared/topic-store.ts";
 import type { IntegrationStatus } from "./integration-status.ts";
+import type { GitWorktreeState } from "./git-worktree.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 21 as const;
+export const WORK_PROTOCOL_VERSION = 22 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 
@@ -38,6 +39,7 @@ export type RequestAction =
   | "topic.set-note"
   | "topic.move-partition"
   | "topic.delete"
+  | "topic.rebase"
   | "workspace.access"
   | "terminal.open"
   | "agent.open"
@@ -83,6 +85,7 @@ export type WorkRequest =
         | "topic.delete"
         | "topic.remove-parent"
         | "topic.reset-chain"
+        | "topic.rebase"
         | "workspace.access"
         | "terminal.open"
         | "agent.open"
@@ -134,6 +137,8 @@ export interface DaemonSnapshot {
   pullRequests?: Readonly<Record<string, PullRequestRef>>;
   /** Topic ids whose recorded Worktree path is not an existing directory. */
   orphanedTopicIds?: readonly string[];
+  /** Last observed local Git state per Topic id. */
+  gitWorktreeStates?: Readonly<Record<string, GitWorktreeState>>;
   /** Unresolved legacy ` > ` name families, detected by name only and never changed. */
   legacyFamilies?: number;
   daemon: {
@@ -399,6 +404,7 @@ export function parseRequest(text: string): WorkRequest {
     case "topic.delete":
     case "topic.remove-parent":
     case "topic.reset-chain":
+    case "topic.rebase":
     case "workspace.access":
     case "terminal.open":
     case "agent.open":

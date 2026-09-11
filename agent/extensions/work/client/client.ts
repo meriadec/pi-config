@@ -137,6 +137,19 @@ export class WorkClient {
     ) as Promise<TopicMutationResult>;
   }
 
+  rebaseTopic(
+    topicId: string,
+    requestId?: string,
+    timeoutMs?: number,
+  ): Promise<TopicMutationResult> {
+    return this.request(
+      "topic.rebase",
+      { topicId },
+      timeoutMs,
+      requestId,
+    ) as Promise<TopicMutationResult>;
+  }
+
   renameTopic(
     topicId: string,
     name: string,
@@ -581,11 +594,15 @@ function isWorkEvent(value: unknown): value is WorkEvent {
     type === "topic-changed" ||
     type === "topic-removed" ||
     type === "diagnostic-added" ||
+    type === "diagnostic-cleared" ||
     type === "workspace-accessed" ||
     type === "terminal-opened" ||
     type === "main-agent-opened" ||
     type === "main-agent-changed" ||
     type === "pull-request-changed" ||
+    type === "worktree-presence-changed" ||
+    type === "git-worktree-state-changed" ||
+    type === "integration-status-changed" ||
     type === "operation-changed"
   );
 }

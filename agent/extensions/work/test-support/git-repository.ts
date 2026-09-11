@@ -102,10 +102,7 @@ export class TestGitRepository {
     return output.length === 0 ? [] : output.split("\n");
   }
 
-  /**
-   * One manual rebase step, exactly as an operator performs it in a Topic Worktree. The
-   * product never runs this; only tests do, to advance a cascade to the next edge.
-   */
+  /** Runs the same plain rebase used by the dashboard action and by manual cascade repair. */
   async rebase(worktreePath: string, onto: string): Promise<void> {
     await runGit(worktreePath, ["rebase", onto]);
   }

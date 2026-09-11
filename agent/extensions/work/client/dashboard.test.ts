@@ -928,6 +928,57 @@ describe("dashboard state and navigation", () => {
     expect(renderDashboard(state, 100, 24).join("\n")).toContain("Start New Main Agent");
   });
 
+  test("rebases the selected Behind Topic from the s shortcut", () => {
+    const alpha = topic(ID_A, "Alpha");
+    const state = hydrateDashboard(initialDashboardState(), {
+      ...snapshot([alpha], [], {
+        [ID_A]: { kind: "behind", target: "main", ahead: 1, behind: 1 },
+      }),
+      gitWorktreeStates: {
+        [ID_A]: { clean: true, checkedOutBranch: alpha.branch },
+      },
+    });
+
+    const result = handleDashboardInput(state, "s");
+
+    expect(result.action).toEqual({ type: "rebase", topicId: ID_A });
+    expect(result.state).toMatchObject({
+      submissions: { [ID_A]: "rebase" },
+      message: "Rebase onto Integration Target…",
+    });
+    expect(renderDashboard(state, 200, 24).join("\n")).toContain("s rebase");
+  });
+
+  test("shows rebase guardrails and a stopped rebase in the Topic list", () => {
+    const alpha = topic(ID_A, "Alpha");
+    let state = hydrateDashboard(initialDashboardState(), {
+      ...snapshot([alpha], [], { [ID_A]: { kind: "behind", target: "main" } }),
+      gitWorktreeStates: {
+        [ID_A]: {
+          clean: false,
+          checkedOutBranch: alpha.branch,
+          operation: { kind: "rebase", conflict: true },
+        },
+      },
+    });
+
+    const blocked = handleDashboardInput(state, "s");
+    expect(blocked.action).toBeUndefined();
+    expect(blocked.state.message).toBe("rebase conflict in progress");
+    state = handleDashboardInput(state, "l").state;
+    const rendered = renderDashboard(state, 200, 24).join("\n");
+    expect(rendered).toContain("Rebase onto Integration Target · rebase conflict in progress");
+    expect(rendered).toContain("\x1b[91mrebase conflict\x1b[39m");
+    expect(rendered).toContain("Git: \x1b[91mrebase conflict\x1b[39m");
+
+    state = reduceDashboardEvent(state, {
+      type: "git-worktree-state-changed",
+      topicId: ID_A,
+      state: { clean: true, checkedOutBranch: alpha.branch },
+    });
+    expect(renderDashboard(state, 200, 24).join("\n")).not.toContain("Git: \x1b[91m");
+  });
+
   test("does not jump to an unavailable Main Agent", () => {
     let state = hydrateDashboard(initialDashboardState(), {
       ...snapshot([topic(ID_A, "Alpha")]),
@@ -1469,7 +1520,7 @@ class FakeDashboardClient implements DashboardClient {
   noteCalls: Array<{ topicId: string; note: string; requestId?: string }> = [];
   partitionCalls: Array<{ topicId: string; direction: "up" | "down"; requestId?: string }> = [];
   actionCalls: Array<{
-    type: "delete" | "workspace" | "terminal" | "agent" | "reset-agent" | "pull-request";
+    type: "delete" | "workspace" | "terminal" | "agent" | "reset-agent" | "rebase" | "pull-request";
     topicId: string;
     requestId?: string;
   }> = [];
@@ -1538,6 +1589,15 @@ class FakeDashboardClient implements DashboardClient {
   async retryTopic(topicId: string, requestId?: string): Promise<TopicMutationResult> {
     this.retryCalls.push({ topicId, ...(requestId === undefined ? {} : { requestId }) });
     return this.retryResult;
+  }
+
+  async rebaseTopic(topicId: string, requestId?: string): Promise<TopicMutationResult> {
+    this.actionCalls.push({
+      type: "rebase",
+      topicId,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    return { status: "rebased", topic: topic(topicId, "Alpha") };
   }
 
   async renameTopic(
@@ -1978,7 +2038,7 @@ describe("dashboard submission behavior", () => {
     const component = dashboardComponent(client);
     await Bun.sleep(0);
     component.handleInput("l");
-    for (let step = 0; step < 8; step += 1) component.handleInput("j");
+    for (let step = 0; step < 9; step += 1) component.handleInput("j");
     component.handleInput("\r");
     await Bun.sleep(0);
     expect(client.migrationCalls.map((call) => call.type)).toEqual(["preview"]);
@@ -2047,8 +2107,8 @@ describe("dashboard submission behavior", () => {
     await Bun.sleep(0);
     component.handleInput("l");
     component.handleInput("l");
-    // Actions: copy, workspace, terminal, agent, reset-agent, rename, note, add-child, delete.
-    for (let step = 0; step < 8; step += 1) component.handleInput("j");
+    // Actions: copy, workspace, terminal, agent, reset-agent, rebase, rename, note, add-child, delete.
+    for (let step = 0; step < 9; step += 1) component.handleInput("j");
     component.handleInput("\r");
     await Bun.sleep(0);
     const warning = component.render(180).join("\n");
@@ -2067,9 +2127,9 @@ describe("dashboard submission behavior", () => {
       const rail = component.render(80).join("\n");
       expect(rail).toContain("Retry Setup");
       expect(rail).not.toContain("Retry Setup (r)");
-      // Actions: copy, workspace, terminal, agent, reset-agent, rename, note, retry, delete.
-      for (let i = 0; i < 7; i += 1) component.handleInput("j");
-      expect(component.snapshotState().focusedAction).toBe(7);
+      // Actions: copy, workspace, terminal, agent, reset-agent, rebase, rename, note, retry, delete.
+      for (let i = 0; i < 8; i += 1) component.handleInput("j");
+      expect(component.snapshotState().focusedAction).toBe(8);
       component.handleInput("\r");
       await Bun.sleep(0);
       expect(client.retryCalls).toHaveLength(1);
@@ -2123,6 +2183,7 @@ describe("dashboard submission behavior", () => {
     component.handleInput("j");
     component.handleInput("j");
     component.handleInput("j");
+    component.handleInput("j");
     component.handleInput("\r");
     expect(component.render(80).join("\n")).toContain("RENAME TOPIC");
     component.handleInput("2");
@@ -2154,8 +2215,8 @@ describe("dashboard submission behavior", () => {
     });
     await Bun.sleep(0);
     component.handleInput("\r");
-    // Actions: copy, workspace, terminal, agent, reset-agent, rename, note, add-child.
-    for (let step = 0; step < 7; step += 1) component.handleInput("j");
+    // Actions: copy, workspace, terminal, agent, reset-agent, rebase, rename, note, add-child.
+    for (let step = 0; step < 8; step += 1) component.handleInput("j");
     component.handleInput("\r");
     expect(component.render(80).join("\n")).toContain("ADD CHILD TOPIC");
 
@@ -2189,6 +2250,7 @@ describe("dashboard submission behavior", () => {
     const component = dashboardComponent(client);
     await Bun.sleep(0);
     component.handleInput("\r");
+    component.handleInput("j");
     component.handleInput("j");
     component.handleInput("j");
     component.handleInput("j");
