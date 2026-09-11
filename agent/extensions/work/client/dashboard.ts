@@ -1409,7 +1409,7 @@ function wideTopicColumns(state: DashboardState, width: number): TopicColumns | 
     "MAIN AGENT",
     state.topics.map((topic) => {
       const agent = state.mainAgents.find((item) => item.topicId === topic.id)?.state ?? "stopped";
-      return mainAgentDisplayLabel(agent);
+      return topicListMainAgentLabel(agent);
     }),
   );
   const integration = visibleWidth(INTEGRATION_HEADER);
@@ -1439,16 +1439,18 @@ function renderTopicRow(
   const selected = topic.id === state.selectedTopicId;
   const prefix = selected ? (state.focus === "list" ? "> " : "* ") : "  ";
   const agent = state.mainAgents.find((item) => item.topicId === topic.id)?.state ?? "stopped";
-  const agentLabel = mainAgentDisplayLabel(agent);
+  const agentLabel = topicListMainAgentLabel(agent);
   const inactive = !isMainAgentRunning(agent);
   // Dim only the status word for an idle Main Agent; the Topic stays active and bubbled up.
   // A Main Agent waiting for a human stands out in yellow.
   const agentCell =
-    agent === "idle"
-      ? dim(agentLabel)
-      : agent === "waiting-for-human"
-        ? yellow(agentLabel)
-        : renderMainAgentStatus(agent, state.shimmerPhase);
+    agent === "stopped"
+      ? ""
+      : agent === "idle"
+        ? dim(agentLabel)
+        : agent === "waiting-for-human"
+          ? yellow(agentLabel)
+          : renderMainAgentStatus(agent, state.shimmerPhase);
   const pullRequest = state.pullRequests[topic.id];
   const setup = setupCell(state, topic);
   const integration = integrationCell(state, topic);
@@ -1456,7 +1458,8 @@ function renderTopicRow(
     const link = pullRequest === undefined ? "" : ` · ${pullRequestCell(pullRequest)}`;
     const setupSegment = setup === "" ? "" : ` · ${setup}`;
     const leading = `${prefix}${integration} ${displayName}`;
-    const suffix = `${setupSegment} · ${agentCell}${link}`;
+    const agentSegment = agentCell === "" ? "" : ` · ${agentCell}`;
+    const suffix = `${setupSegment}${agentSegment}${link}`;
     const note = state.sidebarOpen
       ? ""
       : renderTopicNote(topic.note, width - visibleWidth(`${leading}${suffix}`));
@@ -1582,6 +1585,11 @@ const SHIMMER_TRAIL = 4;
 // thinking (sub) (18), and tracking-pr (15). Wrapping lets all animations restart
 // without a visible jump.
 export const SHIMMER_PERIOD = 180;
+
+/** Maps a stopped Main Agent to the empty Topic-list cell. */
+function topicListMainAgentLabel(state: MainAgentState): string {
+  return state === "stopped" ? "" : mainAgentDisplayLabel(state);
+}
 
 /** Maps control-plane state to the exact user-visible Main Agent label. */
 export function mainAgentDisplayLabel(state: MainAgentState): string {

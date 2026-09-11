@@ -814,7 +814,7 @@ describe("dashboard state and navigation", () => {
     // The compact layout keeps the Note inline because it has no table columns.
     const narrow = renderDashboard(state, 30, 24).find((line) => line.includes("Alpha"))!;
     expect(visibleWidth(narrow)).toBeLessThanOrEqual(30);
-    expect(stripSgr(narrow)).toContain("stopped");
+    expect(stripSgr(narrow)).not.toContain("stopped");
     expect(narrow).toContain("\x1b[33m");
   });
 
@@ -1093,7 +1093,8 @@ describe("dashboard state and navigation", () => {
     expect(shortHeader.indexOf("NOTE")).toBe(10);
     expect(shortHeader.indexOf("REPOSITORY")).toBe(70);
     expect(shortRow).toHaveLength(100);
-    expect(shortRow.endsWith("stopped")).toBeTrue();
+    expect(shortRow).not.toContain("stopped");
+    expect(shortRow.endsWith(" ".repeat(10))).toBeTrue();
 
     const beta = {
       ...topic(ID_B, "Beta", "setup-failed", 0, "x".repeat(80)),
