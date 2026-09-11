@@ -169,6 +169,7 @@ export class WorkDashboardComponent implements Component, Focusable {
   private connecting = false;
   private hasConnected = false;
   private readonly mutations = new Map<string, PendingMutation>();
+  private readonly partitionQueue: PendingMutation[] = [];
   private readonly options: DashboardComponentOptions;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectDelayMs = 100;
@@ -380,7 +381,12 @@ export class WorkDashboardComponent implements Component, Focusable {
       // Opening the dashboard re-observes daemon state once, without any polling of its own.
       void client.refresh().catch(() => undefined);
       if (this.mutations.size > 0) {
-        for (const mutation of this.mutations.values()) void this.executeMutation(mutation, client);
+        for (const mutation of this.mutations.values()) {
+          if (mutation.action.type !== "move-partition")
+            void this.executeMutation(mutation, client);
+        }
+        const partitionMutation = this.partitionQueue[0];
+        if (partitionMutation !== undefined) void this.executeMutation(partitionMutation, client);
       }
     } catch (error) {
       candidate?.close();
@@ -438,15 +444,21 @@ export class WorkDashboardComponent implements Component, Focusable {
   }
 
   private beginAction(action: RemoteDashboardAction): void {
-    const key = submissionKey(action);
+    const requestId = randomUUID();
+    const key = action.type === "move-partition" ? `partition:${requestId}` : submissionKey(action);
     if (this.mutations.has(key)) return;
     if (this.client === undefined) {
       this.state = withoutSubmission(this.state, key, "workd is not connected.");
       this.options.tui.requestRender();
       return;
     }
-    const mutation: PendingMutation = { action, requestId: randomUUID(), key };
+    const mutation: PendingMutation = { action, requestId, key };
     this.mutations.set(key, mutation);
+    if (action.type === "move-partition") {
+      this.partitionQueue.push(mutation);
+      if (this.partitionQueue.length === 1) void this.executeMutation(mutation, this.client);
+      return;
+    }
     void this.executeMutation(mutation, this.client);
   }
 
@@ -457,17 +469,50 @@ export class WorkDashboardComponent implements Component, Focusable {
         mutation,
         this.options.resolveChildInput ?? resolveChildTopicCreationInput,
       );
-      if (this.disposed || this.mutations.get(mutation.key) !== mutation) return;
+      if (this.disposed || this.client !== client || this.mutations.get(mutation.key) !== mutation)
+        return;
       this.mutations.delete(mutation.key);
-      this.applyMutationResult(result, mutation.action, mutation.key);
+      if (mutation.action.type === "move-partition") {
+        this.partitionQueue.shift();
+        this.applyMutationResult(result, mutation.action, mutation.key);
+        this.startNextPartitionMutation();
+      } else {
+        this.applyMutationResult(result, mutation.action, mutation.key);
+      }
     } catch (error) {
       if (this.disposed || this.mutations.get(mutation.key) !== mutation) return;
       // A replacement client retries the same request and client IDs after transport loss.
       if (this.client !== client) return;
+      if (mutation.action.type === "move-partition") {
+        await this.failPartitionQueue(error, client);
+        return;
+      }
       this.mutations.delete(mutation.key);
       this.state = withoutSubmission(this.state, mutation.key, errorMessage(error));
       this.options.tui.requestRender();
     }
+  }
+
+  private startNextPartitionMutation(): void {
+    const mutation = this.partitionQueue[0];
+    if (mutation !== undefined && this.client !== undefined) {
+      void this.executeMutation(mutation, this.client);
+    }
+  }
+
+  private async failPartitionQueue(error: unknown, client: DashboardClient): Promise<void> {
+    for (const mutation of this.partitionQueue) this.mutations.delete(mutation.key);
+    this.partitionQueue.length = 0;
+    const message = errorMessage(error);
+    try {
+      const snapshot = await client.snapshot();
+      if (this.disposed || this.client !== client) return;
+      this.state = { ...hydrateDashboard(this.state, snapshot), message };
+    } catch {
+      if (this.disposed || this.client !== client) return;
+      this.state = { ...this.state, message };
+    }
+    this.options.tui.requestRender();
   }
 
   private applyMutationResult(

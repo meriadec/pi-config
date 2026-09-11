@@ -751,6 +751,39 @@ describe("Topic Service daemon integration", () => {
     ).toBeTrue();
   });
 
+  test("persists an inserted Partition between existing Partitions", async () => {
+    const item = await world();
+    for (const name of ["Alpha", "Beta", "Charlie", "Delta", "Echo"]) {
+      await item.client.createTopic({
+        name,
+        branch: `feat-${name.toLowerCase()}`,
+        repository: "LedgerHQ/revault",
+      });
+    }
+    const byName = () =>
+      new Map(item.service.snapshot().topics.map((topic) => [topic.name, topic] as const));
+
+    await item.client.moveTopicPartition(byName().get("Delta")!.id, "down");
+    await item.client.moveTopicPartition(byName().get("Echo")!.id, "down");
+    await item.client.moveTopicPartition(byName().get("Echo")!.id, "down");
+    await item.client.moveTopicPartition(byName().get("Echo")!.id, "up");
+
+    expect(
+      item.service
+        .snapshot()
+        .topics.map((topic) => [topic.name, topic.partition])
+        .toSorted(),
+    ).toEqual(
+      [
+        ["Alpha", 0],
+        ["Beta", 0],
+        ["Charlie", 0],
+        ["Delta", 2],
+        ["Echo", 1],
+      ].toSorted(),
+    );
+  });
+
   test("runs independent Topic creation concurrently", async () => {
     const item = await world();
     let release = (): void => undefined;

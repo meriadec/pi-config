@@ -23,6 +23,7 @@ import {
 } from "../shared/domain.ts";
 import type { TopicDiagnostic } from "../shared/topic-store.ts";
 import { displayChildOrder } from "../shared/integration-chain.ts";
+import { planPartitionMove } from "../shared/partition.ts";
 import type { LegacyMigrationFamily, LegacyMigrationPreview } from "../shared/legacy-migration.ts";
 import type { IntegrationStatus, IntegrationStatusKind } from "../daemon/integration-status.ts";
 import { defaultBranchForTopicName } from "../shared/topic-creation.ts";
@@ -1825,7 +1826,7 @@ function moveSelection(state: DashboardState, delta: number): DashboardInputResu
   };
 }
 
-/** Moves the selected complete Topic family across one Partition boundary. */
+/** Moves the selected complete Topic family by one Partition arrangement step. */
 function moveSelectedTopicPartition(
   state: DashboardState,
   direction: PartitionDirection,
@@ -1833,22 +1834,11 @@ function moveSelectedTopicPartition(
   const topic = state.topics.find((item) => item.id === state.selectedTopicId);
   if (topic === undefined) return { state, exit: false };
   const family = topicFamilyIds(state.topics, topic);
-  if (family.size === state.topics.length) return { state, exit: false };
-  const partitions = [...new Set(state.topics.map((item) => item.partition))].toSorted(
-    (left, right) => left - right,
-  );
-  const delta = direction === "up" ? -1 : 1;
-  const adjacent = partitions[partitions.indexOf(topic.partition) + delta];
-  if (
-    adjacent === undefined &&
-    state.topics.every((item) => item.partition !== topic.partition || family.has(item.id))
-  ) {
-    return { state, exit: false };
-  }
-  const partition = adjacent ?? topic.partition + delta;
-  if (!Number.isSafeInteger(partition)) return { state, exit: false };
+  const plan = planPartitionMove(state.topics, family, topic.id, direction);
+  if (plan === undefined) return { state, exit: false };
+
   const topics = sortTopics(
-    state.topics.map((item) => (family.has(item.id) ? { ...item, partition } : item)),
+    state.topics.map((item) => ({ ...item, partition: plan.get(item.id)! })),
     state.mainAgents,
   );
   return {

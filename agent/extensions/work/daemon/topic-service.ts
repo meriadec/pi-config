@@ -21,6 +21,7 @@ import {
   planRemoveParent,
   planTopicDeletion,
   topicNode,
+  planPartitionMove,
   INTEGRATION_BRANCH_NODE,
   resolveActionPolicy,
   resolveBaseCheckout,
@@ -1377,7 +1378,7 @@ export class TopicService {
     return topic;
   }
 
-  /** Moves one complete Topic family across one Partition boundary. */
+  /** Moves one complete Topic family by one Partition arrangement step. */
   movePartition(
     clientId: string,
     requestId: string,
@@ -1391,34 +1392,20 @@ export class TopicService {
           throw new WorkDataError("topic-not-found", "Topic does not exist.");
         }
         const family = this.familyMembers(topicId);
-        if (family.length === this.topicById.size) {
-          return { status: "repartitioned", topic: selected };
-        }
-        const partitions = [
-          ...new Set([...this.topicById.values()].map((item) => item.partition)),
-        ].toSorted((left, right) => left - right);
-        const sourceIndex = partitions.indexOf(selected.partition);
-        const delta = direction === "up" ? -1 : 1;
-        const adjacent = partitions[sourceIndex + delta];
         const familyIds = new Set(family.map((member) => member.id));
-        if (
-          adjacent === undefined &&
-          [...this.topicById.values()].every(
-            (item) => item.partition !== selected.partition || familyIds.has(item.id),
-          )
-        ) {
-          return { status: "repartitioned", topic: selected };
-        }
-        const partition = adjacent ?? selected.partition + delta;
-        if (!Number.isSafeInteger(partition)) {
-          throw new WorkDataError(
-            "partition-limit",
-            "A new outer Partition cannot be represented safely.",
-          );
-        }
+        const plan = planPartitionMove(
+          [...this.topicById.values()],
+          familyIds,
+          selected.id,
+          direction,
+        );
+        if (plan === undefined) return { status: "repartitioned", topic: selected };
+
         let moved = selected;
-        for (const member of family) {
-          const updated = await this.writePartition(member.id, partition);
+        for (const topic of this.topicById.values()) {
+          const partition = plan.get(topic.id)!;
+          if (topic.partition === partition) continue;
+          const updated = await this.writePartition(topic.id, partition);
           if (updated.id === selected.id) moved = updated;
         }
         return { status: "repartitioned", topic: moved };

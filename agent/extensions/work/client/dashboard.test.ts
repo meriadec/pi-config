@@ -580,7 +580,7 @@ describe("dashboard state and navigation", () => {
     expect(state.topics.every((item) => item.partition === 0)).toBeTrue();
   });
 
-  test("moves into the adjacent Partition and drops an empty source Partition", () => {
+  test("extracts into an adjacent Partition before merging across its next boundary", () => {
     let state = hydrateDashboard(
       initialDashboardState(),
       snapshot([
@@ -594,7 +594,14 @@ describe("dashboard state and navigation", () => {
     state = handleDashboardInput(state, "J").state;
     expect(state.topics.map((item) => [item.name, item.partition])).toEqual([
       ["Alpha", 0],
-      ["Beta", 2],
+      ["Beta", 1],
+      ["Echo", 1],
+    ]);
+
+    state = handleDashboardInput(state, "K").state;
+    expect(state.topics.map((item) => [item.name, item.partition])).toEqual([
+      ["Alpha", 0],
+      ["Beta", 1],
       ["Echo", 2],
     ]);
 
@@ -602,8 +609,32 @@ describe("dashboard state and navigation", () => {
     expect(state.topics.map((item) => [item.name, item.partition])).toEqual([
       ["Alpha", 0],
       ["Beta", 0],
-      ["Echo", 2],
+      ["Echo", 1],
     ]);
+  });
+
+  test("inserts the selected Topic family between two populated Partitions", () => {
+    let state = hydrateDashboard(
+      initialDashboardState(),
+      snapshot([
+        topic(ID_A, "Alpha", "ready", 0),
+        topic(ID_B, "Beta", "ready", 0),
+        topic(ID_C, "Charlie", "ready", 0),
+        topic(ID_D, "Delta", "ready", 1),
+        topic(ID_E, "Echo", "ready", 1),
+      ]),
+    );
+    state = { ...state, selectedTopicId: ID_E };
+
+    state = handleDashboardInput(state, "K").state;
+    expect(state.topics.map((item) => [item.name, item.partition])).toEqual([
+      ["Alpha", 0],
+      ["Beta", 0],
+      ["Charlie", 0],
+      ["Echo", 1],
+      ["Delta", 2],
+    ]);
+    expect(state.selectedTopicId).toBe(ID_E);
   });
 
   test("renders one blank separator between each non-empty Partition", () => {
@@ -1702,6 +1733,72 @@ class FakeDashboardClient implements DashboardClient {
 }
 
 describe("dashboard submission behavior", () => {
+  test("queues Partition moves across selected Topic families in keypress order", async () => {
+    const client = new FakeDashboardClient([
+      topic(ID_A, "Alpha"),
+      topic(ID_B, "Beta"),
+      topic(ID_C, "Charlie"),
+    ]);
+    const pending: Array<(result: TopicMutationResult) => void> = [];
+    client.moveTopicPartition = async (topicId, direction, requestId) => {
+      client.partitionCalls.push({
+        topicId,
+        direction,
+        ...(requestId === undefined ? {} : { requestId }),
+      });
+      return new Promise<TopicMutationResult>((resolve) => pending.push(resolve));
+    };
+    const component = dashboardComponent(client);
+    await Bun.sleep(0);
+
+    component.handleInput("J");
+    component.handleInput("k");
+    component.handleInput("J");
+    expect(client.partitionCalls.map(({ topicId, direction }) => [topicId, direction])).toEqual([
+      [ID_A, "down"],
+    ]);
+
+    pending.shift()!({ status: "repartitioned", topic: topic(ID_A, "Alpha", "ready", 1) });
+    await Bun.sleep(0);
+    expect(client.partitionCalls.map(({ topicId, direction }) => [topicId, direction])).toEqual([
+      [ID_A, "down"],
+      [ID_C, "down"],
+    ]);
+    pending.shift()!({ status: "repartitioned", topic: topic(ID_C, "Charlie", "ready", 1) });
+    await Bun.sleep(0);
+    component.dispose();
+  });
+
+  test("stops a failed Partition queue and restores the daemon arrangement", async () => {
+    const client = new FakeDashboardClient([topic(ID_A, "Alpha"), topic(ID_B, "Beta")]);
+    let rejectMove!: (error: Error) => void;
+    client.moveTopicPartition = async (topicId, direction, requestId) => {
+      client.partitionCalls.push({
+        topicId,
+        direction,
+        ...(requestId === undefined ? {} : { requestId }),
+      });
+      return new Promise<TopicMutationResult>((_resolve, reject) => {
+        rejectMove = reject;
+      });
+    };
+    const component = dashboardComponent(client);
+    await Bun.sleep(0);
+
+    component.handleInput("J");
+    component.handleInput("K");
+    rejectMove(new Error("Partition move failed."));
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+
+    expect(client.partitionCalls).toHaveLength(1);
+    expect(component.snapshotState().topics.every((item) => item.partition === 0)).toBeTrue();
+    expect(component.snapshotState().selectedTopicId).toBe(ID_A);
+    expect(component.snapshotState().message).toBe("Partition move failed.");
+    expect(client.snapshotCalls).toBe(2);
+    component.dispose();
+  });
+
   test("normalizes pasted line breaks and saves a Topic Note", async () => {
     const client = new FakeDashboardClient();
     client.noteResult = {
