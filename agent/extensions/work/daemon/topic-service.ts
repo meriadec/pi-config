@@ -583,6 +583,7 @@ export class TopicService {
     const topic = this.topicById.get(topicId);
     const worktreePath = topic?.worktreePath ?? null;
     const current = this.pullRequestById.get(topicId) ?? null;
+    const knownPullRequestNumber = current?.number ?? topic?.pullRequestNumber;
     const next =
       topic === undefined || topic.setup.state !== "ready" || worktreePath === null
         ? null
@@ -591,9 +592,17 @@ export class TopicService {
               ...prTarget(topic.repository),
               branch: topic.branch,
               worktreePath,
-              ...(current === null ? {} : { knownPullRequestNumber: current.number }),
+              ...(knownPullRequestNumber === undefined ? {} : { knownPullRequestNumber }),
             })
             .catch(() => null);
+    if (next !== null && topic !== undefined && topic.pullRequestNumber === undefined) {
+      const updated = await this.options.topics.update(topic.id, (stored) => ({
+        ...stored,
+        pullRequestNumber: next.number,
+      }));
+      this.topicById.set(topic.id, updated);
+      this.emit({ type: "topic-changed", topic: updated });
+    }
     if (samePullRequest(current, next)) return;
     if (next === null) this.pullRequestById.delete(topicId);
     else this.pullRequestById.set(topicId, next);

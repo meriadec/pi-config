@@ -168,6 +168,8 @@ export interface TopicManifest {
   note?: string;
   branch: string;
   repository: string;
+  /** Stable identity of the PR first observed open for this Topic Branch. */
+  pullRequestNumber?: number;
   setup: TopicSetup;
   worktreePath: string | null;
   mainAgent: MainAgentReference;
@@ -269,6 +271,7 @@ const TOPIC_KEYS = new Set([
   "note",
   "branch",
   "repository",
+  "pullRequestNumber",
   "setup",
   "worktreePath",
   "mainAgent",
@@ -564,6 +567,17 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
   if (noteValue !== undefined && note !== noteValue) {
     throw new WorkDataError("invalid-topic", "Stored Topic Note must be non-empty and normalized.");
   }
+  const pullRequestNumberValue = value["pullRequestNumber"];
+  if (
+    pullRequestNumberValue !== undefined &&
+    (!Number.isSafeInteger(pullRequestNumberValue) || (pullRequestNumberValue as number) <= 0)
+  ) {
+    throw new WorkDataError(
+      "invalid-topic",
+      "Topic pullRequestNumber must be a positive safe integer.",
+    );
+  }
+  const pullRequestNumber = pullRequestNumberValue as number | undefined;
 
   const parentTopicId = value["parentTopicId"];
   if (parentTopicId !== undefined) {
@@ -603,6 +617,7 @@ export function parseTopicManifest(input: unknown, expectedId?: string): TopicMa
     ...(note === undefined ? {} : { note }),
     branch: parseBranchName(value["branch"]),
     repository,
+    ...(pullRequestNumber === undefined ? {} : { pullRequestNumber }),
     setup,
     worktreePath,
     partition,

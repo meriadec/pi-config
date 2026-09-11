@@ -587,6 +587,57 @@ describe("Topic Service daemon integration", () => {
     expect(openedUrls).toEqual(["https://github.com/LedgerHQ/revault/pull/42?b=feat-has-pr"]);
   });
 
+  test("keeps a merged pull request visible after the daemon restarts", async () => {
+    let state: "open" | "merged" = "open";
+    const observedNumbers: Array<number | undefined> = [];
+    const observer = {
+      async discover(target: { knownPullRequestNumber?: number }) {
+        observedNumbers.push(target.knownPullRequestNumber);
+        if (state === "merged" && target.knownPullRequestNumber === undefined) return null;
+        return {
+          number: 5662,
+          url: "https://github.com/LedgerHQ/revault/pull/5662",
+          state,
+          draft: false,
+          ci: "passing" as const,
+          reviewPending: false,
+          copilotReviewed: true,
+          changesRequested: false,
+          approved: true,
+          unresolvedThreads: 0,
+        };
+      },
+    } as unknown as PullRequestObserver;
+    const item = await world({}, { pullRequests: observer });
+    const created = await item.client.createTopic({
+      name: "[api] Project batched request subjects",
+      branch: "api-project-batched-request-subjects",
+      repository: "LedgerHQ/revault",
+    });
+    const topicId = (created as { topic: TopicManifest }).topic.id;
+    await item.service.refreshPullRequests();
+    expect(item.service.snapshot().pullRequests[topicId]?.state).toBe("open");
+    expect((await item.topics.load(topicId)).pullRequestNumber).toBe(5662);
+
+    state = "merged";
+    await stopWorld(item);
+    const restarted = new TopicService({
+      config: createConfigStore(item.paths),
+      topics: item.topics,
+      provisioner: item.provisioner,
+      pullRequests: observer,
+    });
+    await restarted.start();
+    await restarted.refreshPullRequests();
+
+    expect(observedNumbers.at(-1)).toBe(5662);
+    expect(restarted.snapshot().pullRequests[topicId]).toMatchObject({
+      number: 5662,
+      state: "merged",
+    });
+    restarted.stop();
+  });
+
   test("returns a local refresh while one pull request refresh continues", async () => {
     let calls = 0;
     let release!: () => void;

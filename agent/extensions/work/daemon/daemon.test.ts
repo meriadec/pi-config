@@ -162,8 +162,8 @@ describe("work daemon", () => {
     expect(() => parseRequest(request(42))).toThrow(ProtocolError);
   });
 
-  test("changes protocol version for Topic rebasing", () => {
-    expect(WORK_PROTOCOL_VERSION).toBe(22);
+  test("changes protocol version for durable pull request identity", () => {
+    expect(WORK_PROTOCOL_VERSION).toBe(23);
   });
 
   test("accepts the Topic rebase action", () => {

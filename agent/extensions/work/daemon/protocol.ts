@@ -17,7 +17,7 @@ import type { GitWorktreeState } from "./git-worktree.ts";
 import type { MainAgentEvent, MainAgentLease } from "./main-agent.ts";
 import type { TopicOperation, TopicServiceEvent } from "./topic-service.ts";
 
-export const WORK_PROTOCOL_VERSION = 22 as const;
+export const WORK_PROTOCOL_VERSION = 23 as const;
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const MAX_PARSE_ERRORS = 3;
 

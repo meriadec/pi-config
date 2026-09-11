@@ -10,6 +10,7 @@ const PR_FIELDS = `
   number
   url
   state
+  headRefOid
   isDraft
   reviewDecision
   reviewRequests{totalCount}
@@ -18,10 +19,10 @@ const PR_FIELDS = `
   commits(last:1){nodes{commit{statusCheckRollup{state}}}}
 `;
 
-/** Finds only an open PR when this Topic does not have a tracked PR identity yet. */
-const OPEN_PR_QUERY = `query($owner:String!,$repo:String!,$branch:String!){
+/** Finds the newest PR for a Branch when this Topic has no tracked PR identity yet. */
+const DISCOVERY_PR_QUERY = `query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
-    pullRequests(headRefName:$branch,states:[OPEN],first:1,orderBy:{field:UPDATED_AT,direction:DESC}){
+    pullRequests(headRefName:$branch,states:[OPEN,MERGED,CLOSED],first:1,orderBy:{field:UPDATED_AT,direction:DESC}){
       nodes{${PR_FIELDS}}
     }
   }
@@ -64,10 +65,10 @@ export class PullRequestObserver {
     this.maxProcessOutputBytes = options.maxProcessOutputBytes ?? MAX_PROCESS_OUTPUT_BYTES;
   }
 
-  /** Finds an open PR for a new Topic, or refreshes its previously tracked PR by number. */
+  /** Finds a PR for a new Topic, or refreshes its previously tracked PR by number. */
   async discover(target: PullRequestTarget, signal?: AbortSignal): Promise<PullRequestRef | null> {
     const tracked = target.knownPullRequestNumber !== undefined;
-    const query = tracked ? TRACKED_PR_QUERY : OPEN_PR_QUERY;
+    const query = tracked ? TRACKED_PR_QUERY : DISCOVERY_PR_QUERY;
     const selector = tracked
       ? `number=${target.knownPullRequestNumber}`
       : `branch=${target.branch}`;
@@ -99,9 +100,29 @@ export class PullRequestObserver {
       return null;
     }
     const pullRequest = parsePullRequest(result.stdout);
-    // A closed PR found by branch text is stale. Terminal states belong only to a PR
-    // that this Topic first observed while it was open and now tracks by number.
-    return tracked || pullRequest?.state === "open" ? pullRequest : null;
+    if (tracked || pullRequest?.state === "open") return pullRequest;
+    if (pullRequest === null) return null;
+
+    // A terminal PR found by Branch name belongs to this Topic only when its final head
+    // is still the local Topic Branch tip. This recovers identities lost by older daemons
+    // without attaching an old merged PR to a newly reused Branch name.
+    const headRefOid = pullRequestHeadOid(result.stdout);
+    if (headRefOid === null) return null;
+    try {
+      const branch = await this.runner.run({
+        command: "git",
+        args: ["rev-parse", "--verify", `refs/heads/${target.branch}`],
+        cwd: target.worktreePath,
+        timeoutMs: this.processTimeoutMs,
+        maxOutputBytes: this.maxProcessOutputBytes,
+        ...(signal === undefined ? {} : { signal }),
+      });
+      if (branch.status !== "completed" || branch.exitCode !== 0 || branch.outputTruncated)
+        return null;
+      return branch.stdout.trim().toLowerCase() === headRefOid ? pullRequest : null;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -142,6 +163,17 @@ export function parsePullRequest(stdout: string): PullRequestRef | null {
     approved: decision === "APPROVED",
     unresolvedThreads: unresolvedThreadCount(node["reviewThreads"]),
   };
+}
+
+function pullRequestHeadOid(stdout: string): string | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const oid = pullRequestNode(value)?.["headRefOid"];
+  return typeof oid === "string" && /^[0-9a-f]{40}$/i.test(oid) ? oid.toLowerCase() : null;
 }
 
 function pullRequestNode(value: unknown): Record<string, unknown> | null {

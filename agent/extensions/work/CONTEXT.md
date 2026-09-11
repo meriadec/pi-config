@@ -112,6 +112,13 @@ the Topic's Main Agent session ID or create a child lease. Thinking has display 
 Delegated Thinking; Delegated Thinking has precedence over Tracking PR.
 _Avoid_: child agent lease, Main Agent adoption, delegated session
 
+**Pull Request identity**:
+The durable GitHub pull request number that a Topic records after it first associates the pull request
+with its Branch. The daemon uses this identity to continue showing the pull request after it becomes
+merged or closed and after the daemon restarts. For an older Topic without this identity, the daemon
+accepts a terminal pull request only when its final head commit is the local Topic Branch tip.
+_Avoid_: pull request status, branch lookup.
+
 **Tracking PR**:
 The live Main Agent activity while `/track-pr` polls one pull request in the background. The display
 precedence is Thinking, then Delegated Thinking, then Tracking PR, then waiting for a human. When a

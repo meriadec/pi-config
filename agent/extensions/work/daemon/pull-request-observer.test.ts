@@ -28,6 +28,7 @@ interface NodeOverrides {
   number?: number;
   url?: string;
   state?: string;
+  headRefOid?: string;
   isDraft?: boolean;
   reviewDecision?: string | null;
   reviewRequests?: number;
@@ -46,6 +47,7 @@ function payload(node: NodeOverrides): string {
               number: node.number ?? 7,
               url: node.url ?? "https://github.com/owner/repo/pull/7",
               state: node.state ?? "OPEN",
+              headRefOid: node.headRefOid ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               isDraft: node.isDraft ?? false,
               reviewDecision: node.reviewDecision ?? null,
               reviewRequests: { totalCount: node.reviewRequests ?? 0 },
@@ -159,7 +161,7 @@ describe("pull request observer", () => {
     expect(call?.args).toContain("repo=repo");
     expect(call?.args).toContain("branch=feat-x");
     expect(call?.args?.find((argument) => argument.startsWith("query="))).toContain(
-      "states:[OPEN]",
+      "states:[OPEN,MERGED,CLOSED]",
     );
   });
 
@@ -176,6 +178,29 @@ describe("pull request observer", () => {
         worktreePath: "/wt/x",
       }),
     ).toBeNull();
+  });
+
+  test("recovers an untracked merged pull request when its head is still the Branch tip", async () => {
+    const headRefOid = "0123456789abcdef0123456789abcdef01234567";
+    const runner = new StubRunner(async (request) =>
+      request.command === "git"
+        ? completed(`${headRefOid}\n`)
+        : completed(payload({ number: 5662, state: "MERGED", headRefOid })),
+    );
+    const observer = new PullRequestObserver({ runner });
+
+    expect(
+      await observer.discover({
+        owner: "LedgerHQ",
+        repo: "revault",
+        branch: "api-project-batched-request-subjects",
+        worktreePath: "/wt/x",
+      }),
+    ).toMatchObject({ number: 5662, state: "merged" });
+    expect(runner.calls[1]).toMatchObject({
+      command: "git",
+      args: ["rev-parse", "--verify", "refs/heads/api-project-batched-request-subjects"],
+    });
   });
 
   test("refreshes a known pull request by number and keeps its merged state", async () => {

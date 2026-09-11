@@ -141,6 +141,12 @@ describe("domain validation", () => {
     expect(parseTopicManifest({ ...manifest(), note: "Waiting for Tom" })).toMatchObject({
       note: "Waiting for Tom",
     });
+    expect(parseTopicManifest({ ...manifest(), pullRequestNumber: 5662 })).toMatchObject({
+      pullRequestNumber: 5662,
+    });
+    expect(() => parseTopicManifest({ ...manifest(), pullRequestNumber: 0 })).toThrow(
+      "pullRequestNumber must be a positive safe integer",
+    );
     expect(() => parseTopicManifest({ ...manifest(), note: "  not normalized  " })).toThrow(
       "Stored Topic Note must be non-empty and normalized.",
     );

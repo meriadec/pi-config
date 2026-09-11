@@ -88,6 +88,12 @@ _Avoid_: draft topic, inactive topic
 Where one Topic Branch stands against its Integration Target, observed from committed local Branch tips only: Current, Behind, Conflict, or Unknown. It never uses remote refs, Worktree changes, or Worktrunk status.
 _Avoid_: sync state, rebase state, branch health
 
+**Pull Request identity**:
+The durable GitHub pull request number that a Topic records after it associates the pull request with
+its Branch. It keeps terminal pull request state available across daemon restarts. An older Topic can
+recover this identity only when the pull request head is still the local Topic Branch tip.
+_Avoid_: pull request status, branch lookup
+
 **Chain maintenance**:
 One safe repair of a family or of its Integration Chain: Change Parent, Remove Parent, Move in Integration Chain, or Reset Integration Target. It only rewires durable links, and it never runs fetch, pull, rebase, merge, reset, cherry-pick, or a Branch movement.
 _Avoid_: restack, rebase action, chain surgery
