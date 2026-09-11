@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
+import { agentGitConfigGlobal } from "../../lib/agent-git-config.ts";
 import { boundMessage } from "../shared/domain.ts";
 import {
   GIT_LOCAL_ENVIRONMENT_VARIABLES,
@@ -101,6 +102,7 @@ export class LocalGitWorktreeController implements GitWorktreeController {
         maxOutputBytes: this.maxOutputBytes,
         unsetEnv: GIT_LOCAL_ENVIRONMENT_VARIABLES,
         env: {
+          GIT_CONFIG_GLOBAL: agentGitConfigGlobal(),
           GIT_EDITOR: "true",
           GIT_SEQUENCE_EDITOR: "true",
           GIT_TERMINAL_PROMPT: "0",

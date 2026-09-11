@@ -8,6 +8,7 @@ import {
   removeTemporaryRoots,
 } from "../test-support/git-repository.ts";
 import { LocalGitWorktreeController } from "./git-worktree.ts";
+import { agentGitConfigGlobal } from "../../lib/agent-git-config.ts";
 
 const roots: string[] = [];
 
@@ -59,7 +60,11 @@ describe("local Git Worktree control", () => {
       cwd: worktree,
       timeoutMs: 600_000,
     });
-    expect(request?.env).toMatchObject({ GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" });
+    expect(request?.env).toMatchObject({
+      GIT_CONFIG_GLOBAL: agentGitConfigGlobal(),
+      GIT_EDITOR: "true",
+      GIT_SEQUENCE_EDITOR: "true",
+    });
   });
 
   test("leaves a conflicting rebase in progress and reports it as a conflict", async () => {
