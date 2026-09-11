@@ -162,6 +162,10 @@ describe("work daemon", () => {
     expect(() => parseRequest(request(42))).toThrow(ProtocolError);
   });
 
+  test("changes protocol version for insertable Partition movement", () => {
+    expect(WORK_PROTOCOL_VERSION).toBe(21);
+  });
+
   test("accepts Partition movement and rejects the removed Focus action", () => {
     const base = {
       version: WORK_PROTOCOL_VERSION,

@@ -122,7 +122,7 @@ The dashboard starts or connects to `pi-workd`. Closing the dashboard does not s
 
 Running `/new` inside a Main Agent window keeps the window affiliated with its Topic. The window carries a durable, non-secret window affiliation credential, so its new Pi session is adopted as the Topic's live Main Agent. Durable session identity repoints to the adopted session; the previous session file is kept.
 
-After extension development changes, run `/reload` in Pi before you test the new code.
+After extension development changes, run `/reload` in Pi before you test the new code. When client and daemon behavior change together, advance `WORK_PROTOCOL_VERSION`; reopening `/work` then detects and restarts an incompatible `pi-workd`. To force the daemon to load current code without a protocol change, run `systemctl --user restart pi-workd`.
 
 ## Create a Topic from Pi or the CLI
 
