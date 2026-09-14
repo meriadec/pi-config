@@ -6,8 +6,7 @@ GitHub repository, with a provisioned worktree and a resumable Main Agent.
 ## Language
 
 **Topic**:
-A durable unit of work bound to one `owner/repo` repository and one Branch, with its own worktree
-and Main Agent. Stored as a manifest under `~/work/topics/<topic-id>/topic.json`.
+A durable unit of work bound to one `owner/repo` repository and one Branch, with its own Worktree and Main Agent.
 
 **Topic Note**:
 A durable, optional free-text annotation on one Topic. It gives human context without changing the Topic's name, identity, hierarchy, Partition, or sort order.
@@ -88,6 +87,26 @@ One line of a Repository Recipe. A full shell line (with arguments) run in the W
 The `allow` / `ask` / `deny` decision that gates a sensitive Action (clone, worktree creation,
 etc.), resolved from defaults plus per-repository and per-Topic overrides.
 
+**Durable Operation**:
+A control-plane request whose accepted work and result survive client disconnection and daemon restart. Topic provisioning is a Durable Operation.
+_Avoid_: background task, request, job.
+
+**Operation Handle**:
+The stable identity returned after the daemon accepts a Durable Operation. A client uses it to observe, resume waiting for, or cancel that operation without owning its lifetime.
+_Avoid_: request ID, process ID, job ID.
+
+**Interrupted Setup**:
+A Setup attempt whose running command lost supervision before its success was known. It needs an explicit Retry Setup and is never resumed or skipped automatically.
+_Avoid_: failed command, cancelled setup.
+
+**Atomic Command**:
+A short control-plane mutation committed as one durable state change. Repeating the same client and request identity returns the original result rather than applying the mutation again.
+_Avoid_: Durable Operation, action, transaction.
+
+**Ephemeral Action**:
+A control-plane request whose useful lifetime ends when its client or daemon run ends, such as focusing a window or refreshing observed state.
+_Avoid_: Durable Operation, command.
+
 **Topic hierarchy**:
 The durable one-level family formed by Parent Topic relationships. The list shows checkpoint Topics
 below their full Parent Topic with tree connectors. A family's active Main Agents move the family
@@ -111,6 +130,10 @@ Shown as `thinking-sub`. It stays on the parent Main Agent lease: a Delegation J
 the Topic's Main Agent session ID or create a child lease. Thinking has display precedence over
 Delegated Thinking; Delegated Thinking has precedence over Tracking PR.
 _Avoid_: child agent lease, Main Agent adoption, delegated session
+
+**Private local capability**:
+A bearer value that authorizes one same-user local process to claim a bounded Work privilege, such as Main Agent registration or window affiliation. Its raw value is not durable state and must not appear in logs, errors, snapshots, or backups.
+_Avoid_: non-secret credential, identity token.
 
 **Pull Request identity**:
 The durable GitHub pull request number that a Topic records after it first associates the pull request

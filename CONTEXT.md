@@ -32,6 +32,10 @@ _Avoid_: socket, terminal output, session transcript
 The explicit, bounded startup information passed from the parent session to a Delegation Job, excluding the full parent conversation unless the user opts into a summary handoff.
 _Avoid_: conversation dump, prompt, system prompt
 
+**Private local capability**:
+A bearer value that authorizes one same-user local process to claim a bounded Work privilege, such as Main Agent registration or window affiliation. Its raw value is not durable state and must not appear in logs, errors, snapshots, or backups.
+_Avoid_: non-secret credential, identity token.
+
 **Branch**:
 A Topic's exact Git branch name. A Branch identifies a Topic within its GitHub repository.
 _Avoid_: slug, branch slug
@@ -75,6 +79,26 @@ _Avoid_: patch, diff, transaction
 **Chain activation**:
 The single moment at which a Pending child enters the active Integration Chain. It happens only after setup finished, revalidates current Branch tips, and writes the child's own activation last, so a refusal keeps the previous healthy chain.
 _Avoid_: publish, promote, commit the chain
+
+**Durable Operation**:
+A control-plane request whose accepted work and result survive client disconnection and daemon restart. Topic provisioning is a Durable Operation.
+_Avoid_: background task, request, job.
+
+**Operation Handle**:
+The stable identity returned after the daemon accepts a Durable Operation. A client uses it to observe, resume waiting for, or cancel that operation without owning its lifetime.
+_Avoid_: request ID, process ID, job ID.
+
+**Interrupted Setup**:
+A Setup attempt whose running command lost supervision before its success was known. It needs an explicit Retry Setup and is never resumed or skipped automatically.
+_Avoid_: failed command, cancelled setup.
+
+**Atomic Command**:
+A short control-plane mutation committed as one durable state change. Repeating the same client and request identity returns the original result rather than applying the mutation again.
+_Avoid_: Durable Operation, action, transaction.
+
+**Ephemeral Action**:
+A control-plane request whose useful lifetime ends when its client or daemon run ends, such as focusing a window or refreshing observed state.
+_Avoid_: Durable Operation, command.
 
 **Branch ancestry**:
 The committed containment relation between two local Branch tips, read with one bounded `git merge-base --is-ancestor` question. An answer that Git cannot give is ambiguous, and ambiguity always refuses automatic placement.
