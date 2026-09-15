@@ -337,9 +337,14 @@ function renderList(
   width: number,
   height: number,
 ): string[] {
+  const columns = wideTopicColumns(state, snapshot, topics, width);
   const lines = [
     bright("Work"),
-    dim("  Topic                         Setup          Agent          PR   ↳"),
+    dim(
+      columns === undefined
+        ? `  ${INTEGRATION_HEADER} TOPIC · NOTE · REPOSITORY · PR · SETUP · MAIN AGENT`
+        : renderWideHeader(columns),
+    ),
   ];
   let previousPartition: number | undefined;
   for (const topic of topics) {
@@ -347,32 +352,22 @@ function renderList(
     previousPartition = topic.partition;
     const selected = topic.id === state.selectedTopicId;
     const observation = topicObservation(snapshot, topic.id);
-    const pullRequest = snapshot.observed.pullRequests.find(
-      (entry) => entry.topicId === topic.id,
-    )?.value;
-    const prefix =
-      topic.parentTopicId === undefined ? "" : isLastChild(topic, topics) ? "└─ " : "├─ ";
-    const name = truncateToWidth(`${prefix}${topic.name}`, Math.max(8, width - 42));
-    const setup =
-      topic.setup.state === "ready"
-        ? green("ready")
-        : topic.setup.state === "provisioning"
-          ? yellow("provisioning")
-          : red(topic.setup.state.replace("setup-", ""));
+    const displayName = topicDisplayName(topic, topics);
+    const setup = setupCell(topic);
     const activity = renderActivity(
       observation?.mainAgentActivity ?? "stopped",
       state.shimmerPhase,
     );
-    const pr =
-      pullRequest === undefined
-        ? "—"
-        : pullRequest.state === "open"
-          ? pullRequest.ci === "failing"
-            ? red("●")
-            : green("●")
-          : pullRequest.state;
+    const pullRequest = pullRequestCell(snapshot, topic.id);
     const integration = integrationGlyph(observation?.integrationStatus ?? "unknown");
-    const row = `  ${pad(name, Math.max(8, width - 42))}  ${pad(setup, 14)} ${pad(activity, 14)} ${pad(pr, 4)} ${integration}`;
+    const prefix = selected ? (state.focus === "list" ? "> " : "* ") : "  ";
+    const row =
+      columns === undefined
+        ? truncateToWidth(
+            `${prefix}${integration} ${displayName}${topic.note === undefined ? "" : ` ${yellow(topic.note)}`} · ${topic.repository} · ${pullRequest} · ${setup} · ${activity}`,
+            width,
+          )
+        : `${prefix}${pad(integration, columns.integration)} ${pad(displayName, columns.name)} ${pad(topic.note === undefined ? "" : yellow(topic.note), columns.note)} ${pad(topic.repository, columns.repository)} ${pad(pullRequest, columns.pullRequest)} ${pad(setup, columns.setup)} ${pad(activity, columns.mainAgent)}`;
     lines.push(
       selected
         ? highlight(row, width)
@@ -387,6 +382,82 @@ function renderList(
     "j/k select · l/Enter details · J/K move Partition · n note · s rebase · m agent · o workspace · r refresh · q close",
   );
   return lines;
+}
+
+interface TopicColumns {
+  readonly integration: number;
+  readonly name: number;
+  readonly note: number;
+  readonly repository: number;
+  readonly pullRequest: number;
+  readonly setup: number;
+  readonly mainAgent: number;
+}
+
+const INTEGRATION_HEADER = "\uF47F";
+const COLUMN_GAPS_WIDTH = 8;
+const MIN_NOTE_WIDTH = 4;
+
+function wideTopicColumns(
+  state: DashboardViewState,
+  snapshot: WorkSnapshot,
+  topics: readonly DurableTopic[],
+  width: number,
+): TopicColumns | undefined {
+  if (state.sidebarOpen) return undefined;
+  const integration = visibleWidth(INTEGRATION_HEADER);
+  const name = columnWidth(
+    "TOPIC",
+    topics.map((topic) => topicDisplayName(topic, topics)),
+  );
+  const repository = columnWidth(
+    "REPOSITORY",
+    topics.map((topic) => topic.repository),
+  );
+  const pullRequest = columnWidth(
+    "PR",
+    topics.map((topic) => pullRequestCell(snapshot, topic.id)),
+  );
+  const setup = columnWidth("SETUP", topics.map(setupCell));
+  const mainAgent = columnWidth(
+    "MAIN AGENT",
+    topics.map((topic) =>
+      renderActivity(topicObservation(snapshot, topic.id)?.mainAgentActivity ?? "stopped", 0),
+    ),
+  );
+  const fixedWidth =
+    COLUMN_GAPS_WIDTH + integration + name + repository + pullRequest + setup + mainAgent;
+  const note = width - fixedWidth;
+  if (note < MIN_NOTE_WIDTH) return undefined;
+  return { integration, name, note, repository, pullRequest, setup, mainAgent };
+}
+
+function columnWidth(header: string, values: readonly string[]): number {
+  return Math.max(visibleWidth(header), ...values.map((value) => visibleWidth(value)));
+}
+
+function renderWideHeader(columns: TopicColumns): string {
+  return `  ${pad(INTEGRATION_HEADER, columns.integration)} ${pad("TOPIC", columns.name)} ${pad("NOTE", columns.note)} ${pad("REPOSITORY", columns.repository)} ${pad("PR", columns.pullRequest)} ${pad("SETUP", columns.setup)} ${pad("MAIN AGENT", columns.mainAgent)}`;
+}
+
+function topicDisplayName(topic: DurableTopic, topics: readonly DurableTopic[]): string {
+  if (topic.parentTopicId === undefined) return topic.name;
+  return `${isLastChild(topic, topics) ? "└─ " : "├─ "}${topic.name}`;
+}
+
+function setupCell(topic: DurableTopic): string {
+  if (topic.setup.state === "ready") return green("ready");
+  if (topic.setup.state === "provisioning") return yellow("provisioning");
+  return red(topic.setup.state.replace("setup-", ""));
+}
+
+function pullRequestCell(snapshot: WorkSnapshot, topicId: TopicId): string {
+  const pullRequest = snapshot.observed.pullRequests.find(
+    (entry) => entry.topicId === topicId,
+  )?.value;
+  if (pullRequest === undefined) return "—";
+  if (pullRequest.state !== "open") return pullRequest.state;
+  return pullRequest.ci === "failing" ? red("●") : green("●");
 }
 
 function renderDetails(
@@ -545,20 +616,29 @@ function renderActivity(activity: MainAgentActivity, phase: number): string {
 }
 
 function integrationGlyph(status: "current" | "behind" | "conflict" | "unknown"): string {
-  if (status === "current") return green("●");
-  if (status === "behind") return yellow("↓");
-  if (status === "conflict") return red("!");
-  return dim("?");
+  if (status === "current") return green("\uF058");
+  if (status === "behind") return yellow("\uF063");
+  if (status === "conflict") return red("\uF071");
+  return dim("\uF059");
 }
 
 function fit(lines: readonly string[], width: number, height: number): string[] {
-  return lines.slice(0, height).map((line) => truncateToWidth(line, width));
+  const fitted = lines.slice(0, height).map((line) => truncateToWidth(line, width));
+  while (fitted.length < height) fitted.push("");
+  return fitted;
 }
 function pad(value: string, width: number): string {
-  return `${value}${" ".repeat(Math.max(0, width - visibleWidth(value)))}`;
+  const truncated = truncateToWidth(value, width);
+  return `${truncated}${" ".repeat(Math.max(0, width - visibleWidth(truncated)))}`;
 }
+const SGR_RESET = "\x1b[0m";
+
 function highlight(value: string, width: number): string {
-  return `\x1b[7m${pad(truncateToWidth(value, width), width)}\x1b[27m`;
+  const open = "\x1b[48;2;59;66;82m";
+  const truncated = truncateToWidth(value, width);
+  const highlighted = truncated.split(SGR_RESET).join(`${SGR_RESET}${open}`);
+  const padded = `${highlighted}${" ".repeat(Math.max(0, width - visibleWidth(truncated)))}`;
+  return `${open}${padded}\x1b[49m`;
 }
 function dimIfInactive(value: string, activity: MainAgentActivity | undefined): string {
   return activity === undefined || activity === "stopped" || activity === "idle"

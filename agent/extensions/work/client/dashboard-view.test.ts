@@ -125,6 +125,44 @@ describe("Effect dashboard product UI", () => {
     expect(details).toContain("Delete Topic");
   });
 
+  test("fills the available terminal height", () => {
+    const lines = renderDashboardView(initialDashboardViewState(), snapshot(), 120, 30);
+
+    expect(lines).toHaveLength(30);
+  });
+
+  test("keeps the previous wide Topic column order", () => {
+    const current = snapshot();
+    const withNote: WorkSnapshot = {
+      ...current,
+      durable: {
+        ...current.durable,
+        topics: current.durable.topics.map((entry, index) =>
+          index === 0 ? { ...entry, topic: { ...entry.topic, note: "Focus" } } : entry,
+        ),
+      },
+    };
+    const header = renderDashboardView(initialDashboardViewState(), withNote, 120, 30)[1]!;
+    const columns = ["\uF47F", "TOPIC", "NOTE", "REPOSITORY", "PR", "SETUP", "MAIN AGENT"];
+    let previousPosition = -1;
+
+    for (const column of columns) {
+      const position = header.indexOf(column);
+      expect(position).toBeGreaterThan(previousPosition);
+      previousPosition = position;
+    }
+  });
+
+  test("uses the previous subtle background for the selected Topic row", () => {
+    const state = reconcileDashboardSelection(initialDashboardViewState(), snapshot());
+    const row = renderDashboardView(state, snapshot(), 120, 30).find((line) =>
+      line.includes("Alpha"),
+    );
+
+    expect(row).toStartWith("\x1b[48;2;59;66;82m");
+    expect(row).toEndWith("\x1b[49m");
+  });
+
   test("keeps Notes, confirmations, and direct shortcuts in the pure input model", () => {
     let state = reconcileDashboardSelection(initialDashboardViewState(), snapshot());
     state = handleDashboardViewInput(state, snapshot(), "n").state;
@@ -147,7 +185,9 @@ describe("Effect dashboard product UI", () => {
     fake.stateHandler!({ _tag: "Snapshot", snapshot: snapshot() });
     component.handleInput("l");
     component.handleInput("l");
-    const screen = component.render(120).join("\n");
+    const screenLines = component.render(120);
+    const screen = screenLines.join("\n");
+    expect(screenLines).toHaveLength(30);
     expect(screen).toContain("Copy Branch Name");
     expect(screen).toContain("Open Topic Workspace");
     component.handleInput("o");
