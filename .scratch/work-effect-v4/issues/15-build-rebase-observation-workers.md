@@ -1,6 +1,6 @@
 # Build guarded rebase and observation workers
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 07, 08, 09, 10, 11, 12, 14
 

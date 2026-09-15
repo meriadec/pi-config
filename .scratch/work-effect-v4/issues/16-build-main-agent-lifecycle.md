@@ -1,6 +1,6 @@
 # Build the Main Agent lifecycle module
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 04, 05, 09, 10, 11
 

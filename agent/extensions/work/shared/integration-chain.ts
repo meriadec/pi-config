@@ -1,4 +1,7 @@
-import type { IntegrationTarget, TopicChainState } from "./domain.ts";
+type IntegrationTarget =
+  | { readonly kind: "integration-branch" }
+  | { readonly kind: "topic"; readonly topicId: string };
+type TopicChainState = "active" | "pending";
 
 /**
  * The pure Integration Chain engine. It validates one-level Topic families, derives the
@@ -13,7 +16,7 @@ export const MAX_CHAIN_MESSAGE_LENGTH = 200;
 /** One end of an Integration Chain edge: the Integration Branch or a family Topic. */
 export type ChainNode = IntegrationTarget;
 
-/** The chain-relevant part of a Topic. It is structurally a subset of a Topic manifest. */
+/** The durable fields that can affect one Integration Chain. */
 export interface ChainTopic {
   id: string;
   repository: string;

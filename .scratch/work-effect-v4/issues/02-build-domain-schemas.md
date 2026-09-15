@@ -1,6 +1,6 @@
 # Build branded domain schemas and typed failures
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 01
 

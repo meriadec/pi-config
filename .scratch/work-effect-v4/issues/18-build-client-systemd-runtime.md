@@ -1,6 +1,6 @@
 # Build the RPC client and systemd runtime
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 01, 17
 

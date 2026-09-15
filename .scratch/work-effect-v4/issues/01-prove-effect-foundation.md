@@ -1,6 +1,6 @@
 # Prove the Effect v4 foundation
 
-Status: ready-for-agent
+Status: done
 
 Depends on: none
 

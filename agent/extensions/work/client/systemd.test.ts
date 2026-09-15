@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { spawn } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { type WorkClient } from "./client.ts";
+import { WORK_PROTOCOL_VERSION, WORK_STORAGE_SCHEMA_VERSION } from "../domain/index.ts";
+import type { Compatibility } from "../infrastructure/rpc/index.ts";
 import {
   SystemdWorkdManager,
   findBunExecutable,
@@ -40,19 +40,11 @@ describe("systemd unit management", () => {
   test("runs the client process adapter when Pi has no Bun global", async () => {
     const moduleUrl = new URL("./systemd.ts", import.meta.url).href;
     const script = `const { runProcess } = await import(${JSON.stringify(moduleUrl)}); const result = await runProcess("true", []); if (result.code !== 0) process.exit(result.code);`;
-    const child = spawn(
-      "node",
-      ["--experimental-strip-types", "--input-type=module", "-e", script],
-      {
-        env: process.env,
-        stdio: "pipe",
-      },
+    const child = Bun.spawn(
+      ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+      { env: process.env, stdout: "pipe", stderr: "pipe" },
     );
-    const closed = new Promise<number | null>((resolve) => child.once("close", resolve));
-    child.stderr.setEncoding("utf8");
-    let stderr = "";
-    for await (const chunk of child.stderr) stderr += chunk;
-    const code = await closed;
+    const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
 
     expect(code, stderr).toBe(0);
   });
@@ -73,6 +65,8 @@ describe("systemd unit management", () => {
     const value = await paths();
     const first = generateSystemdUnit(value);
     expect(generateSystemdUnit(value)).toBe(first);
+    expect(first).toContain("UMask=0077");
+    expect(first).toContain(`Environment="PI_WORK_SOCKET=${value.socketPath}"`);
     expect(first).toContain(`Environment="PI_WORK_NODE_EXECUTABLE=${value.nodeExecutable}"`);
     expect(first).toContain(`Environment="PI_WORK_PI_EXECUTABLE=${value.piExecutable}"`);
     expect(first).toContain(`Environment="PI_WORK_GH_EXECUTABLE=${value.ghExecutable}"`);
@@ -148,34 +142,6 @@ describe("systemd unit management", () => {
     await expect(startManager.ensureConnected()).rejects.toThrow("restart denied");
   });
 
-  test("restarts a stale daemon that cannot complete the current ping", async () => {
-    const value = await paths();
-    await mkdir(dirname(value.unitPath), { recursive: true });
-    await writeFile(value.unitPath, generateSystemdUnit(value));
-    const calls: string[][] = [];
-    let restarted = false;
-    const client = {
-      ping: async () => ({ protocolVersion: 5, pid: 1 }),
-      close: () => undefined,
-    } as unknown as WorkClient;
-    const manager = new SystemdWorkdManager({
-      paths: value,
-      run: async (_command, args) => {
-        calls.push([...args]);
-        if (args.includes("restart")) restarted = true;
-        return { code: 0, stdout: "", stderr: "" };
-      },
-      environment: {},
-      connect: async () => {
-        if (!restarted) throw new Error("Work daemon uses an unsupported protocol version.");
-        return client;
-      },
-    });
-
-    expect(await manager.ensureConnected()).toBe(client);
-    expect(calls).toEqual([["--user", "restart", "pi-workd.service"]]);
-  });
-
   test("forwards GitHub credentials into the user manager before it starts the daemon", async () => {
     const value = await paths();
     await mkdir(dirname(value.unitPath), { recursive: true });
@@ -183,9 +149,18 @@ describe("systemd unit management", () => {
     const calls: string[][] = [];
     let restarted = false;
     const client = {
-      ping: async () => ({ protocolVersion: 7, pid: 1 }),
+      compatibility: async (): Promise<Compatibility> => {
+        if (!restarted) throw new Error("Work daemon compatibility handshake failed.");
+        return {
+          applicationProtocol: WORK_PROTOCOL_VERSION,
+          storageSchema: WORK_STORAGE_SCHEMA_VERSION,
+          buildId: "build-test",
+          startId: "new-daemon",
+          state: "ready",
+        };
+      },
       close: () => undefined,
-    } as unknown as WorkClient;
+    };
     const manager = new SystemdWorkdManager({
       paths: value,
       run: async (_command, args) => {
@@ -207,13 +182,54 @@ describe("systemd unit management", () => {
     ]);
   });
 
+  test("explicitly restarts an incompatible Effect RPC daemon", async () => {
+    const value = await paths();
+    await mkdir(dirname(value.unitPath), { recursive: true });
+    await writeFile(value.unitPath, generateSystemdUnit(value));
+    const calls: string[][] = [];
+    let restarted = false;
+    let disposed = 0;
+    const manager = new SystemdWorkdManager({
+      paths: value,
+      environment: {},
+      run: async (_command, args) => {
+        calls.push([...args]);
+        if (args.includes("restart")) restarted = true;
+        return { code: 0, stdout: "", stderr: "" };
+      },
+      connect: async () => ({
+        compatibility: async () =>
+          ({
+            applicationProtocol: restarted ? WORK_PROTOCOL_VERSION : 99,
+            storageSchema: WORK_STORAGE_SCHEMA_VERSION,
+            buildId: "build-test",
+            startId: restarted ? "new-daemon" : "stale-daemon",
+            state: "ready",
+          }) as Compatibility,
+        dispose: async () => {
+          disposed += 1;
+        },
+      }),
+    });
+
+    expect((await manager.ensureConnected()).compatibility).toBeDefined();
+    expect(disposed).toBe(1);
+    expect(calls).toEqual([["--user", "restart", "pi-workd.service"]]);
+  });
+
   test("returns an already running client without systemd calls", async () => {
     const value = await paths();
     let calls = 0;
     const client = {
-      ping: async () => ({ protocolVersion: 5, pid: 1 }),
+      compatibility: async (): Promise<Compatibility> => ({
+        applicationProtocol: WORK_PROTOCOL_VERSION,
+        storageSchema: WORK_STORAGE_SCHEMA_VERSION,
+        buildId: "build-test",
+        startId: "running-daemon",
+        state: "ready",
+      }),
       close: () => undefined,
-    } as unknown as WorkClient;
+    };
     const manager = new SystemdWorkdManager({
       paths: value,
       run: async () => {

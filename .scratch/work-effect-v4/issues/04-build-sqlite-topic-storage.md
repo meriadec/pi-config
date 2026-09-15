@@ -1,6 +1,6 @@
 # Build SQLite Topic storage
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 01, 02
 

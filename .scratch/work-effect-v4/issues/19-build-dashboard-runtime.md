@@ -1,6 +1,6 @@
 # Build the Effect dashboard runtime
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 11, 14, 15, 17, 18
 

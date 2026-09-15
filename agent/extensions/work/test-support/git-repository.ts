@@ -1,8 +1,6 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalProcessRunner } from "../daemon/process-runner.ts";
-import type { ProcessRequest, ProcessResult, ProcessRunner } from "../daemon/process-runner.ts";
 import { testGitEnvironment } from "./git-environment.ts";
 
 /**
@@ -11,23 +9,6 @@ import { testGitEnvironment } from "./git-environment.ts";
  * manual rebase steps. Every command runs in the isolated test Git environment, so no test
  * reads the user's Git configuration, credentials, or remotes.
  */
-
-/** Git subcommands that only read repository state. Any other subcommand is a mutation. */
-const READ_ONLY_GIT_SUBCOMMANDS = new Set([
-  "cat-file",
-  "config",
-  "for-each-ref",
-  "log",
-  "ls-files",
-  "merge-base",
-  "merge-tree",
-  "rev-list",
-  "rev-parse",
-  "show-ref",
-  "status",
-  "symbolic-ref",
-  "version",
-]);
 
 export interface TestGitRepositoryOptions {
   /** Branch of the first commit. Defaults to `main`. */
@@ -167,60 +148,6 @@ export function createTemporaryRoot(prefix: string): Promise<string> {
 /** Removes temporary directories created by a test, ignoring missing ones. */
 export async function removeTemporaryRoots(roots: string[]): Promise<void> {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-}
-
-/**
- * A process runner that delegates to real processes in the isolated test Git environment
- * and records every request. It also observes live concurrency, so a test can prove that
- * a refresh over many Topics stays bounded in parallel process count.
- */
-export class RecordingProcessRunner implements ProcessRunner {
-  private readonly delegate = new LocalProcessRunner();
-  readonly requests: ProcessRequest[] = [];
-  private inFlight = 0;
-  private peak = 0;
-
-  async run(request: ProcessRequest): Promise<ProcessResult> {
-    this.requests.push(request);
-    this.inFlight += 1;
-    this.peak = Math.max(this.peak, this.inFlight);
-    try {
-      return await this.delegate.run({ ...request, env: testGitEnvironment(request.cwd) });
-    } finally {
-      this.inFlight -= 1;
-    }
-  }
-
-  /** Waits until no delegated process is running, so a measurement starts from rest. */
-  async whenIdle(): Promise<void> {
-    for (let attempt = 0; attempt < 600 && this.inFlight > 0; attempt += 1) await Bun.sleep(5);
-  }
-
-  /** Highest number of processes that ran at the same time. */
-  get peakConcurrency(): number {
-    return this.peak;
-  }
-
-  /** Every recorded command that is not a read-only Git command. */
-  get mutatingRequests(): ProcessRequest[] {
-    return this.requests.filter((request) => {
-      if (request.command !== "git") return true;
-      const subcommand = request.args[0] ?? "";
-      return !READ_ONLY_GIT_SUBCOMMANDS.has(subcommand);
-    });
-  }
-
-  /** Number of recorded commands with one Git subcommand. */
-  countOf(subcommand: string): number {
-    return this.requests.filter(
-      (request) => request.command === "git" && request.args[0] === subcommand,
-    ).length;
-  }
-
-  clear(): void {
-    this.requests.length = 0;
-    this.peak = 0;
-  }
 }
 
 async function runGit(cwd: string, args: readonly string[]): Promise<string> {

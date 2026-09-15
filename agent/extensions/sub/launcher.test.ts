@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readTopicAgentEnvironment } from "../work/topic-agent/reporter.ts";
+import { readTopicAgentEnvironment } from "../work/topic-agent/environment.ts";
 import { buildChildEnvironment } from "./launcher.ts";
 
 const topicAgentEnvironment: NodeJS.ProcessEnv = {

@@ -1,6 +1,6 @@
 # Build the Durable Operation engine
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 05, 10, 11
 

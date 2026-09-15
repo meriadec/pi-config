@@ -1,6 +1,6 @@
 # Build the strict Work configuration module
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 01, 02
 

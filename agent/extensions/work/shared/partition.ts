@@ -1,4 +1,4 @@
-import type { PartitionDirection } from "./domain.ts";
+export type PartitionDirection = "up" | "down";
 
 export interface PartitionMember {
   id: string;

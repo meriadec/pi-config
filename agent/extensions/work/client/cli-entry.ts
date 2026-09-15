@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
 
-import { runPiWorkCli } from "./cli.ts";
+import { runEffectPiWorkCli } from "./effect-cli.ts";
 
-process.exitCode = await runPiWorkCli(process.argv.slice(2));
+process.exitCode = await runEffectPiWorkCli(process.argv.slice(2));

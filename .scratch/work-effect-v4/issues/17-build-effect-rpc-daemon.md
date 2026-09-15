@@ -1,6 +1,6 @@
 # Build the Effect RPC daemon
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 11, 12, 13, 14, 15, 16
 

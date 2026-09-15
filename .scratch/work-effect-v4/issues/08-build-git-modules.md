@@ -1,6 +1,6 @@
 # Build deep Git modules
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 02, 07
 

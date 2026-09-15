@@ -1,6 +1,6 @@
 # Complete final hardening and acceptance
 
-Status: needs-info
+Status: done
 
 Depends on: 26
 

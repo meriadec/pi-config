@@ -1,6 +1,6 @@
 # Build GitHub and desktop adapters
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 02, 07
 

@@ -1,6 +1,6 @@
 # Build Topic and Integration Chain commands
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 03, 04, 08, 10, 11, 12, 13
 

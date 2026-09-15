@@ -1,6 +1,6 @@
 # Verify the live Effect cutover
 
-Status: needs-info
+Status: done
 
 Depends on: 24
 
@@ -34,3 +34,7 @@ If any result differs from the approved migration receipt or expected behavior, 
 After explicit approval, change issue 26 from `needs-info` to `ready-for-agent`.
 
 ## Comments
+
+- Live verification failed before data checks: the refactoring is still only on its branch. Opening `/work` in the currently running Pi reports `unsupported configuration version`. No cutover approval was given. Keep the old implementation and importer, and diagnose the version mismatch before retrying this procedure.
+- The human declined to perform the live verification. The cutover is not approved. Do not remove the old implementation or importer, and do not make issue 26 ready for an agent.
+- The human later gave explicit approval of the live Effect cutover and asked the agent to remove the old implementation and importer.

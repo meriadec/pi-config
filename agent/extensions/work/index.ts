@@ -1,19 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerWorkCommand } from "./client/command.ts";
-import { registerWorkTopicCreateChildTool } from "./client/child-create-tool.ts";
-import { registerWorkTopicCreateTool } from "./client/topic-create-tool.ts";
-import { registerTopicAgentTelemetry } from "./topic-agent/reporter.ts";
+import { registerEffectWorkCommand } from "./client/effect-command.ts";
+import { registerEffectWorkTopicTools } from "./client/effect-tools.ts";
+import { registerEffectTopicAgentTelemetry } from "./topic-agent/effect-reporter.ts";
 
-export * from "./client/dashboard.ts";
-export * from "./client/setup.ts";
-export * from "./client/topic-creation.ts";
-export * from "./client/topic-create-tool.ts";
-export * from "./client/topic-create-runtime.ts";
-export * from "./client/child-create-tool.ts";
+// Keep the auto-discovered entry small. Runtime modules load only when a command, tool,
+// or valid Topic Agent session needs them.
 
 export default function workExtension(pi: ExtensionAPI): void {
-  registerWorkCommand(pi);
-  registerWorkTopicCreateTool(pi);
-  registerWorkTopicCreateChildTool(pi);
-  registerTopicAgentTelemetry(pi);
+  registerEffectWorkCommand(pi);
+  registerEffectWorkTopicTools(pi);
+  registerEffectTopicAgentTelemetry(pi);
 }

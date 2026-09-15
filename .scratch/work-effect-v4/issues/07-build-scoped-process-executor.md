@@ -1,6 +1,6 @@
 # Build the scoped process executor
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 01, 02
 

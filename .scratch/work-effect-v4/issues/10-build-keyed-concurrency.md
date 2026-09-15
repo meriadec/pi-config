@@ -1,6 +1,6 @@
 # Build keyed structured concurrency
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 01, 02
 

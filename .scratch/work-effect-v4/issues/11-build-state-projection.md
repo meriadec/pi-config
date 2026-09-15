@@ -1,6 +1,6 @@
 # Build the Work state projection and stream
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 02, 04, 10
 

@@ -1,6 +1,6 @@
 # Build the one-time JSON-to-SQLite migration tool
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 02, 03, 04, 05, 06, 20
 

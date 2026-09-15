@@ -1,6 +1,6 @@
 # Build operation and capability storage
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 02, 04
 

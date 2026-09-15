@@ -153,20 +153,3 @@ _Avoid_: waiting for human, reviewing PR.
 A Topic that claims a ready Worktree whose recorded path is no longer a directory. The durable Topic
 record still exists, but its Worktree is missing.
 _Avoid_: orphaned Worktree, missing Topic directory.
-
-**Legacy name hierarchy**:
-A Topic family that only the `>` name separator expresses, with no durable Parent Topic data. The
-list renders it only while it stays unresolved; it disappears when migration gives every family
-durable data.
-_Avoid_: Topic name hierarchy, name path.
-
-**Legacy migration**:
-The previewed, approved metadata move from a Legacy name hierarchy to durable Parent Topic and Integration Target data. It ignores and preserves Partition membership.
-_Avoid_: name import, automatic migration.
-
-**Migration journal**:
-The private durable record of one legacy migration run under `~/work/migrations/<run-id>/`: the
-planned families, the completed families, and one pre-migration manifest backup per touched Topic.
-An interrupted run settles at the next daemon start: a family that the journal does not record as
-complete returns to its backups.
-_Avoid_: migration log, undo history.

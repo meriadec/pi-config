@@ -1,6 +1,6 @@
 # Build tools, CLI, and Topic Agent adapters
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 03, 06, 13, 16, 17, 18, 19
 

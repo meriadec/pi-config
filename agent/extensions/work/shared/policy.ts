@@ -1,4 +1,10 @@
-import type { ActionId, ActionPolicy, WorkPolicies } from "./domain.ts";
+import type { ActionId, ActionPolicy } from "../domain/model.ts";
+
+export interface WorkPolicies {
+  readonly defaults: Partial<Record<ActionId, ActionPolicy>>;
+  readonly repositories: Readonly<Record<string, Partial<Record<ActionId, ActionPolicy>>>>;
+  readonly topics: Readonly<Record<string, Partial<Record<ActionId, ActionPolicy>>>>;
+}
 
 export type PolicySource =
   | { level: "topic"; key: string }

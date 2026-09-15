@@ -14,6 +14,11 @@
     "format:check": "oxfmt --check .",
     "check": "bun run typecheck && bun run test && bun run lint && bun run format:check"
   },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.0-rc.115",
+    "@effect/sql-sqlite-bun": "4.0.0-rc.115",
+    "effect": "4.0.0-rc.115"
+  },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.80.2",
     "@earendil-works/pi-coding-agent": "0.80.2",

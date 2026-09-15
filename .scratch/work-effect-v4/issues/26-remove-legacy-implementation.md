@@ -1,6 +1,6 @@
 # Remove the legacy Work implementation
 
-Status: needs-info
+Status: done
 
 Depends on: 25 human approval
 
@@ -39,3 +39,5 @@ Delete every obsolete Work implementation after the human verifies the live Effe
 - `bun run check` passes.
 
 ## Comments
+
+- The human gave explicit approval of the live Effect cutover in this agent session.

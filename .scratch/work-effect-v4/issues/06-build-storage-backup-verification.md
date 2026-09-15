@@ -1,6 +1,6 @@
 # Build storage backup and verification
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 03, 04, 05
 

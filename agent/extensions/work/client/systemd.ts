@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
+import { runProcessPromise } from "../infrastructure/process/process-executor.ts";
 import { accessSync, constants } from "node:fs";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { boundMessage } from "../shared/domain.ts";
-import { WorkClient } from "./client.ts";
+import { ClientId, WORK_PROTOCOL_VERSION, WORK_STORAGE_SCHEMA_VERSION } from "../domain/index.ts";
+import type { Compatibility } from "../infrastructure/rpc/index.ts";
+import { makeWorkClientRuntime, type WorkClientRuntime } from "./effect-runtime.ts";
 
 export interface ProcessResult {
   code: number;
@@ -24,10 +25,16 @@ export interface SystemdPaths {
   socketPath: string;
 }
 
-export interface SystemdManagerOptions {
+export interface SystemdCompatibleClient {
+  readonly compatibility: () => Promise<Compatibility>;
+  readonly close?: () => void;
+  readonly dispose?: () => Promise<void>;
+}
+
+export interface SystemdManagerOptions<Client extends SystemdCompatibleClient = WorkClientRuntime> {
   paths: SystemdPaths;
   run?: ProcessRunner;
-  connect?: (socketPath: string, timeoutMs: number) => Promise<WorkClient>;
+  connect?: (socketPath: string, timeoutMs: number) => Promise<Client>;
   now?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
   startupTimeoutMs?: number;
@@ -56,7 +63,7 @@ export function defaultSystemdPaths(
     nodeExecutable: findNodeExecutable(environment),
     piExecutable: findPiExecutable(home, environment),
     ghExecutable: findGhExecutable(environment),
-    daemonEntryPath: fileURLToPath(new URL("../daemon/entry.ts", import.meta.url)),
+    daemonEntryPath: fileURLToPath(new URL("../daemon/effect-entry.ts", import.meta.url)),
     socketPath,
   };
 }
@@ -115,6 +122,8 @@ export function generateSystemdUnit(paths: SystemdPaths): string {
     "",
     "[Service]",
     "Type=simple",
+    "UMask=0077",
+    `Environment=${systemdQuote(`PI_WORK_SOCKET=${resolve(paths.socketPath)}`)}`,
     `Environment=${systemdQuote(`PI_WORK_NODE_EXECUTABLE=${resolve(paths.nodeExecutable)}`)}`,
     `Environment=${systemdQuote(`PI_WORK_PI_EXECUTABLE=${resolve(paths.piExecutable)}`)}`,
     `Environment=${systemdQuote(`PI_WORK_GH_EXECUTABLE=${resolve(paths.ghExecutable)}`)}`,
@@ -128,24 +137,28 @@ export function generateSystemdUnit(paths: SystemdPaths): string {
   ].join("\n");
 }
 
-export class SystemdWorkdManager {
+export class SystemdWorkdManager<Client extends SystemdCompatibleClient = WorkClientRuntime> {
   private readonly run: ProcessRunner;
-  private readonly connectClient: (socketPath: string, timeoutMs: number) => Promise<WorkClient>;
+  private readonly connectClient: (socketPath: string, timeoutMs: number) => Promise<Client>;
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly environment: NodeJS.ProcessEnv;
-  private readonly options: SystemdManagerOptions;
+  private readonly options: SystemdManagerOptions<Client>;
 
-  constructor(options: SystemdManagerOptions) {
+  constructor(options: SystemdManagerOptions<Client>) {
     this.options = options;
     this.run = options.run ?? runProcess;
     this.connectClient =
       options.connect ??
-      ((socketPath, timeoutMs) =>
-        WorkClient.connect(socketPath, {
-          timeoutMs,
-          ...(options.clientId === undefined ? {} : { clientId: options.clientId }),
-        }));
+      (((socketPath: string) =>
+        Promise.resolve(
+          makeWorkClientRuntime({
+            socketPath,
+            ...(options.clientId === undefined
+              ? {}
+              : { clientId: ClientId.make(options.clientId) }),
+          }),
+        )) as unknown as (socketPath: string, timeoutMs: number) => Promise<Client>);
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? sleep;
     this.environment = options.environment ?? process.env;
@@ -176,7 +189,7 @@ export class SystemdWorkdManager {
     return { changed: true };
   }
 
-  async ensureConnected(): Promise<WorkClient> {
+  async ensureConnected(): Promise<Client> {
     const attemptTimeout = this.options.attemptTimeoutMs ?? 300;
     const existing = await this.tryConnected(attemptTimeout);
     if (existing !== undefined) return existing;
@@ -203,14 +216,29 @@ export class SystemdWorkdManager {
   private async tryConnected(
     timeoutMs: number,
     onError?: (message: string) => void,
-  ): Promise<WorkClient | undefined> {
-    let client: WorkClient | undefined;
+  ): Promise<Client | undefined> {
+    let client: Client | undefined;
     try {
       client = await this.connectClient(this.options.paths.socketPath, timeoutMs);
-      await client.ping(timeoutMs);
+      const compatibility = await withTimeout(
+        client.compatibility(),
+        timeoutMs,
+        "Work daemon compatibility handshake timed out.",
+      );
+      if (
+        compatibility.applicationProtocol !== WORK_PROTOCOL_VERSION ||
+        compatibility.storageSchema !== WORK_STORAGE_SCHEMA_VERSION
+      ) {
+        throw new Error(
+          `Incompatible Work daemon (protocol ${compatibility.applicationProtocol}, storage ${compatibility.storageSchema}).`,
+        );
+      }
+      if (compatibility.state !== "ready") {
+        throw new Error(`Work daemon is ${compatibility.state}.`);
+      }
       return client;
     } catch (error) {
-      client?.close();
+      await closeSystemdClient(client);
       onError?.(error instanceof Error ? error.message : "unknown connection error");
       return undefined;
     }
@@ -242,45 +270,48 @@ export class SystemdWorkdManager {
   }
 }
 
-export const runProcess: ProcessRunner = (command, args) =>
-  new Promise((resolveResult) => {
-    const child = spawn(command, [...args], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let settled = false;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout = appendBounded(stdout, chunk);
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr = appendBounded(stderr, chunk);
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, 5_000);
-    const finish = (result: ProcessResult): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolveResult(result);
-    };
-    child.once("error", (error) => {
-      finish({ code: 127, stdout, stderr: boundMessage(error.message) });
-    });
-    child.once("close", (code) => {
-      finish({
-        code: timedOut ? 124 : (code ?? 1),
-        stdout,
-        stderr: timedOut ? "systemctl timed out after 5 seconds" : stderr,
-      });
-    });
+async function closeSystemdClient(client: SystemdCompatibleClient | undefined): Promise<void> {
+  if (client?.close !== undefined) client.close();
+  else await client?.dispose?.();
+}
+
+function withTimeout<A>(promise: Promise<A>, timeoutMs: number, message: string): Promise<A> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => rejectPromise(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolvePromise(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      },
+    );
   });
+}
+
+export const runProcess: ProcessRunner = async (command, args) => {
+  try {
+    const result = await runProcessPromise({
+      command: { _tag: "Executable", executable: command, arguments: args },
+      cwd: process.cwd(),
+      timeoutMs: 5_000,
+      maxOutputBytes: 8 * 1024,
+    });
+    return {
+      code: result.status === "timeout" ? 124 : (result.exitCode ?? 1),
+      stdout: result.stdout,
+      stderr: result.status === "timeout" ? "systemctl timed out after 5 seconds" : result.stderr,
+    };
+  } catch (error) {
+    return {
+      code: 127,
+      stdout: "",
+      stderr: boundMessage(error instanceof Error ? error.message : "The process could not start."),
+    };
+  }
+};
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
@@ -293,15 +324,9 @@ function systemdQuote(value: string): string {
   return `"${value.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
-function appendBounded(current: string, chunk: string): string {
-  const maximum = 8 * 1024;
-  if (current.length >= maximum) return current;
-  return boundOutput(current + chunk);
-}
-
-function boundOutput(value: string): string {
-  const maximum = 8 * 1024;
-  return value.length <= maximum ? value : `${value.slice(0, maximum - 1)}…`;
+function boundMessage(message: string): string {
+  const oneLine = message.replaceAll(/\s+/g, " ").trim();
+  return oneLine.length <= 200 ? oneLine : `${oneLine.slice(0, 199)}…`;
 }
 
 function isNodeError(error: unknown, code: string): boolean {

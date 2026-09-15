@@ -1,6 +1,6 @@
 # Build durable Topic provisioning
 
-Status: ready-for-agent
+Status: done
 
 Depends on: 03, 04, 07, 08, 10, 12
 
