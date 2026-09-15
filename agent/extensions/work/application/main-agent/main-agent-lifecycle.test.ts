@@ -143,18 +143,24 @@ class MemoryCapabilities {
 class MemoryDesktop {
   readonly launches: MainAgentLaunch[] = [];
   readonly events: string[] = [];
+  openResult: "launched" | "focused" = "launched";
+  closeResult: "closed" | "unavailable" = "closed";
 
   readonly openMainAgent = (launch: MainAgentLaunch) =>
     Effect.sync(() => {
       this.events.push(`open:${launch.topicId}`);
       this.launches.push(launch);
-      return { kind: "launched" as const, workspace: 1, message: "Opened." };
+      return this.openResult === "focused"
+        ? { kind: "focused" as const, workspace: 1, message: "Focused." }
+        : { kind: "launched" as const, workspace: 1, message: "Opened." };
     });
 
   readonly closeMainAgent = (topicId: TopicId) =>
     Effect.sync(() => {
       this.events.push(`close:${topicId}`);
-      return { kind: "closed" as const, message: "Closed." };
+      return this.closeResult === "unavailable"
+        ? { kind: "unavailable" as const, message: "Close unavailable." }
+        : { kind: "closed" as const, message: "Closed." };
     });
 }
 
@@ -337,8 +343,60 @@ describe("Main Agent lifecycle", () => {
     await Effect.runPromise(program as Effect.Effect<void>);
   });
 
-  test("rotates capabilities before reset launch and isolates a capability-free Delegation Job", async () => {
+  test("keeps an affiliated live lease when Open Main Agent focuses its existing window", async () => {
     const topics = new MemoryTopics([topic(ID)]);
+    const capabilities = new MemoryCapabilities();
+    const desktop = new MemoryDesktop();
+    const generated = [
+      capability("registration-1"),
+      capability("affiliation-1"),
+      capability("registration-2"),
+      capability("affiliation-2"),
+    ];
+    let index = 0;
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { lifecycle } = yield* make(
+            topics,
+            capabilities,
+            desktop,
+            () => generated[index++]!,
+          );
+          yield* lifecycle.open(ID);
+          const first = desktop.launches[0]!;
+          yield* lifecycle.register({
+            connectionId: "existing-window",
+            topicId: ID,
+            sessionId: first.sessionId,
+            sessionFile: FILE,
+            registration: first.registrationToken,
+          });
+          desktop.openResult = "focused";
+          expect(yield* lifecycle.open(ID)).toMatchObject({ kind: "focused" });
+          expect((yield* lifecycle.snapshot)[0]).toMatchObject({
+            activity: "idle",
+            connected: true,
+          });
+          const adopted = yield* lifecycle.adopt({
+            connectionId: "existing-window-after-new-session",
+            topicId: ID,
+            sessionId: "adopted-after-focus",
+            sessionFile: ADOPTED_FILE,
+            affiliation: first.affiliationToken,
+          });
+          expect(adopted).toMatchObject({ connected: true, sessionId: "adopted-after-focus" });
+        }),
+      ),
+    );
+  });
+
+  test("preserves the prior session file, rotates capabilities, and isolates a capability-free Delegation Job", async () => {
+    const previous = {
+      ...topic(ID),
+      mainAgent: { sessionId: `session-${ID}`, sessionFile: FILE },
+    };
+    const topics = new MemoryTopics([previous]);
     const capabilities = new MemoryCapabilities();
     const desktop = new MemoryDesktop();
     const old = [capability("old-registration"), capability("old-affiliation")];
@@ -362,6 +420,7 @@ describe("Main Agent lifecycle", () => {
             sessionId: "reset-session",
             sessionFile: null,
           });
+          expect(previous.mainAgent.sessionFile).toBe(FILE);
           const stale = yield* Effect.flip(
             lifecycle.adopt({
               connectionId: "old-window",
@@ -385,6 +444,34 @@ describe("Main Agent lifecycle", () => {
           );
           expect(delegation.reason).toBe("invalid-identity");
           expect(topics.rows.get(ID)?.topic.mainAgent.sessionId).toBe("reset-session");
+        }),
+      ),
+    );
+  });
+
+  test("does not rotate identity or capabilities when reset cannot close the old window", async () => {
+    const original = { ...topic(ID), mainAgent: { sessionId: "old-session", sessionFile: FILE } };
+    const topics = new MemoryTopics([original]);
+    const capabilities = new MemoryCapabilities();
+    const desktop = new MemoryDesktop();
+    const generated = [capability("old-registration"), capability("old-affiliation")];
+    let index = 0;
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { lifecycle } = yield* make(
+            topics,
+            capabilities,
+            desktop,
+            () => generated[index++]!,
+          );
+          yield* lifecycle.open(ID);
+          const capabilityCount = capabilities.values.size;
+          desktop.closeResult = "unavailable";
+          expect(yield* lifecycle.reset(ID)).toMatchObject({ kind: "unavailable" });
+          expect(topics.rows.get(ID)?.topic.mainAgent).toEqual(original.mainAgent);
+          expect(capabilities.values.size).toBe(capabilityCount);
+          expect(desktop.launches).toHaveLength(1);
         }),
       ),
     );

@@ -45,6 +45,15 @@ export interface ObservationWorkersOptions {
     repository: Repository,
   ) => Effect.Effect<Branch | undefined, PublicWorkFailure>;
   readonly mainAgentActivity?: (topicId: TopicId) => ObservedTopicState["mainAgentActivity"];
+  readonly workspace?: (
+    topicId: TopicId,
+  ) => Effect.Effect<number | undefined, never, WorkerRequirements>;
+  /** Persists the first discovered identity before its live facts are published. */
+  readonly associatePullRequest?: (
+    topicId: TopicId,
+    number: number,
+    observedAt: string,
+  ) => Effect.Effect<void, unknown>;
   readonly maintenance?: StorageMaintenance;
   readonly now?: Effect.Effect<string>;
   readonly localIntervalMs?: number;
@@ -103,8 +112,16 @@ export const makeObservationWorkers = (
           const old = snapshot.observed.topics.find((item) => item.topicId === topic.id)?.value;
           const value = {
             topicId: topic.id,
-            integrationStatus: old?.integrationStatus ?? "unknown",
+            integrationStatus: old?.integrationStatus ?? { kind: "unknown" },
             gitOperationState: old?.gitOperationState ?? "unknown",
+            ...(old?.checkedOutBranch === undefined
+              ? {}
+              : { checkedOutBranch: old.checkedOutBranch }),
+            ...(old?.gitOperationConflict === undefined
+              ? {}
+              : { gitOperationConflict: old.gitOperationConflict }),
+            ...(old?.baseCheckout === undefined ? {} : { baseCheckout: old.baseCheckout }),
+            ...(old?.workspace === undefined ? {} : { workspace: old.workspace }),
             worktreePresent: old?.worktreePresent ?? false,
             worktreeClean: old?.worktreeClean ?? null,
             orphan: old?.orphan ?? false,
@@ -185,38 +202,53 @@ export const makeObservationWorkers = (
         yield* markRefreshing(topics, yield* now);
         yield* Effect.forEach(
           topics,
-          (topic) =>
-            integrationTarget(options, topic, topics).pipe(
-              Effect.flatMap((target) =>
-                target === undefined || topic.worktreePath === null
-                  ? Effect.succeed("unknown" as const)
-                  : options.git
-                      .integrationStatus(
-                        options.repositoryPath(topic.repository),
-                        topic.branch,
+          (topic) => {
+            let resolvedTarget: Branch | undefined;
+            return Effect.gen(function* () {
+              const target = yield* integrationTarget(options, topic, topics);
+              resolvedTarget = target;
+              const integrationStatus =
+                target === undefined
+                  ? {
+                      kind: "unknown" as const,
+                      diagnostic: "The direct Integration Target Branch is unavailable.",
+                    }
+                  : topic.worktreePath === null
+                    ? {
+                        kind: "unknown" as const,
                         target,
-                      )
-                      .pipe(Effect.map((status) => status.kind)),
-              ),
-              Effect.flatMap((integrationStatus) =>
-                now.pipe(
-                  Effect.flatMap((observedAt) =>
-                    updateTopic(topic, { _tag: "Fresh", observedAt }, { integrationStatus }),
-                  ),
-                ),
-              ),
+                        diagnostic: "The Topic Worktree is not ready.",
+                      }
+                    : yield* options.git
+                        .integrationStatus(
+                          options.repositoryPath(topic.repository),
+                          topic.branch,
+                          target,
+                        )
+                        .pipe(Effect.map((status) => ({ ...status, target })));
+              const observedAt = yield* now;
+              yield* updateTopic(topic, { _tag: "Fresh", observedAt }, { integrationStatus });
+            }).pipe(
               Effect.catch((error) =>
                 now.pipe(
-                  Effect.flatMap((failedAt) =>
-                    updateTopic(
+                  Effect.flatMap((failedAt) => {
+                    const diagnostic = publicMessage(error);
+                    return updateTopic(
                       topic,
-                      { _tag: "Failed", failedAt, message: publicMessage(error) },
-                      { integrationStatus: "unknown" },
-                    ),
-                  ),
+                      { _tag: "Failed", failedAt, message: diagnostic },
+                      {
+                        integrationStatus: {
+                          kind: "unknown",
+                          ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }),
+                          diagnostic,
+                        },
+                      },
+                    );
+                  }),
                 ),
               ),
-            ),
+            );
+          },
           { concurrency: limit },
         );
       });
@@ -255,22 +287,26 @@ export const makeObservationWorkers = (
           (topic) =>
             observePullRequest(options, topic).pipe(
               Effect.flatMap((value) =>
-                now.pipe(
-                  Effect.flatMap((observedAt) =>
-                    options.state.publish({
-                      _tag: "ObservedChanged",
-                      pullRequests: {
-                        upsert: [
-                          {
-                            topicId: topic.id,
-                            freshness: { _tag: "Fresh", observedAt },
-                            ...(value === null ? {} : { value: projectPullRequest(value) }),
-                          },
-                        ],
-                      },
-                    }),
-                  ),
-                ),
+                Effect.gen(function* () {
+                  const observedAt = yield* now;
+                  if (value !== null && topic.pullRequest === undefined)
+                    yield* (
+                      options.associatePullRequest?.(topic.id, value.number, observedAt) ??
+                        Effect.void
+                    );
+                  yield* options.state.publish({
+                    _tag: "ObservedChanged",
+                    pullRequests: {
+                      upsert: [
+                        {
+                          topicId: topic.id,
+                          freshness: { _tag: "Fresh", observedAt },
+                          ...(value === null ? {} : { value: projectPullRequest(value) }),
+                        },
+                      ],
+                    },
+                  });
+                }),
               ),
               Effect.catch((error) =>
                 Effect.all({ snapshot: options.state.snapshot, failedAt: now }).pipe(
@@ -305,9 +341,30 @@ export const makeObservationWorkers = (
     const local = yield* singleFlight(localPass);
     const integration = yield* singleFlight(integrationPass);
     const pullRequests = yield* singleFlight(pullRequestPass);
+    const watcherStarted = yield* Deferred.make<void>();
 
     const loop = (pass: Effect.Effect<void, never, WorkerRequirements>, interval: number) =>
       Effect.forever(pass.pipe(Effect.andThen(Effect.sleep(interval))));
+
+    const watchDurableChanges = Effect.forever(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const changes = yield* options.state.subscribe(16);
+          yield* Deferred.succeed(watcherStarted, undefined);
+          yield* Effect.addFinalizer(() => changes.close);
+          yield* changes.stream.pipe(
+            Stream.runForEach((item) =>
+              (item._tag === "Change" && item.change._tag === "DurableCommitted") ||
+              item._tag === "ResyncRequired"
+                ? // The first call can join a pass that captured older durable state. The second
+                  // call guarantees one pass that starts after that joined pass completes.
+                  integration.pipe(Effect.andThen(integration))
+                : Effect.void,
+            ),
+          );
+        }),
+      ),
+    );
 
     const start = Effect.gen(function* () {
       yield* Effect.forkScoped(loop(local, options.localIntervalMs ?? LOCAL_INTERVAL_MS));
@@ -316,17 +373,9 @@ export const makeObservationWorkers = (
       );
       // Integration status gets its startup background refresh independently of readiness.
       yield* Effect.forkScoped(integration);
-      const changes = yield* options.state.subscribe(16);
-      yield* Effect.addFinalizer(() => changes.close);
-      yield* Effect.forkScoped(
-        changes.stream.pipe(
-          Stream.runForEach((item) =>
-            item._tag === "Change" && item.change._tag === "DurableCommitted"
-              ? integration
-              : Effect.void,
-          ),
-        ),
-      );
+      // A dropping projection subscription ends after ResyncRequired. Always subscribe again.
+      yield* Effect.forkScoped(watchDurableChanges);
+      yield* Deferred.await(watcherStarted);
       if (options.maintenance !== undefined) {
         yield* startDailyBackup(
           options,
@@ -369,6 +418,33 @@ export const makeObservationWorkers = (
               (item) => item.topicId === topicId,
             )?.value;
             const activity = options.mainAgentActivity?.(topicId) ?? observation?.mainAgentActivity;
+            if (observation?.orphan) return yield* invalid("The Topic Worktree is missing.");
+            if (observation?.integrationStatus.kind !== "behind")
+              return yield* invalid(
+                observation?.integrationStatus.diagnostic ??
+                  "The Topic Integration Status is not Behind.",
+              );
+            if (observation.worktreeClean !== true)
+              return yield* invalid(
+                observation.worktreeClean === false
+                  ? "The Topic Worktree has local changes."
+                  : "The Topic Worktree state is unknown.",
+              );
+            if (observation.checkedOutBranch !== durable.branch)
+              return yield* invalid("The Topic Branch is not checked out.");
+            if (observation.gitOperationState !== "none")
+              return yield* invalid("The Topic has a Git operation in progress.");
+            const targetSpec = durable.integrationTarget;
+            if (targetSpec?.kind === "topic") {
+              const targetObservation = current.observed.topics.find(
+                (item) => item.topicId === targetSpec.topicId,
+              )?.value;
+              if (
+                targetObservation?.gitOperationState !== undefined &&
+                targetObservation.gitOperationState !== "none"
+              )
+                return yield* invalid("The Integration Target has a Git operation in progress.");
+            }
             if (pullRequest?.state === "open")
               return yield* invalid("A known pull request prevents rebase.");
             if (activity === "starting" || activity === "thinking" || activity === "thinking-sub")
@@ -464,31 +540,37 @@ function observeLocal(
   topic: DurableTopic,
 ): Effect.Effect<Partial<ObservedTopicState>, PublicWorkFailure, WorkerRequirements> {
   const activity = options.mainAgentActivity?.(topic.id);
-  const absent = (): Partial<ObservedTopicState> => ({
-    worktreePresent: false,
-    worktreeClean: null,
-    gitOperationState: "none",
-    orphan: topic.setup.state === "ready",
-    ...(activity === undefined ? {} : { mainAgentActivity: activity }),
+  return Effect.gen(function* () {
+    const workspace =
+      options.workspace === undefined ? undefined : yield* options.workspace(topic.id);
+    const shared: Partial<ObservedTopicState> = {
+      baseCheckout: options.repositoryPath(topic.repository),
+      ...(workspace === undefined ? {} : { workspace }),
+      ...(activity === undefined ? {} : { mainAgentActivity: activity }),
+    };
+    const absent = (): Partial<ObservedTopicState> => ({
+      ...shared,
+      worktreePresent: false,
+      worktreeClean: null,
+      gitOperationState: "none",
+      checkedOutBranch: null,
+      gitOperationConflict: null,
+      orphan: topic.setup.state === "ready",
+    });
+    if (topic.worktreePath === null) return absent();
+    const present = yield* options.git.worktreePresent(topic.worktreePath);
+    if (!present) return absent();
+    const inspection = yield* options.git.inspectWorktree(topic.worktreePath);
+    return {
+      ...shared,
+      worktreePresent: true,
+      worktreeClean: inspection.clean,
+      gitOperationState: operationState(inspection),
+      checkedOutBranch: inspection.checkedOutBranch ?? null,
+      gitOperationConflict: inspection.operation?.conflict ?? null,
+      orphan: false,
+    };
   });
-  if (topic.worktreePath === null) return Effect.succeed(absent());
-  return options.git.worktreePresent(topic.worktreePath).pipe(
-    Effect.flatMap((present) =>
-      present
-        ? options.git.inspectWorktree(topic.worktreePath!).pipe(
-            Effect.map(
-              (inspection): Partial<ObservedTopicState> => ({
-                worktreePresent: true,
-                worktreeClean: inspection.clean,
-                gitOperationState: operationState(inspection),
-                orphan: false,
-                ...(activity === undefined ? {} : { mainAgentActivity: activity }),
-              }),
-            ),
-          )
-        : Effect.succeed(absent()),
-    ),
-  );
 }
 
 function operationState(

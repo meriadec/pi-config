@@ -24,7 +24,9 @@ import { WORK_RPC_MAX_FRAME_BYTES, WorkRpcGroup, type Compatibility } from "./pr
 export interface WorkRpcApplication {
   readonly compatibility: Effect.Effect<Compatibility, PublicWorkFailure>;
   readonly state: WorkStateProjection;
-  readonly operations: OperationEngine;
+  readonly operations: Omit<OperationEngine, "start"> & {
+    readonly start: (request: OperationStart) => Effect.Effect<OperationHandle, PublicWorkFailure>;
+  };
   readonly commands: TopicCommands;
   /** A deep Main Agent boundary. The RPC adapter does not dispatch actions itself. */
   readonly mainAgentCall: (request: unknown) => Effect.Effect<unknown, PublicWorkFailure>;
@@ -33,6 +35,7 @@ export interface WorkRpcApplication {
     readonly action:
       | "refresh"
       | "refresh-local"
+      | "refresh-integration"
       | "refresh-pull-requests"
       | "rebase"
       | "workspace"
@@ -122,6 +125,7 @@ export function workRpcServerLayer(options: WorkRpcServerOptions) {
               clientId: request.clientId,
               requestId: request.requestId,
               repository: request.command.repository,
+              expectedRevision: request.command.expectedRevision,
             })
           : app.commands.execute({
               clientId: request.clientId,
@@ -137,7 +141,13 @@ export function workRpcServerLayer(options: WorkRpcServerOptions) {
             }),
       ),
     MainAgentCall: (request) => protect("main-agent-call", app.mainAgentCall(request)),
-    EphemeralAction: (request) => protect("ephemeral-action", app.ephemeralAction(request)),
+    EphemeralAction: (request) =>
+      protect(
+        "ephemeral-action",
+        app
+          .ephemeralAction(request)
+          .pipe(Effect.map((value) => value ?? { status: "completed" as const })),
+      ),
   });
   const serialization = RpcSerialization.layerNdjsonWith({
     maxBufferSize: WORK_RPC_MAX_FRAME_BYTES,
@@ -162,6 +172,7 @@ function encodeHandle(handle: OperationHandle): {
   readonly id: OperationHandle["id"];
   readonly state: OperationHandle["state"];
   readonly confirmation?: string;
+  readonly confirmationText?: string;
 } {
   return {
     id: handle.id,
@@ -169,5 +180,6 @@ function encodeHandle(handle: OperationHandle): {
     ...(handle.confirmation === undefined
       ? {}
       : { confirmation: Redacted.value(handle.confirmation) }),
+    ...(handle.confirmationText === undefined ? {} : { confirmationText: handle.confirmationText }),
   };
 }

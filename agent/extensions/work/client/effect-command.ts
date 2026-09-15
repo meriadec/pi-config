@@ -3,11 +3,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createWorkPaths } from "../shared/paths.ts";
 import type { EffectWorkDashboardComponent } from "./effect-dashboard-component.ts";
 import type { WorkClientRuntime } from "./effect-runtime.ts";
+import type { completeWorkBaseSetup } from "./work-base-setup.ts";
 
 export interface EffectWorkCommandDependencies {
   readonly home?: string;
   readonly runtime?: string;
   readonly connect?: () => Promise<WorkClientRuntime>;
+  readonly setup?: typeof completeWorkBaseSetup;
 }
 
 const registeredApis = new WeakSet<object>();
@@ -34,6 +36,18 @@ export function registerEffectWorkCommand(
           home,
           ...(dependencies.runtime === undefined ? {} : { runtime: dependencies.runtime }),
         });
+        const setup =
+          dependencies.setup ?? (await import("./work-base-setup.ts")).completeWorkBaseSetup;
+        const configured = await setup(
+          paths.config,
+          {
+            input: (title, placeholder) => ctx.ui.input(title, placeholder),
+            notify: (message, level) => ctx.ui.notify(message, level),
+          },
+          dependencies.home === undefined ? {} : { home: dependencies.home },
+        );
+        if (configured === undefined) return;
+
         const client =
           dependencies.connect === undefined
             ? await (async () => {
@@ -49,7 +63,12 @@ export function registerEffectWorkCommand(
         try {
           const { EffectWorkDashboardComponent } = await import("./effect-dashboard-component.ts");
           await ctx.ui.custom<void>((tui, _theme, _keybindings, done) => {
-            component = new EffectWorkDashboardComponent(tui, client, done);
+            component = new EffectWorkDashboardComponent({
+              tui,
+              client,
+              done,
+              configuration: configured,
+            });
             active.add(component);
             return component;
           });

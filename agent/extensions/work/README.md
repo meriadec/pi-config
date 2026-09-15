@@ -21,11 +21,13 @@ The daemon runs `gh` for repository clone and pull request observation. It inher
 Start Pi in TUI mode and run `/work`. The dashboard connects to the daemon through Effect RPC and shows the durable Topics with their repository, Branch, setup state, and Main Agent state.
 
 - Press `r` to refresh observations.
-- Press `q`, `esc`, or `ctrl-c` to close the dashboard.
+- Press `q` or `Q` to close Topic details. Press `esc` or `ctrl-c` to close the dashboard.
 
 Closing the dashboard closes its client runtime. It does not stop the daemon or a Main Agent.
 
 Durable Parent Topic and Integration Target data define each one-level Topic family and its Integration Chain. Partition numbers define the primary display order. The daemon calculates Integration Status from committed local Branch tips. Git and GitHub observations are cache data and are rebuilt after daemon restart.
+
+Topic details show the exact Integration Branch as `configured` or `inferred`. **Reset Integration Branch** is available only for inferred repository state. Its direct confirmation names the repository. Reset removes only the stored inference, then refreshes local status so a safe observation can infer it again. It does not move a Branch or change Git history. An explicit `integrationBranch` configuration always wins and cannot be reset from the dashboard.
 
 After extension changes, run `/reload` in Pi. Restart the daemon when daemon code changes:
 
@@ -66,7 +68,9 @@ pi-work topic create-child --name "Continue the change" \
   --start-point HEAD~1 --parent-topic-id <topic-id>
 ```
 
-Use `--source-checkout <path>` to select a different checkout. Use `--json` for one versioned JSON result on stdout.
+Use `--source-checkout <path>` to select a different checkout. Use `--json` for one versioned JSON result on stdout. An interactive CLI shows the exact daemon request and accepts `yes` or `no`. JSON and non-interactive use do not approve an `ask` policy. They return `confirmation-required` with exit status 3.
+
+The CLI keeps its six-hour client wait. A wait timeout returns status 124, and Ctrl-C returns status 130. A policy denial or direct rejection returns status 4. Timeout, Ctrl-C, and disconnect stop only the client wait. They do not cancel accepted daemon work; use the Operation ID to inspect it.
 
 Inspect and cancel operations:
 

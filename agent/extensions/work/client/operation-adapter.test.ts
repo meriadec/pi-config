@@ -71,14 +71,18 @@ describe("Operation Handle Promise adapter", () => {
     expect(item.disposed()).toBe(1);
   });
 
-  test("returns awaiting-confirmation headlessly without consuming the capability", async () => {
+  test("returns exact confirmation text headlessly without consuming the capability", async () => {
     let confirmed = false;
+    const awaiting = operation("running");
+    Object.assign(awaiting, { state: "awaiting-confirmation" });
     const item = fake({
       startOperation: async () => ({
         id: operationId,
         state: "awaiting-confirmation",
         confirmation: "secret",
+        confirmationText: "Clone the exact repository?",
       }),
+      getOperation: async () => awaiting,
       confirmOperation: async () => {
         confirmed = true;
         return operation("running");
@@ -89,7 +93,43 @@ describe("Operation Handle Promise adapter", () => {
       request,
       context: { hasUI: false, ui: {} as never },
     });
-    expect(result.state).toBe("running");
+    expect(result.state).toBe("awaiting-confirmation");
+    expect(result.confirmationText).toBe("Clone the exact repository?");
     expect(confirmed).toBeFalse();
+  });
+
+  test("uses the daemon text and keeps direct rejection distinct", async () => {
+    let rejected = 0;
+    const dialogs: string[] = [];
+    const rejectedOperation = operation("cancelled");
+    Object.assign(rejectedOperation, { phase: "rejected" });
+    const item = fake({
+      startOperation: async () => ({
+        id: operationId,
+        state: "awaiting-confirmation",
+        confirmation: "secret",
+        confirmationText: "Create this exact Worktree?",
+      }),
+      rejectOperation: async () => {
+        rejected += 1;
+        return rejectedOperation;
+      },
+    });
+    const result = await startAndWaitForOperation({
+      client: item.runtime,
+      request,
+      context: {
+        hasUI: true,
+        ui: {
+          confirm: async (_title: string, message: string) => {
+            dialogs.push(message);
+            return false;
+          },
+        } as never,
+      },
+    });
+    expect(dialogs).toEqual(["Create this exact Worktree?"]);
+    expect(rejected).toBe(1);
+    expect(result.phase).toBe("rejected");
   });
 });

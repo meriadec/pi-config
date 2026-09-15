@@ -129,7 +129,7 @@ export const makeMainAgentLifecycle = <R>(
         const old = snapshot.observed.topics.find((item) => item.topicId === lease.topicId);
         const value = {
           topicId: lease.topicId,
-          integrationStatus: old?.value?.integrationStatus ?? "unknown",
+          integrationStatus: old?.value?.integrationStatus ?? { kind: "unknown" },
           gitOperationState: old?.value?.gitOperationState ?? "unknown",
           worktreePresent: old?.value?.worktreePresent ?? false,
           worktreeClean: old?.value?.worktreeClean ?? null,
@@ -225,6 +225,7 @@ export const makeMainAgentLifecycle = <R>(
             }),
           );
         }
+        const previousLease = leases.get(row.topic.id);
         const registration = makeCapability();
         const affiliation = makeCapability();
         const startedAt = yield* now;
@@ -258,6 +259,10 @@ export const makeMainAgentLifecycle = <R>(
           registrationToken: registration,
           affiliationToken: affiliation,
         });
+        if (result.kind === "focused") {
+          if (previousLease !== undefined) yield* replace(previousLease);
+          return result;
+        }
         if (result.kind === "unavailable") {
           yield* options.capabilities.revokeTopicCapabilities(row.topic.id);
           yield* replace({
@@ -277,10 +282,11 @@ export const makeMainAgentLifecycle = <R>(
     const reset = (topicId: TopicId) =>
       Effect.gen(function* () {
         const row = yield* currentTopic(topicId);
-        // Rotation happens before desktop launch, so an old window cannot adopt the new identity.
-        yield* options.capabilities.revokeTopicCapabilities(topicId);
         const closed = yield* options.desktop.closeMainAgent(topicId);
         if (closed.kind === "unavailable") return closed;
+        // Rotation happens after close succeeds and before launch. A rejected or unavailable close
+        // cannot change the durable identity or its private capabilities.
+        yield* options.capabilities.revokeTopicCapabilities(topicId);
         const identity = { sessionId: makeSessionId(), sessionFile: null } as const;
         const updated = yield* options.topics.updateMainAgent(topicId, identity, row.revision);
         yield* publishDurable(updated);

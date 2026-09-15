@@ -88,7 +88,7 @@ export const StorageSchemaVersion = positiveVersion.pipe(Schema.brand("Work/Stor
 export type StorageSchemaVersion = typeof StorageSchemaVersion.Type;
 
 /** Current branded versions for the new Work control-plane boundaries. */
-export const WORK_PROTOCOL_VERSION = ProtocolVersion.make(3);
+export const WORK_PROTOCOL_VERSION = ProtocolVersion.make(4);
 export const WORK_STORAGE_SCHEMA_VERSION = StorageSchemaVersion.make(2);
 
 /** A bearer value. Its normal rendering and inspection do not expose the value. */
@@ -248,7 +248,20 @@ export type DurableTopic = typeof DurableTopic.Type;
 export const Topic = DurableTopic;
 export type Topic = DurableTopic;
 
-export const IntegrationStatus = Schema.Literals(["current", "behind", "conflict", "unknown"]);
+export const IntegrationStatusKind = Schema.Literals(["current", "behind", "conflict", "unknown"]);
+export type IntegrationStatusKind = typeof IntegrationStatusKind.Type;
+
+/** Complete committed Git relationship projected to clients. */
+export const IntegrationStatus = Schema.Struct({
+  kind: IntegrationStatusKind,
+  /** Exact local Branch used as the direct Integration Target, when it can be resolved. */
+  target: Schema.optional(Branch),
+  ahead: Schema.optional(Schema.Natural),
+  behind: Schema.optional(Schema.Natural),
+  /** One bounded public explanation. Unknown observations use this when one is available. */
+  diagnostic: Schema.optional(boundedString(1_000)),
+});
+export type IntegrationStatus = typeof IntegrationStatus.Type;
 export const GitOperationState = Schema.Literals([
   "none",
   "rebase",
@@ -274,6 +287,14 @@ export const ObservedTopicState = Schema.Struct({
   topicId: TopicId,
   integrationStatus: IntegrationStatus,
   gitOperationState: GitOperationState,
+  /** Null for detached HEAD or failed inspection. */
+  checkedOutBranch: Schema.optional(Schema.NullOr(Branch)),
+  /** Null when no Git operation is in progress. */
+  gitOperationConflict: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  /** Base checkout used for local Git inspection. */
+  baseCheckout: Schema.optional(AbsolutePath),
+  /** Current or next desktop workspace selected for this Topic. */
+  workspace: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 }))),
   worktreePresent: Schema.Boolean,
   /** Null when cleanliness could not be observed. */
   worktreeClean: Schema.NullOr(Schema.Boolean),
@@ -295,6 +316,32 @@ export const PullRequestObservation = Schema.Struct({
   unresolvedThreads: Schema.Natural,
 });
 export type PullRequestObservation = typeof PullRequestObservation.Type;
+
+export type PullRequestStatus =
+  | "merged"
+  | "closed"
+  | "draft"
+  | "ci-failing"
+  | "feedback"
+  | "checks"
+  | "approved"
+  | "ready"
+  | "reviewing"
+  | "clear";
+
+/** Reduces progressive pull request facts. The first matching condition has precedence. */
+export function pullRequestStatus(value: PullRequestObservation): PullRequestStatus {
+  if (value.state === "merged") return "merged";
+  if (value.state === "closed") return "closed";
+  if (value.draft) return "draft";
+  if (value.ci === "failing") return "ci-failing";
+  if (value.changesRequested || value.unresolvedThreads > 0) return "feedback";
+  if (value.ci === "pending") return "checks";
+  if (value.approved) return "approved";
+  if (value.copilotReviewed) return "ready";
+  if (value.reviewPending) return "reviewing";
+  return "clear";
+}
 
 /** Decoders used once at untrusted boundaries. Callers then pass branded values. */
 export const decodeTopicId = Schema.decodeUnknownSync(TopicId);

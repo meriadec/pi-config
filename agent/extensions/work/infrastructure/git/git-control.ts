@@ -63,7 +63,13 @@ export interface GitWorktreeInspection {
 export type IntegrationStatus =
   | { readonly kind: "current"; readonly ahead: number; readonly behind: 0 }
   | { readonly kind: "behind"; readonly ahead: number; readonly behind: number }
-  | { readonly kind: "conflict"; readonly ahead: number; readonly behind: number };
+  | { readonly kind: "conflict"; readonly ahead: number; readonly behind: number }
+  | {
+      readonly kind: "unknown";
+      readonly ahead?: number;
+      readonly behind?: number;
+      readonly diagnostic: string;
+    };
 
 export interface ValidateWorktreeInput {
   readonly repositoryPath: AbsolutePath;
@@ -307,9 +313,10 @@ export const makeGitControl = (processes: ProcessExecutor): GitControl => {
         Effect.flatMap((countsResult) => {
           const counts = parseCounts(countsResult.stdout);
           if (counts === undefined) {
-            return Effect.fail(
-              failure("ambiguous", "Git returned invalid Integration Status counts.", countsResult),
-            );
+            return Effect.succeed<IntegrationStatus>({
+              kind: "unknown",
+              diagnostic: "Git returned invalid Integration Status counts.",
+            });
           }
           if (counts.behind === 0) {
             return Effect.succeed<IntegrationStatus>({
@@ -318,25 +325,25 @@ export const makeGitControl = (processes: ProcessExecutor): GitControl => {
               behind: 0,
             });
           }
-          return successful(
-            path,
-            ["merge-base", target, topic],
-            "The Integration Chain edge has unrelated histories.",
-          ).pipe(
-            Effect.andThen(run(path, ["merge-tree", "--write-tree", topic, target])),
-            Effect.flatMap((merge): GitEffect<IntegrationStatus> => {
-              if (merge.exitCode === 0) {
-                return Effect.succeed<IntegrationStatus>({ kind: "behind", ...counts });
+          return run(path, ["merge-base", target, topic]).pipe(
+            Effect.flatMap((related): GitEffect<IntegrationStatus> => {
+              if (related.exitCode !== 0) {
+                return Effect.succeed({
+                  kind: "unknown",
+                  ...counts,
+                  diagnostic: "The Topic and its Integration Target have unrelated histories.",
+                });
               }
-              if (merge.exitCode === 1) {
-                return Effect.succeed<IntegrationStatus>({ kind: "conflict", ...counts });
-              }
-              return Effect.fail(
-                failure(
-                  "ambiguous",
-                  "Git could not predict the Integration Chain conflict.",
-                  merge,
-                ),
+              return run(path, ["merge-tree", "--write-tree", topic, target]).pipe(
+                Effect.map((merge): IntegrationStatus => {
+                  if (merge.exitCode === 0) return { kind: "behind", ...counts };
+                  if (merge.exitCode === 1) return { kind: "conflict", ...counts };
+                  return {
+                    kind: "unknown",
+                    ...counts,
+                    diagnostic: "Git could not predict the Integration Chain conflict.",
+                  };
+                }),
               );
             }),
           );

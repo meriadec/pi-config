@@ -19,6 +19,7 @@ export class OperationWaitEnded extends Error {
         ? `The client stopped waiting for operation ${operationId}. The daemon operation was not cancelled.`
         : `The client wait for operation ${operationId} timed out. The daemon operation can continue.`,
     );
+    this.name = "OperationWaitEnded";
     this.operationId = operationId;
     this.reason = reason;
   }
@@ -35,13 +36,15 @@ export interface OperationAdapterOptions {
   readonly onUpdate?: (operation: DurableOperation) => void;
 }
 
+export type OperationAdapterResult = DurableOperation & { readonly confirmationText?: string };
+
 /**
  * Thin Promise bridge around one scoped client runtime. Abort and timeout stop only this wait.
  * A durable operation is never cancelled as a side effect of client disposal.
  */
 export async function startAndWaitForOperation(
   options: OperationAdapterOptions,
-): Promise<DurableOperation> {
+): Promise<OperationAdapterResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_CLIENT_WAIT_MS;
   let operationId: OperationId | undefined;
   let stopWatch: (() => void) | undefined;
@@ -55,10 +58,16 @@ export async function startAndWaitForOperation(
       const confirmation = handle.confirmation;
       if (confirmation === undefined)
         throw new Error("The daemon omitted an operation confirmation.");
-      if (options.context?.hasUI !== true) return await options.client.getOperation(handle.id);
+      const confirmationText = handle.confirmationText ?? options.confirmationText?.(handle);
+      if (confirmationText === undefined)
+        throw new Error("The daemon omitted the direct confirmation text.");
+      if (options.context?.hasUI !== true) {
+        const operation = await options.client.getOperation(handle.id);
+        return { ...operation, confirmationText };
+      }
       const approved = await options.context.ui.confirm(
         "Confirm work Topic provisioning",
-        options.confirmationText?.(handle) ?? "Approve this Topic provisioning operation?",
+        confirmationText,
         options.signal === undefined ? undefined : { signal: options.signal },
       );
       throwIfAborted(options.signal);
@@ -69,7 +78,7 @@ export async function startAndWaitForOperation(
     stopWatch = options.client.watchOperation(handle.id, (operation) =>
       options.onUpdate?.(operation),
     );
-    return await withWaitDeadline(
+    return await waitForOperationDeadline(
       options.client.awaitOperation(handle.id),
       handle.id,
       timeoutMs,
@@ -87,7 +96,8 @@ export async function startAndWaitForOperation(
   }
 }
 
-async function withWaitDeadline<T>(
+/** Bounds a client wait without changing the lifetime or state of its Durable Operation. */
+export async function waitForOperationDeadline<T>(
   promise: Promise<T>,
   operationId: OperationId,
   timeoutMs: number,

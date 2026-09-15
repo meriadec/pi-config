@@ -16,7 +16,13 @@ import type {
   WorkObservedProjection,
   WorkSnapshot,
 } from "./schema.ts";
-import { emptyDurableProjection, emptyObservedProjection } from "./schema.ts";
+import {
+  emptyDurableProjection,
+  emptyObservedProjection,
+  MAX_ACTIVE_ACTIONS,
+  MAX_OBSERVATION_DIAGNOSTICS,
+  MAX_PROJECTED_OPERATIONS,
+} from "./schema.ts";
 
 export interface DurableCommittedChange {
   readonly _tag: "DurableCommitted";
@@ -32,6 +38,7 @@ export interface ObservedChangedChange {
   readonly pullRequests?: ProjectionPatch<ProjectedPullRequestObservation>;
   readonly diagnostics?: ReadonlyArray<ObservationDiagnostic>;
   readonly activeActions?: ReadonlyArray<EphemeralAction>;
+  readonly policies?: WorkObservedProjection["policies"];
 }
 
 export type WorkProjectionChange = DurableCommittedChange | ObservedChangedChange;
@@ -95,11 +102,17 @@ export const makeWorkState = (options: WorkStateOptions): Effect.Effect<WorkStat
     const mutex = yield* Semaphore.make(1);
     const subscribers = new Map<number, Subscriber>();
     let nextSubscriberId = 1;
+    const durable = options.durable ?? emptyDurableProjection();
+    const observed = options.observed ?? emptyObservedProjection();
     let current = freezeSnapshot({
       daemon: options.daemon,
       revision: 0,
-      durable: options.durable ?? emptyDurableProjection(),
-      observed: options.observed ?? emptyObservedProjection(),
+      durable: { ...durable, operations: boundProjectedOperations(durable.operations) },
+      observed: {
+        ...observed,
+        diagnostics: takeLast(observed.diagnostics, MAX_OBSERVATION_DIAGNOSTICS),
+        activeActions: takeLast(observed.activeActions, MAX_ACTIVE_ACTIONS),
+      },
     });
     const defaultCapacity = normalizeCapacity(
       options.subscriberCapacity ?? DEFAULT_SUBSCRIBER_CAPACITY,
@@ -192,7 +205,9 @@ export function reduceWorkSnapshot(
           change.repositoryStates,
           (item) => item.repository,
         ),
-        operations: applyPatch(snapshot.durable.operations, change.operations, (item) => item.id),
+        operations: boundProjectedOperations(
+          applyPatch(snapshot.durable.operations, change.operations, (item) => item.id),
+        ),
       },
       observed:
         removedTopicIds.size === 0
@@ -209,6 +224,9 @@ export function reduceWorkSnapshot(
               activeActions: snapshot.observed.activeActions.filter(
                 (item) => item.topicId === undefined || !removedTopicIds.has(item.topicId),
               ),
+              policies: snapshot.observed.policies?.filter(
+                (item) => item.scope.kind !== "topic" || !removedTopicIds.has(item.scope.topicId),
+              ),
             },
     });
   }
@@ -224,13 +242,37 @@ export function reduceWorkSnapshot(
         (item) => item.topicId,
       ),
       diagnostics:
-        change.diagnostics === undefined ? snapshot.observed.diagnostics : [...change.diagnostics],
+        change.diagnostics === undefined
+          ? snapshot.observed.diagnostics
+          : takeLast(change.diagnostics, MAX_OBSERVATION_DIAGNOSTICS),
       activeActions:
         change.activeActions === undefined
           ? snapshot.observed.activeActions
-          : [...change.activeActions],
+          : takeLast(change.activeActions, MAX_ACTIVE_ACTIONS),
+      policies: change.policies === undefined ? snapshot.observed.policies : [...change.policies],
     },
   });
+}
+
+function takeLast<A>(values: ReadonlyArray<A>, limit: number): ReadonlyArray<A> {
+  return values.length <= limit ? [...values] : values.slice(values.length - limit);
+}
+
+/** Keeps every recent active operation before filling the bounded projection with terminal rows. */
+export function boundProjectedOperations(
+  values: ReadonlyArray<ProjectedOperation>,
+): ReadonlyArray<ProjectedOperation> {
+  const active = values.filter(
+    (operation) =>
+      operation.state === "accepted" ||
+      operation.state === "awaiting-confirmation" ||
+      operation.state === "running",
+  );
+  const activeIds = new Set(active.map((operation) => operation.id));
+  const boundedActive = takeLast(active, MAX_PROJECTED_OPERATIONS);
+  const terminalCapacity = MAX_PROJECTED_OPERATIONS - boundedActive.length;
+  const terminal = values.filter((operation) => !activeIds.has(operation.id));
+  return [...boundedActive, ...takeLast(terminal, terminalCapacity)];
 }
 
 export type WorkStreamCursor =

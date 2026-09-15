@@ -27,6 +27,7 @@ import {
 import { planPartitionMove } from "../../shared/partition.ts";
 import {
   familyKey,
+  partitionKey,
   repositoryKey,
   topicKey,
   type KeyedConcurrency,
@@ -99,6 +100,8 @@ export interface TopicCommandOptions {
   readonly ancestry: StableAncestryControl;
   readonly integrationBranches: IntegrationBranchControl;
   readonly repositoryPath: (repository: Repository) => AbsolutePath;
+  /** Starts a safe local observation after inferred state is cleared. */
+  readonly refreshAfterIntegrationBranchReset?: Effect.Effect<void, never>;
   readonly now?: Effect.Effect<string>;
 }
 
@@ -113,6 +116,7 @@ export interface TopicCommands {
   readonly resetIntegrationBranch: (
     request: Pick<AtomicCommandRequest, "clientId" | "requestId"> & {
       readonly repository: Repository;
+      readonly expectedRevision: number;
     },
   ) => Effect.Effect<DurableOperationResult, PublicWorkFailure>;
 }
@@ -148,6 +152,8 @@ export function makeTopicCommands(options: TopicCommandOptions): TopicCommands {
           upsert: [
             {
               repository: value.repository,
+              integrationBranch: value.inferredIntegrationBranch,
+              source: "inferred",
               inferredIntegrationBranch: value.inferredIntegrationBranch,
               rowRevision: value.revision,
               updatedAt: value.updatedAt,
@@ -178,27 +184,21 @@ export function makeTopicCommands(options: TopicCommandOptions): TopicCommands {
         ),
       );
 
-  const ensureInferred = (repository: Repository, replace: boolean) =>
+  const ensureInferred = (repository: Repository) =>
     options.concurrency.withKeys(
       [repositoryKey(repository)],
       Effect.gen(function* () {
         const current = yield* options.topics.getInferredIntegrationBranch(repository);
-        if (!replace && current !== undefined) return current;
+        if (current !== undefined) return current;
         const inferred = yield* options.integrationBranches.infer(
           repository,
           options.repositoryPath(repository),
         );
-        if (inferred === undefined) {
-          if (replace && current !== undefined) {
-            yield* options.topics.clearInferredIntegrationBranch(repository, current.revision);
-            yield* publishRepositoryRemoval(repository);
-          }
-          return undefined;
-        }
+        if (inferred === undefined) return undefined;
         const stored = yield* options.topics.storeInferredIntegrationBranch(
           repository,
           inferred,
-          current?.revision,
+          undefined,
           yield* now,
         );
         yield* publishRepository(stored);
@@ -212,7 +212,7 @@ export function makeTopicCommands(options: TopicCommandOptions): TopicCommands {
       .pipe(
         Effect.flatMap((configured) =>
           configured === undefined
-            ? ensureInferred(repository, false).pipe(
+            ? ensureInferred(repository).pipe(
                 Effect.map((stored) => stored?.inferredIntegrationBranch),
               )
             : Effect.succeed(configured),
@@ -225,11 +225,10 @@ export function makeTopicCommands(options: TopicCommandOptions): TopicCommands {
     Effect.gen(function* () {
       const initial = yield* options.topics.get(command.topicId);
       const rootId = initial.topic.parentTopicId ?? initial.topic.id;
-      const keys = [
-        topicKey(command.topicId),
-        familyKey(rootId),
-        repositoryKey(initial.topic.repository),
-      ];
+      const keys =
+        command._tag === "MovePartition"
+          ? [partitionKey(initial.topic.repository)]
+          : [topicKey(command.topicId), familyKey(rootId), repositoryKey(initial.topic.repository)];
       if (command._tag === "ChangeParent") keys.push(familyKey(command.parentTopicId));
 
       return yield* options.concurrency.withKeys(
@@ -382,20 +381,43 @@ export function makeTopicCommands(options: TopicCommandOptions): TopicCommands {
       {
         clientId: request.clientId,
         requestId: request.requestId,
-        fingerprint: `integration-branch.reset:${request.repository}`,
+        fingerprint: `integration-branch.reset:${request.repository}:${request.expectedRevision}`,
       },
-      Effect.gen(function* () {
-        const stored = yield* ensureInferred(request.repository, true);
-        return {
-          version: 1,
-          status: "succeeded",
-          value: {
-            command: "ResetIntegrationBranch",
-            repository: request.repository,
-            inferredIntegrationBranch: stored?.inferredIntegrationBranch ?? null,
-          },
-        };
-      }),
+      options.concurrency
+        .withKeys(
+          [repositoryKey(request.repository)],
+          Effect.gen(function* () {
+            const configured = yield* options.integrationBranches.configured(request.repository);
+            if (configured !== undefined) {
+              return yield* Effect.fail(
+                new DomainFailure({
+                  reason: "invalid-relationship",
+                  message: "The Integration Branch has an explicit configured override.",
+                }),
+              );
+            }
+            const current = yield* options.topics.getInferredIntegrationBranch(request.repository);
+            if (current === undefined) {
+              return yield* Effect.fail(
+                new DomainFailure({
+                  reason: "invalid-relationship",
+                  message: "The repository has no inferred Integration Branch to reset.",
+                }),
+              );
+            }
+            yield* options.topics.clearInferredIntegrationBranch(
+              request.repository,
+              request.expectedRevision,
+            );
+            yield* publishRepositoryRemoval(request.repository);
+            return {
+              version: 1 as const,
+              status: "succeeded" as const,
+              value: { command: "ResetIntegrationBranch", repository: request.repository },
+            };
+          }),
+        )
+        .pipe(Effect.tap(() => options.refreshAfterIntegrationBranchReset ?? Effect.void)),
     );
 
   return { execute, effectiveIntegrationBranch, resetIntegrationBranch };

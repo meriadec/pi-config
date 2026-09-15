@@ -123,6 +123,28 @@ describe("SQLite Topic repository", () => {
     database.close();
   });
 
+  test("stores the first pull request identity and keeps it across restart", async () => {
+    const path = await databasePath();
+    const { pullRequest: _pullRequest, ...withoutPullRequest } = topic(PARENT);
+    await run(path, (repository) => repository.create(withoutPullRequest));
+    const associated = await run(path, (repository) =>
+      repository.associatePullRequest(PARENT, 42, "2026-06-01T10:01:00.000Z"),
+    );
+    expect(associated.topic.pullRequest).toEqual({ number: 42 });
+    expect(associated.revision).toBe(1);
+
+    const replaced = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const repository = yield* TopicRepository;
+        return yield* repository.associatePullRequest(PARENT, 43, "2026-06-01T10:02:00.000Z");
+      }).pipe(Effect.provide(topicRepositoryLayer({ filename: path }))),
+    );
+    expect(Exit.isFailure(replaced)).toBe(true);
+    expect((await run(path, (repository) => repository.get(PARENT))).topic.pullRequest).toEqual({
+      number: 42,
+    });
+  });
+
   test("enforces unique Branches and rolls the complete failed create back", async () => {
     const path = await databasePath();
     await run(path, (repository) => repository.create(topic(PARENT)));
@@ -245,7 +267,13 @@ describe("SQLite Topic repository", () => {
   });
 
   test("rolls deletion back at each dependent-row write point", async () => {
-    for (const point of ["delete:agent", "delete:setup", "delete:relationship", "delete:topic"]) {
+    for (const point of [
+      "delete:operation-history",
+      "delete:agent",
+      "delete:setup",
+      "delete:relationship",
+      "delete:topic",
+    ]) {
       const path = await databasePath();
       await run(path, (repository) => repository.create(topic(PARENT)));
       const exit = await Effect.runPromiseExit(

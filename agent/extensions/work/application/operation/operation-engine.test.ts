@@ -116,6 +116,32 @@ describe("Durable Operation engine", () => {
     );
   });
 
+  test("replays one accepted command identity without repeating its side effect", async () => {
+    const path = await databasePath();
+    let sideEffects = 0;
+    await Effect.runPromise(
+      withEngine(
+        path,
+        {
+          resumable: false,
+          run: () =>
+            Effect.sync(() => {
+              sideEffects += 1;
+              return success;
+            }),
+        },
+        (engine) =>
+          Effect.gen(function* () {
+            const first = yield* engine.start(startRequest());
+            const retry = yield* engine.start(startRequest());
+            expect(retry.id).toBe(first.id);
+            yield* engine.await(first.id);
+          }),
+      ),
+    );
+    expect(sideEffects).toBe(1);
+  });
+
   test("recovers resumable accepted work after a daemon scope restart", async () => {
     const path = await databasePath();
     await Effect.runPromise(

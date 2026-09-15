@@ -5,12 +5,17 @@ export type ConcurrencyKey =
   | { readonly _tag: "Topic"; readonly topicId: string }
   | { readonly _tag: "Family"; readonly familyId: string }
   | { readonly _tag: "Repository"; readonly repository: string }
+  | { readonly _tag: "Partition"; readonly repository: string }
   | { readonly _tag: "Creation"; readonly repository: string; readonly branch: string };
 
 export const topicKey = (topicId: string): ConcurrencyKey => ({ _tag: "Topic", topicId });
 export const familyKey = (familyId: string): ConcurrencyKey => ({ _tag: "Family", familyId });
 export const repositoryKey = (repository: string): ConcurrencyKey => ({
   _tag: "Repository",
+  repository,
+});
+export const partitionKey = (repository: string): ConcurrencyKey => ({
+  _tag: "Partition",
   repository,
 });
 export const creationKey = (repository: string, branch: string): ConcurrencyKey => ({
@@ -120,7 +125,9 @@ function encodeKey(key: ConcurrencyKey): string {
       return `1:${JSON.stringify(key.familyId)}`;
     case "Repository":
       return `2:${JSON.stringify(key.repository)}`;
+    case "Partition":
+      return `3:${JSON.stringify(key.repository)}`;
     case "Creation":
-      return `3:${JSON.stringify([key.repository, key.branch])}`;
+      return `4:${JSON.stringify([key.repository, key.branch])}`;
   }
 }

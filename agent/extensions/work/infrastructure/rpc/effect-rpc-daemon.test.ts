@@ -8,7 +8,7 @@ import * as RpcClient from "effect/unstable/rpc/RpcClient";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TopicCommands } from "../../application/command/index.ts";
@@ -117,10 +117,90 @@ describe("Effect RPC daemon", () => {
             startId: "daemon-test",
             state: "ready",
           });
+          expect(yield* client.EphemeralAction({ action: "refresh" })).toEqual({
+            status: "completed",
+          });
           const first = yield* client.SubscribeState({ capacity: 1 }).pipe(Stream.runHead);
           expect(first._tag).toBe("Some");
           if (first._tag === "Some") expect(first.value._tag).toBe("Snapshot");
 
+          yield* Fiber.interrupt(daemon);
+        }),
+      ),
+    );
+
+    expect(await Bun.file(paths.socket).exists()).toBe(false);
+    expect(await Bun.file(paths.lock).exists()).toBe(false);
+  });
+
+  test("stops while a state subscription remains connected", async () => {
+    const paths = await temporaryRuntime();
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const ready = yield* Deferred.make<void>();
+          const daemon = yield* Effect.forkScoped(
+            makeEffectWorkDaemon({
+              runtimeDirectory: paths.directory,
+              socketPath: paths.socket,
+              lockPath: paths.lock,
+              makeApplication: application,
+              ready: Deferred.succeed(ready, undefined),
+              shutdownDeadlineMs: 100,
+            }),
+          );
+          yield* Deferred.await(ready);
+
+          const serialization = RpcSerialization.layerNdjsonWith({
+            maxBufferSize: WORK_RPC_MAX_FRAME_BYTES,
+          });
+          const protocol = RpcClient.layerProtocolSocket().pipe(
+            Layer.provide(serialization),
+            Layer.provide(BunSocket.layerNet({ path: paths.socket })),
+          );
+          const context = yield* Layer.build(protocol);
+          const client = yield* RpcClient.make(WorkRpcGroup).pipe(Effect.provide(context));
+          const subscribed = yield* Deferred.make<void>();
+          yield* Effect.forkScoped(
+            client.SubscribeState({ capacity: 16 }).pipe(
+              Stream.tap(() => Deferred.succeed(subscribed, undefined)),
+              Stream.runDrain,
+            ),
+          );
+          yield* Deferred.await(subscribed);
+
+          const result = yield* Effect.raceFirst(
+            Fiber.interrupt(daemon).pipe(Effect.as("stopped" as const)),
+            Effect.sleep("500 millis").pipe(Effect.as("timeout" as const)),
+          );
+          expect(result).toBe("stopped");
+        }),
+      ),
+    );
+  });
+
+  test("recovers an old empty lifetime lock left by an unclean daemon exit", async () => {
+    const paths = await temporaryRuntime();
+    await writeFile(paths.lock, "", { mode: 0o600 });
+    const staleTime = new Date(Date.now() - 10_000);
+    await utimes(paths.lock, staleTime, staleTime);
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const ready = yield* Deferred.make<void>();
+          const daemon = yield* Effect.forkScoped(
+            makeEffectWorkDaemon({
+              runtimeDirectory: paths.directory,
+              socketPath: paths.socket,
+              lockPath: paths.lock,
+              makeApplication: application,
+              ready: Deferred.succeed(ready, undefined),
+              shutdownDeadlineMs: 100,
+            }),
+          );
+          yield* Deferred.await(ready);
           yield* Fiber.interrupt(daemon);
         }),
       ),

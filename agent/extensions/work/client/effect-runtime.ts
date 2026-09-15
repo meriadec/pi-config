@@ -56,6 +56,7 @@ export interface WorkClientRuntime {
     action:
       | "refresh"
       | "refresh-local"
+      | "refresh-integration"
       | "refresh-pull-requests"
       | "rebase"
       | "workspace"

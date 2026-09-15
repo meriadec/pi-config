@@ -10,13 +10,16 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as FileSystem from "effect/FileSystem";
 import {
   AbsolutePath,
+  PolicyFailure,
   PrivateLocalCapability,
+  TopicId,
   WORK_PROTOCOL_VERSION,
   WORK_STORAGE_SCHEMA_VERSION,
   type Branch,
-  type Repository,
   type DurableTopic,
-  type TopicId,
+  type DurableOperationResult,
+  type Policy,
+  type Repository,
 } from "../domain/index.ts";
 import { makeWorkConfigurationService, type WorkConfiguration } from "../infrastructure/config.ts";
 import { makeKeyedConcurrency } from "../infrastructure/concurrency/index.ts";
@@ -39,15 +42,24 @@ import {
   type MainAgentLifecycle,
 } from "../application/main-agent/index.ts";
 import { makeObservationWorkers } from "../application/observation/index.ts";
-import { makeOperationEngine, type DurableOperation } from "../application/operation/index.ts";
+import {
+  makeOperationEngine,
+  type DurableOperation,
+  type OperationWorker,
+} from "../application/operation/index.ts";
 import {
   makeProvisioningService,
   makeProvisioningWorker,
   ProvisionOperationValue,
 } from "../application/provisioning/index.ts";
-import { makeWorkState, type WorkDurableProjection } from "../application/state/index.ts";
+import {
+  boundProjectedOperations,
+  makeWorkState,
+  type WorkDurableProjection,
+} from "../application/state/index.ts";
 import type { WorkPaths } from "../shared/paths.ts";
 import type { AncestryLookup, ChainNode } from "../shared/integration-chain.ts";
+import { resolveActionPolicy, type WorkPolicies } from "../shared/policy.ts";
 
 /** Composes the production SQLite, application, process, desktop, and observation modules. */
 export function makeProductionWorkApplication(
@@ -73,9 +85,23 @@ export function makeProductionWorkApplication(
       operationRepository.listAll?.() ?? operationRepository.listActive()
     );
     const repositoryRows = yield* topics.listInferredIntegrationBranches?.() ?? Effect.succeed([]);
+    const daemonStartedAt = new Date().toISOString();
     const state = yield* makeWorkState({
-      daemon: { id: randomUUID(), startedAt: new Date().toISOString() },
-      durable: hydrateDurable(topicRows, repositoryRows, operationRows),
+      daemon: { id: randomUUID(), startedAt: daemonStartedAt },
+      durable: hydrateDurable(
+        topicRows,
+        repositoryRows,
+        operationRows,
+        configuration,
+        daemonStartedAt,
+      ),
+      observed: {
+        topics: [],
+        pullRequests: [],
+        diagnostics: [],
+        activeActions: [],
+        policies: projectSensitivePolicies(configuration, topicRows),
+      },
     });
     const processes = makeProcessExecutor();
     const concurrency = makeKeyedConcurrency();
@@ -109,6 +135,7 @@ export function makeProductionWorkApplication(
     });
     const desktop = {
       accessWorkspace: (topicId: TopicId) => runScoped(rawDesktop.accessWorkspace(topicId)),
+      topicWorkspace: (topicId: TopicId) => runScoped(rawDesktop.topicWorkspace(topicId)),
       openTerminal: (topicId: TopicId, path: AbsolutePath) =>
         runScoped(rawDesktop.openTerminal(topicId, path)),
       openMainAgent: (launch: Parameters<typeof rawDesktop.openMainAgent>[0]) =>
@@ -135,27 +162,151 @@ export function makeProductionWorkApplication(
           }),
         ),
     });
+    const mainAgents = yield* makeMainAgentLifecycle({
+      topics,
+      capabilities: operationRepository,
+      state,
+      desktop,
+      socketPath: AbsolutePath.make(lease.socketPath),
+    });
+    let commands: ReturnType<typeof makeTopicCommands> | undefined;
+    const terminalWorker: OperationWorker = {
+      resumable: false,
+      run: ({ operation }) =>
+        Effect.gen(function* () {
+          if (operation.topicId === undefined)
+            return failedOperation("topic-required", "No Topic was selected.");
+          const { topic } = yield* topics.get(operation.topicId);
+          if (topic.worktreePath === null)
+            return failedOperation("worktree-unavailable", "The Topic Worktree is unavailable.");
+          const result = yield* desktop.openTerminal(topic.id, topic.worktreePath);
+          return result.kind === "unavailable"
+            ? failedOperation("desktop-unavailable", result.message)
+            : succeededOperation(result.message);
+        }),
+    };
+    const mainAgentWorker = (action: "agent.open" | "agent.reset"): OperationWorker => ({
+      resumable: false,
+      run: ({ operation }) =>
+        Effect.gen(function* () {
+          if (operation.topicId === undefined)
+            return failedOperation("topic-required", "No Topic was selected.");
+          const result =
+            action === "agent.open"
+              ? yield* mainAgents.open(operation.topicId)
+              : yield* mainAgents.reset(operation.topicId);
+          return result.kind === "unavailable"
+            ? failedOperation("desktop-unavailable", result.message)
+            : succeededOperation(result.message);
+        }),
+    });
+    const deleteWorker: OperationWorker = {
+      resumable: false,
+      run: ({ operation }) => {
+        const value = operation.input.value;
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          !("topicId" in value) ||
+          typeof value.topicId !== "string"
+        )
+          return Effect.succeed(failedOperation("topic-required", "No Topic was selected."));
+        const topicId = Schema.decodeUnknownSync(TopicId)(value.topicId);
+        if (commands === undefined)
+          return Effect.succeed(
+            failedOperation("command-unavailable", "Topic deletion is unavailable."),
+          );
+        return commands.execute({
+          clientId: operation.clientId,
+          requestId: operation.requestId,
+          command: { _tag: "Delete", topicId },
+        });
+      },
+    };
     const operations = yield* makeOperationEngine({
       repository: operationRepository,
       state,
-      workers: { "topic.provision": worker },
+      workers: {
+        "topic.provision": worker,
+        "terminal.open": terminalWorker,
+        "agent.open": mainAgentWorker("agent.open"),
+        "agent.reset": mainAgentWorker("agent.reset"),
+        "topic.delete": deleteWorker,
+      },
     });
     const provisioning = makeProvisioningService(operations);
+    const sensitiveActions = new Set<string>([
+      "terminal.open",
+      "agent.open",
+      "agent.reset",
+      "topic.delete",
+    ]);
     const productionOperations = {
       ...operations,
-      start: (request: Parameters<typeof operations.start>[0]) =>
-        request.input.kind !== "topic.provision"
-          ? operations.start(request)
-          : provisioning.start({
-              clientId: request.clientId,
-              requestId: request.requestId,
-              fingerprint: request.fingerprint,
-              value: Schema.decodeUnknownSync(ProvisionOperationValue)(request.input.value),
-              ...(request.phase === undefined ? {} : { phase: request.phase }),
-            }),
+      start: (request: Parameters<typeof operations.start>[0]) => {
+        if (request.input.kind === "topic.provision")
+          return provisioning.start({
+            clientId: request.clientId,
+            requestId: request.requestId,
+            fingerprint: request.fingerprint,
+            value: Schema.decodeUnknownSync(ProvisionOperationValue)(request.input.value),
+            ...(request.phase === undefined ? {} : { phase: request.phase }),
+          });
+        if (!sensitiveActions.has(request.input.kind)) return operations.start(request);
+        return Effect.gen(function* () {
+          if (request.topicId === undefined)
+            return yield* Effect.fail(
+              new PolicyFailure({ reason: "denied", message: "No Topic was selected." }),
+            );
+          const action = request.input.kind as SensitiveActionKind;
+          const operationRequest =
+            action === "topic.delete"
+              ? {
+                  clientId: request.clientId,
+                  requestId: request.requestId,
+                  fingerprint: request.fingerprint,
+                  input: { ...request.input, value: { topicId: request.topicId } },
+                  ...(request.phase === undefined ? {} : { phase: request.phase }),
+                }
+              : request;
+          const currentConfiguration = yield* configurationService.loadForPolicyCommand;
+          const currentTopics = yield* topics.list;
+          yield* state.publish({
+            _tag: "ObservedChanged",
+            policies: projectSensitivePolicies(currentConfiguration, currentTopics),
+          });
+          const row = currentTopics.find(({ topic }) => topic.id === request.topicId);
+          if (row === undefined) {
+            if (action === "topic.delete") return yield* operations.start(operationRequest);
+            return yield* Effect.fail(
+              new PolicyFailure({ reason: "denied", message: "The Topic does not exist." }),
+            );
+          }
+          const decision = resolveActionPolicy(asWorkPolicies(currentConfiguration), action, {
+            topicId: row.topic.id,
+            repository: row.topic.repository,
+          }).policy;
+          if (decision === "deny")
+            return yield* Effect.fail(
+              new PolicyFailure({
+                reason: "denied",
+                message: `${sensitiveActionName(action)} is denied by the configured Action policy.`,
+              }),
+            );
+          return yield* operations.start(
+            decision === "ask"
+              ? {
+                  ...operationRequest,
+                  confirmation: { action, lifetimeMs: 60_000, durable: true },
+                }
+              : operationRequest,
+          );
+        });
+      },
     };
+    let refreshAfterIntegrationBranchReset: Effect.Effect<void, never> = Effect.void;
     const repositoryPath = (repository: Repository) => repositoryPathFor(configuration, repository);
-    const commands = makeTopicCommands({
+    commands = makeTopicCommands({
       topics,
       operations,
       state,
@@ -166,18 +317,32 @@ export function makeProductionWorkApplication(
       },
       integrationBranches: {
         configured: (repository) =>
-          Effect.succeed(configuration.repositories[repository]?.integrationBranch),
-        infer: () => Effect.succeed(undefined),
+          configurationService.refresh.pipe(
+            Effect.map((current) => current.repositories[repository]?.integrationBranch),
+          ),
+        infer: (_repository, path) =>
+          runScoped(git.listWorktrees(path)).pipe(
+            Effect.map(
+              (worktrees) =>
+                worktrees.find((worktree) => worktree.path === path && !worktree.detached)?.branch,
+            ),
+          ),
       },
       repositoryPath,
+      refreshAfterIntegrationBranchReset: Effect.suspend(() => refreshAfterIntegrationBranchReset),
     });
-    const mainAgents = yield* makeMainAgentLifecycle({
-      topics,
-      capabilities: operationRepository,
-      state,
-      desktop,
-      socketPath: AbsolutePath.make(lease.socketPath),
-    });
+    const productionCommands = {
+      ...commands,
+      execute: (request: Parameters<typeof commands.execute>[0]) =>
+        request.command._tag === "Delete"
+          ? Effect.fail(
+              new PolicyFailure({
+                reason: "denied",
+                message: "Delete Topic must use the policy-aware operation path.",
+              }),
+            )
+          : commands.execute(request),
+    };
     const observations = yield* makeObservationWorkers({
       state,
       git,
@@ -185,7 +350,24 @@ export function makeProductionWorkApplication(
       concurrency,
       repositoryPath,
       integrationBranch: commands.effectiveIntegrationBranch,
+      workspace: (topicId) =>
+        desktop.topicWorkspace(topicId).pipe(Effect.catch(() => Effect.succeed(undefined))),
+      associatePullRequest: (topicId, number, observedAt) =>
+        topics.associatePullRequest(topicId, number, observedAt).pipe(
+          Effect.flatMap((value) =>
+            state.publish({
+              _tag: "DurableCommitted",
+              topics: {
+                upsert: [{ topic: value.topic, rowRevision: value.revision }],
+              },
+            }),
+          ),
+          Effect.asVoid,
+        ),
     });
+    refreshAfterIntegrationBranchReset = runScoped(observations.refreshIntegration).pipe(
+      Effect.catch(() => Effect.void),
+    );
     yield* operations.recover;
     yield* observations.start;
 
@@ -199,7 +381,7 @@ export function makeProductionWorkApplication(
       }),
       state,
       operations: productionOperations,
-      commands,
+      commands: productionCommands,
       mainAgentCall: (request) => mainAgentCall(mainAgents, request as MainAgentCallRequest),
       ephemeralAction: ({ action, topicId }) => {
         const actionEffect = (() => {
@@ -208,6 +390,8 @@ export function makeProductionWorkApplication(
               return observations.refresh;
             case "refresh-local":
               return observations.refreshLocal;
+            case "refresh-integration":
+              return observations.refreshIntegration;
             case "refresh-pull-requests":
               return observations.refreshPullRequests;
             case "rebase":
@@ -217,32 +401,31 @@ export function makeProductionWorkApplication(
                 ? Effect.succeed({ kind: "unavailable", message: "No Topic was selected." })
                 : desktop.accessWorkspace(topicId);
             case "terminal":
-              return topicId === undefined
-                ? Effect.succeed({ kind: "unavailable", message: "No Topic was selected." })
-                : topics.get(topicId).pipe(
-                    Effect.flatMap(({ topic }) =>
-                      topic.worktreePath === null
-                        ? Effect.succeed({
-                            kind: "unavailable",
-                            message: "The Topic Worktree is unavailable.",
-                          })
-                        : desktop.openTerminal(topicId, topic.worktreePath),
-                    ),
-                  );
+              return Effect.succeed({
+                kind: "unavailable",
+                message: "Open Terminal must use the policy-aware operation path.",
+              });
             case "pull-request":
               return topicId === undefined
                 ? Effect.succeed({ kind: "unavailable", message: "No Topic was selected." })
                 : state.snapshot.pipe(
                     Effect.flatMap((snapshot) => {
+                      const topic = snapshot.durable.topics.find(
+                        (entry) => entry.topic.id === topicId,
+                      )?.topic;
                       const pullRequest = snapshot.observed.pullRequests.find(
                         (entry) => entry.topicId === topicId,
                       )?.value;
-                      return pullRequest === undefined
-                        ? Effect.succeed({
-                            kind: "unavailable",
-                            message: "The Topic has no observed pull request.",
-                          })
-                        : desktop.openBrowser(pullRequest.url);
+                      const number = pullRequest?.identity.number ?? topic?.pullRequest?.number;
+                      if (number === undefined)
+                        return Effect.succeed({
+                          kind: "unavailable" as const,
+                          message: "The Topic has no pull request.",
+                        });
+                      const url =
+                        pullRequest?.url ??
+                        `https://github.com/${topic!.repository}/pull/${number}`;
+                      return desktop.openBrowser(url);
                     }),
                   );
           }
@@ -253,31 +436,102 @@ export function makeProductionWorkApplication(
   });
 }
 
+function asWorkPolicies(configuration: WorkConfiguration): WorkPolicies {
+  // The configuration schema uses branded record keys. Policy lookup treats them as strings.
+  return configuration.policies as unknown as WorkPolicies;
+}
+
+function projectSensitivePolicies(
+  configuration: WorkConfiguration,
+  topics: ReadonlyArray<{ readonly topic: DurableTopic }>,
+): Policy[] {
+  const policies = asWorkPolicies(configuration);
+  const actions = [
+    "topic.run-setup",
+    "terminal.open",
+    "agent.open",
+    "agent.reset",
+    "topic.delete",
+  ] as const;
+  return topics.flatMap(({ topic }) =>
+    actions.map((action) => ({
+      action,
+      decision: resolveActionPolicy(policies, action, {
+        topicId: topic.id,
+        repository: topic.repository,
+      }).policy,
+      scope: { kind: "topic" as const, topicId: topic.id },
+    })),
+  );
+}
+
+type SensitiveActionKind = "terminal.open" | "agent.open" | "agent.reset" | "topic.delete";
+
+function sensitiveActionName(action: SensitiveActionKind): string {
+  if (action === "terminal.open") return "Open Terminal";
+  if (action === "agent.open") return "Open Main Agent";
+  if (action === "agent.reset") return "Start New Main Agent";
+  return "Delete Topic";
+}
+
+function succeededOperation(message: string): DurableOperationResult {
+  return { version: 1, status: "succeeded", value: { message } };
+}
+
+function failedOperation(reason: string, message: string): DurableOperationResult {
+  return { version: 1, status: "failed", value: { reason, message } };
+}
+
 function hydrateDurable(
   topics: ReadonlyArray<{ readonly topic: DurableTopic; readonly revision: number }>,
   repositoryStates: ReadonlyArray<RevisionedRepositoryState>,
   operations: ReadonlyArray<DurableOperation>,
+  configuration: WorkConfiguration,
+  projectedAt: string,
 ): WorkDurableProjection {
-  return {
-    topics: topics.map((row) => ({ topic: row.topic, rowRevision: row.revision })),
-    repositoryStates: repositoryStates.map((row) => ({
+  const configuredStates = Object.entries(configuration.repositories).flatMap(
+    ([repository, recipe]) =>
+      recipe.integrationBranch === undefined
+        ? []
+        : [
+            {
+              repository: repository as Repository,
+              integrationBranch: recipe.integrationBranch,
+              source: "configured" as const,
+              rowRevision: 0,
+              updatedAt: projectedAt,
+            },
+          ],
+  );
+  const inferredStates = repositoryStates
+    .filter((row) => configuration.repositories[row.repository]?.integrationBranch === undefined)
+    .map((row) => ({
       repository: row.repository,
+      integrationBranch: row.inferredIntegrationBranch,
+      source: "inferred" as const,
       inferredIntegrationBranch: row.inferredIntegrationBranch,
       rowRevision: row.revision,
       updatedAt: row.updatedAt,
-    })),
-    operations: operations.map((operation) => ({
-      id: operation.id,
-      ...(operation.topicId === undefined ? {} : { topicId: operation.topicId }),
-      state: operation.state,
-      phase: operation.phase,
-      input: operation.input,
-      ...(operation.result === undefined ? {} : { result: operation.result }),
-      createdAt: operation.createdAt,
-      updatedAt: operation.updatedAt,
-      ...(operation.terminalAt === undefined ? {} : { terminalAt: operation.terminalAt }),
-      rowRevision: operation.revision,
-    })),
+    }));
+  return {
+    topics: topics.map((row) => ({ topic: row.topic, rowRevision: row.revision })),
+    repositoryStates: [...configuredStates, ...inferredStates].toSorted((left, right) =>
+      left.repository.localeCompare(right.repository),
+    ),
+    operations: boundProjectedOperations(
+      operations.map((operation) => ({
+        id: operation.id,
+        ...(operation.topicId === undefined ? {} : { topicId: operation.topicId }),
+        state: operation.state,
+        phase: operation.phase,
+        input: operation.input,
+        ...(operation.result === undefined ? {} : { result: operation.result }),
+        createdAt: operation.createdAt,
+        updatedAt: operation.updatedAt,
+        ...(operation.terminalAt === undefined ? {} : { terminalAt: operation.terminalAt }),
+        rowRevision: operation.revision,
+      })),
+    ),
   };
 }
 
@@ -291,9 +545,15 @@ function repositoryPathFor(configuration: WorkConfiguration, repository: Reposit
 function mainAgentCall(lifecycle: MainAgentLifecycle<never>, request: MainAgentCallRequest) {
   switch (request.action) {
     case "open":
-      return lifecycle.open(request.topicId);
     case "reset":
-      return lifecycle.reset(request.topicId);
+      return Effect.fail(
+        new PolicyFailure({
+          reason: "denied",
+          message: `${sensitiveActionName(
+            request.action === "open" ? "agent.open" : "agent.reset",
+          )} must use the policy-aware operation path.`,
+        }),
+      );
     case "register":
       return lifecycle.register({
         connectionId: request.connectionId,

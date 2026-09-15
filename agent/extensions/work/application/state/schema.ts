@@ -6,6 +6,7 @@ import {
   DurableOperationState,
   DurableTopic,
   OperationId,
+  Policy,
   PullRequestObservation,
   Repository,
   TopicId,
@@ -22,6 +23,10 @@ export const WorkDaemonIdentity = Schema.Struct({
   startedAt: Timestamp,
 });
 export type WorkDaemonIdentity = typeof WorkDaemonIdentity.Type;
+
+export const MAX_PROJECTED_OPERATIONS = 500;
+export const MAX_OBSERVATION_DIAGNOSTICS = 100;
+export const MAX_ACTIVE_ACTIONS = 500;
 
 /** Freshness is separate from an observation value so stale data can stay visible during refresh. */
 export const ObservationFreshness = Schema.Union([
@@ -40,7 +45,10 @@ export type RevisionedProjectedTopic = typeof RevisionedProjectedTopic.Type;
 
 export const ProjectedRepositoryState = Schema.Struct({
   repository: Repository,
-  inferredIntegrationBranch: Branch,
+  /** Effective value and its authority. Old inferred-only snapshots remain decodable. */
+  integrationBranch: Schema.optional(Branch),
+  source: Schema.optional(Schema.Literals(["configured", "inferred"])),
+  inferredIntegrationBranch: Schema.optional(Branch),
   rowRevision: Revision,
   updatedAt: Timestamp,
 });
@@ -94,15 +102,19 @@ export type EphemeralAction = typeof EphemeralAction.Type;
 export const WorkDurableProjection = Schema.Struct({
   topics: Schema.Array(RevisionedProjectedTopic),
   repositoryStates: Schema.Array(ProjectedRepositoryState),
-  operations: Schema.Array(ProjectedOperation),
+  operations: Schema.Array(ProjectedOperation).check(Schema.isMaxLength(MAX_PROJECTED_OPERATIONS)),
 });
 export type WorkDurableProjection = typeof WorkDurableProjection.Type;
 
 export const WorkObservedProjection = Schema.Struct({
   topics: Schema.Array(ProjectedTopicObservation),
   pullRequests: Schema.Array(ProjectedPullRequestObservation),
-  diagnostics: Schema.Array(ObservationDiagnostic),
-  activeActions: Schema.Array(EphemeralAction),
+  diagnostics: Schema.Array(ObservationDiagnostic).check(
+    Schema.isMaxLength(MAX_OBSERVATION_DIAGNOSTICS),
+  ),
+  activeActions: Schema.Array(EphemeralAction).check(Schema.isMaxLength(MAX_ACTIVE_ACTIONS)),
+  /** Effective decisions only. Configuration hierarchy and private diagnostics stay server-side. */
+  policies: Schema.optional(Schema.Array(Policy)),
 });
 export type WorkObservedProjection = typeof WorkObservedProjection.Type;
 
@@ -126,4 +138,5 @@ export const emptyObservedProjection = (): WorkObservedProjection => ({
   pullRequests: [],
   diagnostics: [],
   activeActions: [],
+  policies: [],
 });

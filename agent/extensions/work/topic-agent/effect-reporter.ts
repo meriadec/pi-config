@@ -39,6 +39,7 @@ export class EffectTopicAgentReporter {
     | { readonly sessionId: string; readonly sessionFile: string; readonly adopting: boolean }
     | undefined;
   private registered = false;
+  private hasAttached = false;
   private pending = false;
   private shuttingDown = false;
   private mainThinking = false;
@@ -70,6 +71,7 @@ export class EffectTopicAgentReporter {
 
     this.shuttingDown = false;
     this.registered = false;
+    this.hasAttached = false;
     this.connectionId = randomUUID();
     this.registration = { sessionId, sessionFile, adopting };
     this.mainThinking = !ctx.isIdle();
@@ -119,12 +121,26 @@ export class EffectTopicAgentReporter {
     if (this.pending || this.shuttingDown || this.runtime === undefined) return;
     this.pending = true;
     try {
-      if (!this.registered) await this.register();
-      else
-        await this.runtime.mainAgentCall({ action: "heartbeat", connectionId: this.connectionId });
-    } catch (error) {
-      this.registered = false;
-      this.log(`re-attach failed: ${error instanceof Error ? error.message : "unknown error"}`);
+      if (this.registered) {
+        try {
+          await this.runtime.mainAgentCall({
+            action: "heartbeat",
+            connectionId: this.connectionId,
+          });
+        } catch {
+          // The daemon can reconnect its transport without retaining this lease. Attach now
+          // instead of reporting the failed heartbeat or waiting for the next schedule cycle.
+          this.registered = false;
+        }
+      }
+      if (!this.registered) {
+        try {
+          await this.register();
+        } catch (error) {
+          this.registered = false;
+          this.log(`re-attach failed: ${error instanceof Error ? error.message : "unknown error"}`);
+        }
+      }
     } finally {
       this.pending = false;
     }
@@ -162,9 +178,14 @@ export class EffectTopicAgentReporter {
         });
       }
     }
+    const reattaching = this.hasAttached;
     this.registered = true;
+    this.hasAttached = true;
     this.lastReported = undefined;
-    await this.reportEffectiveActivity();
+    // Registration initializes the daemon lease as idle. Keep that distinct from waiting for
+    // human input until this Pi session has run and settled. A re-attachment must reassert the
+    // effective activity because the replacement daemon lease also starts as idle.
+    await this.reportEffectiveActivity(reattaching);
   }
 
   private effectiveActivity(): VisibleActivity {
@@ -173,10 +194,11 @@ export class EffectTopicAgentReporter {
     return this.trackingActive ? "tracking-pr" : "waiting-for-human";
   }
 
-  private async reportEffectiveActivity(): Promise<void> {
+  private async reportEffectiveActivity(reportWaiting = true): Promise<void> {
     const activity = this.effectiveActivity();
     if (!this.registered || this.runtime === undefined || activity === this.lastReported) return;
     this.lastReported = activity;
+    if (activity === "waiting-for-human" && !reportWaiting) return;
     try {
       await this.runtime.mainAgentCall({
         action: "report",

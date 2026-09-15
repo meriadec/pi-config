@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
+  boundProjectedOperations,
   reduceWorkSnapshot,
+  MAX_PROJECTED_OPERATIONS,
   type ObservationFreshness,
   type WorkSnapshot,
   type WorkStreamItem,
@@ -15,6 +17,7 @@ import {
 } from "../domain/index.ts";
 import type { DurableOperation, TopicCommand } from "../infrastructure/rpc/index.ts";
 import { makeWorkClientRuntime, type WorkClientRuntime } from "./effect-runtime.ts";
+import { isShimmeringMainAgentActivity, MAIN_AGENT_SHIMMER_PERIOD } from "./main-agent-display.ts";
 
 export interface DashboardCancellation {
   readonly operationId: OperationId;
@@ -51,17 +54,56 @@ export function reduceEffectDashboardState(
     case "StreamFailed":
       return { ...state, phase: "reconnecting", message: event.message };
     case "Shimmer":
-      return { ...state, shimmerPhase: (state.shimmerPhase + 1) % 10_000 };
-    case "OperationUpdated":
       return {
         ...state,
-        operationUpdates: { ...state.operationUpdates, [event.operation.id]: event.operation },
+        shimmerPhase: (state.shimmerPhase + 1) % MAIN_AGENT_SHIMMER_PERIOD,
       };
+    case "OperationUpdated": {
+      const operation = event.operation;
+      const snapshot = state.snapshot;
+      const operationUpdates = boundedOperationUpdates(state.operationUpdates, operation);
+      return {
+        ...state,
+        operationUpdates,
+        ...(snapshot === undefined
+          ? {}
+          : {
+              snapshot: {
+                ...snapshot,
+                durable: {
+                  ...snapshot.durable,
+                  operations: boundProjectedOperations([
+                    ...snapshot.durable.operations.filter((entry) => entry.id !== operation.id),
+                    {
+                      id: operation.id,
+                      ...(operation.topicId === undefined ? {} : { topicId: operation.topicId }),
+                      state: operation.state,
+                      phase: operation.phase,
+                      input: operation.input,
+                      ...(operation.result === undefined ? {} : { result: operation.result }),
+                      createdAt: operation.createdAt,
+                      updatedAt: operation.updatedAt,
+                      ...(operation.terminalAt === undefined
+                        ? {}
+                        : { terminalAt: operation.terminalAt }),
+                      rowRevision: operation.revision,
+                    },
+                  ]),
+                },
+              },
+            }),
+      };
+    }
     case "StreamItem": {
       const item = event.item;
       if (item._tag === "Snapshot") {
         const { message: _message, ...current } = state;
-        return { ...current, phase: "connected", snapshot: item.snapshot };
+        return {
+          ...current,
+          phase: "connected",
+          snapshot: item.snapshot,
+          operationUpdates: {},
+        };
       }
       if (item._tag === "ResyncRequired" || state.snapshot === undefined) {
         return { ...state, phase: "reconnecting", message: "Synchronizing Work state…" };
@@ -101,10 +143,10 @@ export function integrationBranchLabel(
   configured?: Branch,
 ): string {
   if (configured !== undefined) return `${configured} (configured)`;
-  const inferred = snapshot.durable.repositoryStates.find(
-    (entry) => entry.repository === repository,
-  )?.inferredIntegrationBranch;
-  return inferred === undefined ? "Unknown (not inferred)" : `${inferred} (inferred)`;
+  const state = snapshot.durable.repositoryStates.find((entry) => entry.repository === repository);
+  const branch = state?.integrationBranch ?? state?.inferredIntegrationBranch;
+  if (branch === undefined) return "Unknown (not inferred)";
+  return `${branch} (${state?.source ?? "inferred"})`;
 }
 
 export function interruptedSetupLabel(
@@ -134,6 +176,7 @@ export class EffectDashboardRuntime {
   private readonly onChange: (state: EffectDashboardState) => void;
   private readonly operationWatches = new Map<string, () => void>();
   private readonly mutations = new Map<string, Promise<DurableOperationResult>>();
+  private cancellationRequest: Promise<DashboardCancellation> | undefined;
   private stopState: (() => void) | undefined;
   private stopShimmer: (() => void) | undefined;
   private partitionTail: Promise<unknown> = Promise.resolve();
@@ -161,8 +204,12 @@ export class EffectDashboardRuntime {
     return this.state;
   }
 
-  refresh(): Promise<void> {
-    return this.client.ephemeralAction("refresh").then(() => undefined);
+  async refresh(): Promise<void> {
+    await Promise.all([
+      this.client.ephemeralAction("refresh-local"),
+      this.client.ephemeralAction("refresh-integration"),
+    ]);
+    void this.client.ephemeralAction("refresh-pull-requests").catch(() => undefined);
   }
 
   mutate(key: string, command: TopicCommand): Promise<DurableOperationResult> {
@@ -189,52 +236,76 @@ export class EffectDashboardRuntime {
     return result;
   }
 
-  resetIntegrationBranch(repository: Repository): Promise<DurableOperationResult> {
+  resetIntegrationBranch(
+    repository: Repository,
+    expectedRevision?: number,
+  ): Promise<DurableOperationResult> {
+    const revision =
+      expectedRevision ??
+      this.state.snapshot?.durable.repositoryStates.find((entry) => entry.repository === repository)
+        ?.rowRevision ??
+      0;
     return this.mutate(`integration-branch:${repository}`, {
       _tag: "ResetIntegrationBranch",
       repository,
+      expectedRevision: revision,
     });
   }
 
   /** Cancel Setup is always two-step: request a direct capability, then confirm it. */
-  async requestCancelSetup(operationId: OperationId): Promise<DashboardCancellation> {
+  requestCancelSetup(operationId: OperationId): Promise<DashboardCancellation> {
+    if (this.state.cancellation !== undefined) {
+      return Promise.reject(new Error("A Setup cancellation is already awaiting confirmation."));
+    }
+    if (this.cancellationRequest !== undefined) return this.cancellationRequest;
     const active = this.state.snapshot?.durable.operations.find(
       (operation) => operation.id === operationId,
     );
     if (
       active === undefined ||
       (active.state !== "accepted" && active.state !== "running") ||
-      (active.phase !== "setup" && active.input.kind !== "provision")
+      active.input.kind !== "topic.provision"
     ) {
-      throw new Error("Cancel Setup is available only for active provisioning.");
+      return Promise.reject(new Error("Cancel Setup is available only for active provisioning."));
     }
-    const { confirmation } = await this.client.requestOperationCancellation(operationId, 60_000);
-    const cancellation = {
-      operationId,
-      confirmation,
-      text: "Cancel active provisioning? External artifacts and completed checkpoints remain.",
-    };
-    this.state = { ...this.state, cancellation, message: cancellation.text };
-    this.onChange(this.state);
-    return cancellation;
+    const request = this.client
+      .requestOperationCancellation(operationId, 60_000)
+      .then(({ confirmation }) => {
+        const cancellation = {
+          operationId,
+          confirmation,
+          text: "Cancel Setup? Completed checkpoints and external artifacts remain.",
+        };
+        this.state = { ...this.state, cancellation, message: cancellation.text };
+        this.onChange(this.state);
+        return cancellation;
+      })
+      .finally(() => {
+        if (this.cancellationRequest === request) this.cancellationRequest = undefined;
+      });
+    this.cancellationRequest = request;
+    return request;
   }
 
   async confirmCancelSetup(): Promise<DurableOperation> {
     const pending = this.state.cancellation;
     if (pending === undefined) throw new Error("No Setup cancellation is awaiting confirmation.");
-    const result = await this.client.confirmOperation(pending.operationId, pending.confirmation);
     const { cancellation: _removed, ...state } = this.state;
     this.state = { ...state, message: "Setup cancellation requested." };
     this.onChange(this.state);
+    const result = await this.client.confirmOperation(pending.operationId, pending.confirmation);
+    this.dispatch({ _tag: "OperationUpdated", operation: result });
     return result;
   }
 
-  async rejectCancelSetup(): Promise<void> {
-    const pending = this.state.cancellation;
-    if (pending !== undefined) await this.client.rejectOperation(pending.operationId);
+  rejectCancelSetup(): Promise<void> {
+    if (this.state.cancellation === undefined) {
+      return Promise.reject(new Error("No Setup cancellation is awaiting confirmation."));
+    }
     const { cancellation: _removed, ...state } = this.state;
-    this.state = { ...state, message: "Setup cancellation rejected." };
+    this.state = { ...state, message: "Setup cancellation rejected. Provisioning continues." };
     this.onChange(this.state);
+    return Promise.resolve();
   }
 
   async dispose(): Promise<void> {
@@ -286,10 +357,14 @@ export class EffectDashboardRuntime {
   }
 
   private syncShimmer(intervalMs: number): void {
-    const shimmering = (this.state.snapshot?.observed.topics ?? []).some((entry) => {
-      const activity = entry.value?.mainAgentActivity;
-      return activity === "thinking" || activity === "thinking-sub" || activity === "tracking-pr";
-    });
+    const renderedTopicIds = new Set(
+      (this.state.snapshot?.durable.topics ?? []).map((entry) => entry.topic.id),
+    );
+    const shimmering = (this.state.snapshot?.observed.topics ?? []).some(
+      (entry) =>
+        renderedTopicIds.has(entry.topicId) &&
+        isShimmeringMainAgentActivity(entry.value?.mainAgentActivity),
+    );
     if (shimmering && this.stopShimmer === undefined) {
       this.stopShimmer = this.client.repeat(intervalMs, () => this.dispatch({ _tag: "Shimmer" }));
     } else if (!shimmering && this.stopShimmer !== undefined) {
@@ -297,6 +372,14 @@ export class EffectDashboardRuntime {
       this.stopShimmer = undefined;
     }
   }
+}
+
+function boundedOperationUpdates(
+  current: Readonly<Record<string, DurableOperation>>,
+  operation: DurableOperation,
+): Readonly<Record<string, DurableOperation>> {
+  const entries = Object.entries({ ...current, [operation.id]: operation });
+  return Object.fromEntries(entries.slice(-MAX_PROJECTED_OPERATIONS));
 }
 
 function errorMessage(error: unknown): string {

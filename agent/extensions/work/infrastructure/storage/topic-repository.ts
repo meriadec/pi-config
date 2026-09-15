@@ -99,6 +99,12 @@ export interface TopicRepository {
     topic: DurableTopic,
     expectedRevision: number,
   ) => Effect.Effect<RevisionedTopic, StorageFailure>;
+  /** Stores the first observed identity without replacing an existing association. */
+  readonly associatePullRequest: (
+    topicId: TopicId,
+    number: number,
+    updatedAt: string,
+  ) => Effect.Effect<RevisionedTopic, StorageFailure>;
   readonly applyChainPlan: (
     plan: ChainPlanWrite,
   ) => Effect.Effect<ReadonlyArray<RevisionedTopic>, StorageFailure>;
@@ -415,11 +421,36 @@ function makeRepository(sql: SqlClient.SqlClient, faultAt?: string): TopicReposi
       ),
     );
 
+  const associatePullRequest = (topicId: TopicId, number: number, updatedAt: string) =>
+    catchSql(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
+            UPDATE topics
+            SET pull_request_number = ${number}, revision = revision + 1, updated_at = ${updatedAt}
+            WHERE id = ${topicId} AND pull_request_number IS NULL
+          `;
+          const value = yield* get(topicId);
+          if (value.topic.pullRequest?.number !== number)
+            return yield* Effect.fail(
+              storageFailure(
+                "conflict",
+                "Topic already has a different pull request.",
+                number,
+                topicId,
+              ),
+            );
+          return value;
+        }),
+      ),
+    );
+
   return {
     list: rows,
     get,
     create,
     update,
+    associatePullRequest,
     applyChainPlan: (plan) => catchSql(sql.withTransaction(applyEdits(plan))),
     updateFamilyPartition: ({ family, arrangement }) =>
       catchSql(
@@ -494,6 +525,9 @@ function makeRepository(sql: SqlClient.SqlClient, faultAt?: string): TopicReposi
             yield* bump(topicId, expectedRevision);
             // The savepoint keeps this composable when deletion already owns the outer transaction.
             yield* sql.withTransaction(applyEdits(repair, false));
+            // Retain operation history, but release its foreign key before removing the Topic.
+            yield* sql`UPDATE durable_operations SET topic_id = NULL WHERE topic_id = ${topicId}`;
+            yield* checkpoint("delete:operation-history");
             yield* sql`DELETE FROM main_agent_identities WHERE topic_id = ${topicId}`;
             yield* checkpoint("delete:agent");
             yield* sql`DELETE FROM topic_setup WHERE topic_id = ${topicId}`;

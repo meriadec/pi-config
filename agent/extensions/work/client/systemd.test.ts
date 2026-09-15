@@ -61,6 +61,21 @@ describe("systemd unit management", () => {
     expect(findBunExecutable(home, { PATH: bin })).toBe(executable);
   });
 
+  test("prefers the stable Bun installation over a PATH version-manager shim", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pi-workd-bun-stable-test-"));
+    temporaryDirectories.push(home);
+    const stableBin = join(home, ".bun", "bin");
+    const shimBin = join(home, "shims");
+    const stableExecutable = join(stableBin, "bun");
+    const shimExecutable = join(shimBin, "bun");
+    await mkdir(stableBin, { recursive: true });
+    await mkdir(shimBin);
+    await Promise.all([writeFile(stableExecutable, ""), writeFile(shimExecutable, "")]);
+    await Promise.all([chmod(stableExecutable, 0o700), chmod(shimExecutable, 0o700)]);
+
+    expect(findBunExecutable(home, { PATH: shimBin })).toBe(stableExecutable);
+  });
+
   test("generates stable, argument-safe service content without enabling it", async () => {
     const value = await paths();
     const first = generateSystemdUnit(value);
@@ -72,6 +87,7 @@ describe("systemd unit management", () => {
     expect(first).toContain(`Environment="PI_WORK_GH_EXECUTABLE=${value.ghExecutable}"`);
     expect(first).toContain(`ExecStart="${value.bunExecutable}"`);
     expect(first).toContain("daemon%%entry.ts");
+    expect(first).toContain("TimeoutStopSec=15s");
     expect(first).not.toContain("WantedBy=multi-user.target");
     expect(first).not.toContain("systemctl enable");
   });
@@ -219,6 +235,8 @@ describe("systemd unit management", () => {
 
   test("returns an already running client without systemd calls", async () => {
     const value = await paths();
+    await mkdir(dirname(value.unitPath), { recursive: true });
+    await writeFile(value.unitPath, generateSystemdUnit(value));
     let calls = 0;
     const client = {
       compatibility: async (): Promise<Compatibility> => ({

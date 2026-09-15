@@ -1,3 +1,5 @@
+import { userInfo } from "node:os";
+import { stripVTControlCharacters } from "node:util";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -7,6 +9,7 @@ import {
   ActionPolicy,
   DurableTopic,
   FullCommitSha,
+  boundPublicMessage,
   OperationFailure,
   PolicyFailure,
   RepositoryRecipe,
@@ -140,6 +143,7 @@ export function makeProvisioningService(engine: OperationEngine): ProvisioningSe
           ? {
               confirmation: {
                 action: confirmationActions.join("+"),
+                text: provisioningConfirmationText(request.value, confirmationActions),
                 lifetimeMs: request.confirmationLifetimeMs ?? 60_000,
                 durable: true,
               },
@@ -152,7 +156,7 @@ export function makeProvisioningService(engine: OperationEngine): ProvisioningSe
 
 /** Makes the resumable worker registered as `topic.provision` in OperationEngine. */
 export function makeProvisioningWorker(options: ProvisioningWorkerOptions): OperationWorker {
-  const shell = options.setupShell ?? "/bin/sh";
+  const shell = options.setupShell ?? defaultLoginShell();
   return {
     resumable: true,
     run: (context) =>
@@ -189,6 +193,128 @@ export function makeProvisioningWorker(options: ProvisioningWorkerOptions): Oper
   };
 }
 
+function runRetryAttempt(
+  options: ProvisioningWorkerOptions,
+  context: OperationWorkerContext,
+  input: ProvisionOperationValue,
+  shell: string,
+  initial: RevisionedTopic,
+): Effect.Effect<DurableOperationResult, PublicWorkFailure> {
+  return Effect.gen(function* () {
+    if (
+      initial.topic.setup.state !== "setup-failed" &&
+      initial.topic.setup.state !== "setup-interrupted"
+    ) {
+      return yield* failOperation(
+        "Retry Setup is available only after Setup failed or was interrupted.",
+        initial.topic.id,
+      );
+    }
+    const worktreePath = initial.topic.worktreePath;
+    if (worktreePath === null) {
+      return yield* failOperation(
+        "Retry Setup requires the existing Topic Worktree.",
+        initial.topic.id,
+      );
+    }
+
+    yield* requirePolicy(input, "topic.run-setup");
+    yield* context.progress("base-checkout-validation");
+    const baseCheckout =
+      input.recipe.basePath ?? defaultBaseCheckout(input.workBase, input.topic.repository);
+    const base = yield* options.control.inspectBaseCheckout(
+      input.workBase,
+      baseCheckout,
+      input.topic.repository,
+    );
+    if (base === "missing") {
+      return yield* failOperation(
+        "Retry Setup requires the existing Base checkout.",
+        initial.topic.id,
+      );
+    }
+    yield* context.progress("worktree-validation");
+    yield* options.control.validateWorktree({
+      baseCheckout,
+      worktreePath,
+      repository: initial.topic.repository,
+      branch: initial.topic.branch,
+    });
+
+    let stored = yield* updateSetup(options, initial, {
+      ...initial.topic.setup,
+      state: "provisioning",
+      setupCommandsRun: false,
+      completedCommandCount: 0,
+    });
+    for (let index = 0; index < input.recipe.setupCommands.length; index += 1) {
+      yield* context.progress(`setup ${index + 1}/${input.recipe.setupCommands.length}`);
+      const operation = yield* options.operations.get(context.operation.id);
+      const step = yield* options.operations.startSetupStep(
+        context.operation.id,
+        index,
+        operation.revision,
+        yield* nowIso,
+      );
+      const result = yield* options.runSetupCommand({
+        shell,
+        command: input.recipe.setupCommands[index]!,
+        cwd: worktreePath,
+        timeoutMs: options.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
+        maxOutputBytes: options.setupOutputBytes ?? SETUP_OUTPUT_BYTES,
+      });
+      if (result.status !== "completed" || result.exitCode !== 0) {
+        return yield* failOperation(
+          setupCommandFailure(result, index, input.recipe.setupCommands.length),
+          initial.topic.id,
+        );
+      }
+      yield* options.operations.completeSetupStep(
+        context.operation.id,
+        index,
+        step.revision,
+        yield* nowIso,
+      );
+      stored = yield* updateSetup(options, stored, {
+        ...stored.topic.setup,
+        completedCommandCount: index + 1,
+      });
+    }
+    stored = yield* updateSetup(options, stored, {
+      ...stored.topic.setup,
+      setupCommandsRun: true,
+      completedCommandCount: input.recipe.setupCommands.length,
+    });
+    yield* context.progress("ready");
+    const { reason: _, ...setupWithoutReason } = stored.topic.setup;
+    stored = yield* updateSetup(options, stored, { ...setupWithoutReason, state: "ready" });
+    return {
+      version: 1,
+      status: "succeeded",
+      value: { topicId: stored.topic.id, state: "ready" },
+    };
+  });
+}
+
+function setupCommandFailure(result: ProcessResult, index: number, total: number): string {
+  const subject = `Setup command ${index + 1} of ${total}`;
+  if (result.status === "timeout") return `${subject} timed out.`;
+  if (result.status === "cancelled") return `${subject} was cancelled.`;
+  const failure =
+    result.exitCode === null
+      ? `${subject} failed.`
+      : `${subject} failed with exit code ${result.exitCode}.`;
+  const output = setupOutputExcerpt(result);
+  if (output.length === 0) return failure;
+  const separator = failure.endsWith(".") ? failure.slice(0, -1) : failure;
+  return boundPublicMessage(`${separator}: ${output}`);
+}
+
+function setupOutputExcerpt(result: ProcessResult): string {
+  const output = result.stderr.trim() || result.stdout.trim();
+  return stripVTControlCharacters(output).replaceAll(/\s+/g, " ").trim();
+}
+
 function runAttempt(
   options: ProvisioningWorkerOptions,
   context: OperationWorkerContext,
@@ -205,6 +331,9 @@ function runAttempt(
         yield* nowIso,
       );
       yield* context.progress(operation.phase);
+    }
+    if (input.attempt === "retry") {
+      return yield* runRetryAttempt(options, context, input, shell, stored);
     }
 
     yield* context.progress("base-checkout-validation");
@@ -318,7 +447,10 @@ function runAttempt(
           maxOutputBytes: options.setupOutputBytes ?? SETUP_OUTPUT_BYTES,
         });
         if (result.status !== "completed" || result.exitCode !== 0) {
-          return yield* failOperation("A Setup command failed.", input.topic.id);
+          return yield* failOperation(
+            setupCommandFailure(result, index, input.recipe.setupCommands.length),
+            input.topic.id,
+          );
         }
         yield* options.operations.completeSetupStep(
           context.operation.id,
@@ -436,7 +568,18 @@ function requirePolicy(input: ProvisionOperationValue, action: typeof ActionId.T
     : Effect.void;
 }
 
+/** Exact bounded text returned by the daemon for a direct provisioning confirmation. */
+export function provisioningConfirmationText(
+  input: ProvisionOperationValue,
+  actions: ReadonlyArray<typeof ActionId.Type> = sensitiveActions(input).filter(
+    (action) => input.policies[action] === "ask",
+  ),
+): string {
+  return `Create and provision Topic “${input.topic.name}” in ${input.topic.repository} on Branch ${input.topic.branch}? Approve: ${actions.join(", ")}.`;
+}
+
 function sensitiveActions(input: ProvisionOperationValue): ReadonlyArray<typeof ActionId.Type> {
+  if (input.attempt === "retry") return ["topic.run-setup"];
   const actions: Array<typeof ActionId.Type> = ["topic.create-worktree"];
   if (input.recipe.setupCommands.length > 0) actions.push("topic.run-setup");
   if (input.startPoint === undefined) actions.push("repository.clone");
@@ -465,6 +608,14 @@ function decodeInput(input: DurableOperationInput) {
 
 function defaultBaseCheckout(workBase: AbsolutePath, repository: Repository): AbsolutePath {
   return AbsolutePath.make(`${workBase}/${repository.slice(repository.indexOf("/") + 1)}`);
+}
+
+function defaultLoginShell(): string {
+  try {
+    return userInfo().shell || "/bin/sh";
+  } catch {
+    return "/bin/sh";
+  }
 }
 
 function failOperation(

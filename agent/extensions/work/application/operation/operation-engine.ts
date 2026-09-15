@@ -31,6 +31,8 @@ export interface OperationHandle {
   readonly state: DurableOperation["state"];
   /** Present only in the direct response that creates a confirmation. */
   readonly confirmation?: Capability;
+  /** Bounded public text for the direct confirmation dialog. */
+  readonly confirmationText?: string;
 }
 
 export interface OperationStart {
@@ -42,6 +44,7 @@ export interface OperationStart {
   readonly phase?: string;
   readonly confirmation?: {
     readonly action: string;
+    readonly text?: string;
     readonly lifetimeMs: number;
     readonly durable: boolean;
   };
@@ -332,11 +335,21 @@ export const makeOperationEngine = (
             request.confirmation.lifetimeMs,
             request.confirmation.durable,
           );
-          return { id: operation.id, state: operation.state, confirmation };
+          return {
+            id: operation.id,
+            state: operation.state,
+            confirmation,
+            ...(request.confirmation.text === undefined
+              ? {}
+              : { confirmationText: boundConfirmationText(request.confirmation.text) }),
+          };
         }
         yield* runWorker(operation);
         return { id: operation.id, state: operation.state };
       });
+
+    const boundConfirmationText = (text: string): string =>
+      text.length <= 1_000 ? text : `${text.slice(0, 997)}...`;
 
     const watch = (id: OperationId) =>
       Effect.gen(function* () {

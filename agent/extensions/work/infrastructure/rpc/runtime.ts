@@ -1,6 +1,6 @@
 import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
-import { chmod, lstat, open, rm } from "node:fs/promises";
+import { chmod, lstat, open, readFile, rm } from "node:fs/promises";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import { RpcFailure } from "../../domain/index.ts";
@@ -41,9 +41,7 @@ export function acquireDaemonRuntime(
           throw new Error("The runtime directory is not a private directory owned by this user.");
         }
 
-        const lock = await open(options.lockPath, "wx", PRIVATE_LOCK_MODE).catch((cause) => {
-          throw new Error("Another Work daemon owns the lifetime lock.", { cause });
-        });
+        const lock = await acquireLifetimeLock(options);
         try {
           await validateAndRemoveStaleSocket(
             options.socketPath,
@@ -101,6 +99,53 @@ function validateLocations(options: DaemonRuntimeOptions): void {
   }
 }
 
+const LEGACY_LOCK_STALE_AGE_MS = 5_000;
+
+async function acquireLifetimeLock(options: DaemonRuntimeOptions) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const lock = await open(options.lockPath, "wx", PRIVATE_LOCK_MODE);
+      await lock.writeFile(`${process.pid}\n`);
+      await lock.sync();
+      return lock;
+    } catch (cause) {
+      if (attempt === 0 && isNodeError(cause, "EEXIST") && (await isStaleLifetimeLock(options))) {
+        await rm(options.lockPath);
+        continue;
+      }
+      throw new Error("Another Work daemon owns the lifetime lock.", { cause });
+    }
+  }
+  throw new Error("Another Work daemon owns the lifetime lock.");
+}
+
+async function isStaleLifetimeLock(options: DaemonRuntimeOptions): Promise<boolean> {
+  const metadata = await lstat(options.lockPath).catch(() => undefined);
+  if (
+    metadata === undefined ||
+    !metadata.isFile() ||
+    metadata.uid !== currentUserId() ||
+    (metadata.mode & 0o077) !== 0
+  ) {
+    return false;
+  }
+
+  const owner = (await readFile(options.lockPath, "utf8").catch(() => "")).trim();
+  if (/^[1-9]\d*$/.test(owner)) return !processExists(Number(owner));
+  if (owner.length > 0 || Date.now() - metadata.mtimeMs < LEGACY_LOCK_STALE_AGE_MS) return false;
+
+  return !(await listenerAccepts(options.socketPath, options.listenerProbeTimeoutMs ?? 250));
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    return !isNodeError(cause, "ESRCH");
+  }
+}
+
 async function validateAndRemoveStaleSocket(socketPath: string, timeoutMs: number): Promise<void> {
   const socket = await lstat(socketPath).catch((cause: NodeJS.ErrnoException) => {
     if (cause.code === "ENOENT") return undefined;
@@ -137,6 +182,10 @@ function listenerAccepts(socketPath: string, timeoutMs: number): Promise<boolean
     socket.once("connect", () => finish(true));
     socket.once("error", () => finish(false));
   });
+}
+
+function isNodeError(cause: unknown, code: string): cause is NodeJS.ErrnoException {
+  return cause instanceof Error && "code" in cause && cause.code === code;
 }
 
 function publicStartupMessage(cause: unknown): string {

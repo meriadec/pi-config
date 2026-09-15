@@ -69,12 +69,17 @@ export function defaultSystemdPaths(
 }
 
 export function findBunExecutable(home: string, environment: NodeJS.ProcessEnv): string {
-  return findExecutable("bun", environment, [
-    ...(environment["BUN_INSTALL"] === undefined
-      ? []
-      : [join(environment["BUN_INSTALL"], "bin", "bun")]),
-    join(home, ".bun", "bin", "bun"),
-  ]);
+  return findExecutable(
+    "bun",
+    environment,
+    [
+      ...(environment["BUN_INSTALL"] === undefined
+        ? []
+        : [join(environment["BUN_INSTALL"], "bin", "bun")]),
+      join(home, ".bun", "bin", "bun"),
+    ],
+    true,
+  );
 }
 
 export function findNodeExecutable(environment: NodeJS.ProcessEnv): string {
@@ -96,14 +101,15 @@ function findExecutable(
   name: string,
   environment: NodeJS.ProcessEnv,
   fallbacks: readonly string[],
+  preferFallbacks = false,
 ): string {
-  const candidates = [
-    ...(environment["PATH"] ?? "")
-      .split(delimiter)
-      .filter((directory) => directory.length > 0)
-      .map((directory) => join(directory, name)),
-    ...fallbacks,
-  ];
+  const pathCandidates = (environment["PATH"] ?? "")
+    .split(delimiter)
+    .filter((directory) => directory.length > 0)
+    .map((directory) => join(directory, name));
+  const candidates = preferFallbacks
+    ? [...fallbacks, ...pathCandidates]
+    : [...pathCandidates, ...fallbacks];
   for (const candidate of candidates) {
     try {
       accessSync(candidate, constants.X_OK);
@@ -122,6 +128,7 @@ export function generateSystemdUnit(paths: SystemdPaths): string {
     "",
     "[Service]",
     "Type=simple",
+    "TimeoutStopSec=15s",
     "UMask=0077",
     `Environment=${systemdQuote(`PI_WORK_SOCKET=${resolve(paths.socketPath)}`)}`,
     `Environment=${systemdQuote(`PI_WORK_NODE_EXECUTABLE=${resolve(paths.nodeExecutable)}`)}`,
@@ -190,11 +197,11 @@ export class SystemdWorkdManager<Client extends SystemdCompatibleClient = WorkCl
   }
 
   async ensureConnected(): Promise<Client> {
+    await this.install();
     const attemptTimeout = this.options.attemptTimeoutMs ?? 300;
     const existing = await this.tryConnected(attemptTimeout);
     if (existing !== undefined) return existing;
 
-    await this.install();
     // A failed ping can mean that an older daemon still owns the socket.
     // Restart also starts an inactive unit and always loads the current extension code.
     await this.forwardCredentials();

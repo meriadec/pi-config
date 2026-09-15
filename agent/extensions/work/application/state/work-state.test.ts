@@ -130,7 +130,10 @@ describe("Work state projection", () => {
     );
 
     await Effect.runPromise(
-      state.publish({ _tag: "ObservedChanged", topics: { upsert: [observation("behind")] } }),
+      state.publish({
+        _tag: "ObservedChanged",
+        topics: { upsert: [observation({ kind: "behind" })] },
+      }),
     );
     await Effect.runPromise(
       state.publish({
@@ -138,7 +141,7 @@ describe("Work state projection", () => {
         topics: {
           upsert: [
             {
-              ...observation("behind"),
+              ...observation({ kind: "behind" }),
               freshness: {
                 _tag: "Failed",
                 failedAt: "2026-06-01T00:02:00.000Z",
@@ -155,8 +158,33 @@ describe("Work state projection", () => {
     expect(snapshot.durable.topics[0]?.rowRevision).toBe(4);
     expect(snapshot.observed.topics[0]).toMatchObject({
       freshness: { _tag: "Failed" },
-      value: { integrationStatus: "behind" },
+      value: { integrationStatus: { kind: "behind" } },
     });
+  });
+
+  test("bounds repeated public diagnostics and active action updates", async () => {
+    const state = await Effect.runPromise(makeWorkState({ daemon: DAEMON }));
+    await Effect.runPromise(
+      state.publish({
+        _tag: "ObservedChanged",
+        diagnostics: Array.from({ length: 150 }, (_, index) => ({
+          code: `diagnostic-${index}`,
+          message: `Diagnostic ${index}`,
+          observedAt: "2026-06-01T00:00:00.000Z",
+        })),
+        activeActions: Array.from({ length: 700 }, (_, index) => ({
+          id: `action-${index}`,
+          kind: "topic.rebase",
+          startedAt: "2026-06-01T00:00:00.000Z",
+        })),
+      }),
+    );
+
+    const projected = await Effect.runPromise(state.snapshot);
+    expect(projected.observed.diagnostics).toHaveLength(100);
+    expect(projected.observed.diagnostics[0]?.code).toBe("diagnostic-50");
+    expect(projected.observed.activeActions).toHaveLength(500);
+    expect(projected.observed.activeActions[0]?.id).toBe("action-200");
   });
 
   test("does not block writers and closes an overflowing subscriber with resync", async () => {
@@ -167,7 +195,9 @@ describe("Work state projection", () => {
       await Effect.runPromise(
         state.publish({
           _tag: "ObservedChanged",
-          topics: { upsert: [observation(index % 2 === 0 ? "current" : "behind")] },
+          topics: {
+            upsert: [observation({ kind: index % 2 === 0 ? "current" : "behind" })],
+          },
         }),
       );
     }

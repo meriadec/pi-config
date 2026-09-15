@@ -110,6 +110,7 @@ export interface WorkRpcClient {
     action:
       | "refresh"
       | "refresh-local"
+      | "refresh-integration"
       | "refresh-pull-requests"
       | "rebase"
       | "workspace"
@@ -258,6 +259,7 @@ export function workRpcClientLayer(
           action:
             | "refresh"
             | "refresh-local"
+            | "refresh-integration"
             | "refresh-pull-requests"
             | "rebase"
             | "workspace"

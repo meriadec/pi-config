@@ -32,6 +32,7 @@ export const WORK_RPC_DEFAULT_STREAM_CAPACITY = 64;
 
 const NonEmpty = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(200));
 const Capability = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(1_024));
+const ConfirmationText = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(1_000));
 const Revision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const boundedFrame = <S extends Schema.Top>(schema: S): S =>
   schema.check(
@@ -74,6 +75,7 @@ export const OperationHandle = Schema.Struct({
   id: OperationId,
   state: DurableOperationState,
   confirmation: Schema.optional(Capability),
+  confirmationText: Schema.optional(ConfirmationText),
 });
 export type OperationHandle = typeof OperationHandle.Type;
 
@@ -103,7 +105,11 @@ export const TopicCommand = Schema.Union([
   Schema.Struct({ _tag: Schema.Literal("ResetIntegrationTarget"), topicId: TopicId }),
   Schema.Struct({ _tag: Schema.Literal("ActivatePendingChild"), topicId: TopicId }),
   Schema.Struct({ _tag: Schema.Literal("Delete"), topicId: TopicId }),
-  Schema.Struct({ _tag: Schema.Literal("ResetIntegrationBranch"), repository: Repository }),
+  Schema.Struct({
+    _tag: Schema.Literal("ResetIntegrationBranch"),
+    repository: Repository,
+    expectedRevision: Revision,
+  }),
 ]);
 export type TopicCommand = typeof TopicCommand.Type;
 
@@ -253,6 +259,7 @@ export const EphemeralActionRpc = Rpc.make("EphemeralAction", {
     action: Schema.Literals([
       "refresh",
       "refresh-local",
+      "refresh-integration",
       "refresh-pull-requests",
       "rebase",
       "workspace",

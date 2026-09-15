@@ -19,6 +19,7 @@ import {
   WORK_PROTOCOL_VERSION,
   WORK_STORAGE_SCHEMA_VERSION,
   boundPublicMessage,
+  pullRequestStatus,
 } from "./index.ts";
 
 const TOPIC_ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -120,8 +121,36 @@ describe("Work domain codecs", () => {
     ).toThrow();
   });
 
+  test("reduces pull request facts in progressive status precedence", () => {
+    const clear = {
+      identity: { number: 7 },
+      url: "https://github.com/owner/repo/pull/7",
+      state: "open" as const,
+      draft: false,
+      ci: "passing" as const,
+      reviewPending: false,
+      copilotReviewed: false,
+      changesRequested: false,
+      approved: false,
+      unresolvedThreads: 0,
+    };
+    const cases = [
+      [{ ...clear, state: "merged" as const, draft: true }, "merged"],
+      [{ ...clear, state: "closed" as const, draft: true }, "closed"],
+      [{ ...clear, draft: true, ci: "failing" as const }, "draft"],
+      [{ ...clear, ci: "failing" as const, changesRequested: true }, "ci-failing"],
+      [{ ...clear, changesRequested: true, ci: "pending" as const }, "feedback"],
+      [{ ...clear, ci: "pending" as const, approved: true }, "checks"],
+      [{ ...clear, approved: true, copilotReviewed: true }, "approved"],
+      [{ ...clear, copilotReviewed: true, reviewPending: true }, "ready"],
+      [{ ...clear, reviewPending: true }, "reviewing"],
+      [clear, "clear"],
+    ] as const;
+    for (const [value, expected] of cases) expect(pullRequestStatus(value)).toBe(expected);
+  });
+
   test("uses explicit compatible protocol and storage versions", () => {
-    expect(Number(decodeUnknown(ProtocolVersion, WORK_PROTOCOL_VERSION))).toBe(3);
+    expect(Number(decodeUnknown(ProtocolVersion, WORK_PROTOCOL_VERSION))).toBe(4);
     expect(Number(decodeUnknown(StorageSchemaVersion, WORK_STORAGE_SCHEMA_VERSION))).toBe(2);
     expect(() => decodeUnknown(ProtocolVersion, "1")).toThrow();
     expect(() => decodeUnknown(StorageSchemaVersion, 0)).toThrow();

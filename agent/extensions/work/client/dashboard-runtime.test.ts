@@ -20,6 +20,7 @@ import {
   observationFreshnessLabel,
   reduceEffectDashboardState,
 } from "./dashboard-runtime.ts";
+import { MAIN_AGENT_SHIMMER_PERIOD } from "./main-agent-display.ts";
 
 const topicId = TopicId.make("10000000-0000-4000-8000-000000000001");
 const operationId = OperationId.make("20000000-0000-4000-8000-000000000001");
@@ -70,7 +71,7 @@ function snapshot(revision = 0): WorkSnapshot {
           topicId,
           state: "running",
           phase: "setup",
-          input: { version: 1, kind: "provision", value: {} },
+          input: { version: 1, kind: "topic.provision", value: {} },
           createdAt: "2026-01-01T00:00:00.000Z",
           updatedAt: "2026-01-01T00:00:01.000Z",
           rowRevision: 0,
@@ -84,7 +85,7 @@ function snapshot(revision = 0): WorkSnapshot {
           freshness: { _tag: "Fresh", observedAt: "2026-01-01T00:00:02.000Z" },
           value: {
             topicId,
-            integrationStatus: "current",
+            integrationStatus: { kind: "current" },
             gitOperationState: "none",
             worktreePresent: true,
             worktreeClean: true,
@@ -108,7 +109,7 @@ function operation(state: DurableOperation["state"] = "running"): DurableOperati
     topicId,
     state,
     phase: "setup",
-    input: { version: 1, kind: "provision", value: {} },
+    input: { version: 1, kind: "topic.provision", value: {} },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:01.000Z",
     revision: 0,
@@ -192,6 +193,65 @@ describe("Effect dashboard pure state", () => {
     ).toBe("reconnecting");
   });
 
+  test("wraps the Effect-owned shimmer phase at the shared renderer period", () => {
+    let state = initialEffectDashboardState();
+    for (let step = 0; step < MAIN_AGENT_SHIMMER_PERIOD; step += 1) {
+      state = reduceEffectDashboardState(state, { _tag: "Shimmer" });
+    }
+    expect(state.shimmerPhase).toBe(0);
+  });
+
+  test("keeps the final cancellation result visible during and after reconnect", () => {
+    const connected = reduceEffectDashboardState(initialEffectDashboardState(), {
+      _tag: "StreamItem",
+      item: { _tag: "Snapshot", snapshot: snapshot() },
+    });
+    const cancelled = reduceEffectDashboardState(connected, {
+      _tag: "OperationUpdated",
+      operation: operation("cancelled"),
+    });
+    const reconnecting = reduceEffectDashboardState(cancelled, {
+      _tag: "StreamFailed",
+      message: "socket closed",
+    });
+    expect(reconnecting.snapshot?.durable.operations[0]?.state).toBe("cancelled");
+
+    const durableBase = snapshot(7);
+    const durable: WorkSnapshot = {
+      ...durableBase,
+      durable: {
+        ...durableBase.durable,
+        operations: reconnecting.snapshot!.durable.operations,
+      },
+    };
+    const restored = reduceEffectDashboardState(reconnecting, {
+      _tag: "StreamItem",
+      item: { _tag: "Snapshot", snapshot: durable },
+    });
+    expect(restored.phase).toBe("connected");
+    expect(restored.snapshot?.durable.operations[0]?.state).toBe("cancelled");
+  });
+
+  test("bounds distinct live operation-watch updates", () => {
+    let state = reduceEffectDashboardState(initialEffectDashboardState(), {
+      _tag: "StreamItem",
+      item: { _tag: "Snapshot", snapshot: snapshot() },
+    });
+    for (let index = 0; index < 520; index += 1) {
+      state = reduceEffectDashboardState(state, {
+        _tag: "OperationUpdated",
+        operation: {
+          ...operation("succeeded"),
+          id: OperationId.make(`60000000-0000-4000-8000-${index.toString().padStart(12, "0")}`),
+        },
+      });
+    }
+    expect(Object.keys(state.operationUpdates)).toHaveLength(500);
+    expect(state.snapshot?.durable.operations).toHaveLength(500);
+    expect(state.snapshot?.durable.operations.at(-1)?.state).toBe("succeeded");
+    expect(state.snapshot?.durable.operations.some((item) => item.state === "running")).toBeTrue();
+  });
+
   test("shows freshness, Interrupted Setup, and configured versus inferred Branches", () => {
     const value = snapshot();
     expect(observationFreshnessLabel(value.observed.topics[0]!.freshness)).toContain("Observed");
@@ -223,6 +283,37 @@ describe("Effect dashboard scoped driver", () => {
     await driver.dispose();
   });
 
+  test("rejects cancellation locally without stopping provisioning or reusing the confirmation", async () => {
+    const fake = new FakeRuntime();
+    const driver = new EffectDashboardRuntime({ client: fake.runtime, onChange: () => undefined });
+    fake.stateHandler!({ _tag: "Snapshot", snapshot: snapshot() });
+
+    await driver.requestCancelSetup(operationId);
+    await driver.rejectCancelSetup();
+
+    expect(driver.snapshotState().snapshot?.durable.operations[0]?.state).toBe("running");
+    expect(driver.snapshotState().message).toBe(
+      "Setup cancellation rejected. Provisioning continues.",
+    );
+    await expect(driver.rejectCancelSetup()).rejects.toThrow(
+      "No Setup cancellation is awaiting confirmation.",
+    );
+    await driver.dispose();
+  });
+
+  test("does not schedule animation for an observation without a rendered Topic", async () => {
+    const fake = new FakeRuntime();
+    const current = snapshot();
+    const driver = new EffectDashboardRuntime({ client: fake.runtime, onChange: () => undefined });
+    fake.stateHandler!({
+      _tag: "Snapshot",
+      snapshot: { ...current, durable: { ...current.durable, topics: [] } },
+    });
+
+    expect(fake.repeats).toHaveLength(0);
+    await driver.dispose();
+  });
+
   test("supervises shimmer, active watches, cancellation, reset, and disposal", async () => {
     const fake = new FakeRuntime();
     const states: string[] = [];
@@ -235,14 +326,40 @@ describe("Effect dashboard scoped driver", () => {
     fake.repeats[0]!();
     expect(driver.snapshotState().shimmerPhase).toBe(1);
 
+    const observed = snapshot().observed.topics[0]!;
+    fake.stateHandler!({
+      _tag: "Change",
+      daemonId: "daemon-1",
+      revision: 1,
+      change: {
+        _tag: "ObservedChanged",
+        topics: {
+          upsert: [
+            {
+              ...observed,
+              value: { ...observed.value!, mainAgentActivity: "idle" },
+            },
+          ],
+        },
+      },
+    });
+    expect(fake.repeatStops).toBe(1);
+
     const cancellation = await driver.requestCancelSetup(operationId);
-    expect(cancellation.text).toContain("Cancel active provisioning?");
+    expect(cancellation.text).toBe(
+      "Cancel Setup? Completed checkpoints and external artifacts remain.",
+    );
     expect((await driver.confirmCancelSetup()).state).toBe("cancelled");
+    expect(driver.snapshotState().snapshot?.durable.operations[0]?.state).toBe("cancelled");
+    await expect(driver.confirmCancelSetup()).rejects.toThrow(
+      "No Setup cancellation is awaiting confirmation.",
+    );
 
     const reset = driver.resetIntegrationBranch(repository);
     expect(fake.commandCalls.at(-1)?.command).toEqual({
       _tag: "ResetIntegrationBranch",
       repository,
+      expectedRevision: 0,
     });
     fake.commandRuns.shift()!();
     await reset;

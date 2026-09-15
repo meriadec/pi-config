@@ -130,6 +130,25 @@ export async function planChildTopicOperation(
   return operationPlan(clientId, requestId, topic, value);
 }
 
+/** Make one immutable retry request without changing the stored Topic identity or family. */
+export function planRetryTopicOperation(
+  topicId: TopicId,
+  snapshot: WorkSnapshot,
+  configuration: WorkConfigurationValue,
+  clientId: ClientId,
+  requestId: RequestId = RequestId.make(randomUUID()),
+): TopicOperationPlan {
+  const topic = snapshot.durable.topics.find((row) => row.topic.id === topicId)?.topic;
+  if (topic === undefined) throw new Error("The Topic does not exist.");
+  if (topic.setup.state !== "setup-failed" && topic.setup.state !== "setup-interrupted") {
+    throw new Error("Retry Setup is available only after Setup failed or was interrupted.");
+  }
+  if (topic.worktreePath === null) {
+    throw new Error("Retry Setup requires the existing Topic Worktree.");
+  }
+  return operationPlan(clientId, requestId, topic, provisionValue("retry", topic, configuration));
+}
+
 async function resolveStartPoint(
   sourceCheckout: string,
   revision: string,
@@ -186,7 +205,9 @@ function topicName(value: string): string {
 }
 
 function topicBranch(name: string, value?: string): Branch {
-  return decodeBranch(value?.trim() || defaultBranchForTopicName(name));
+  return decodeBranch(
+    value === undefined || value.trim().length === 0 ? defaultBranchForTopicName(name) : value,
+  );
 }
 
 function initialTopic(input: {
@@ -211,13 +232,14 @@ function initialTopic(input: {
     worktreePath: null,
     mainAgent: { sessionId: randomUUID(), sessionFile: null },
     partition: 0,
+    integrationTarget: { kind: "integration-branch" },
     createdAt: now,
     updatedAt: now,
   };
 }
 
 function provisionValue(
-  attempt: "create-root" | "create-child",
+  attempt: "create-root" | "create-child" | "retry",
   topic: DurableTopic,
   configuration: WorkConfigurationValue,
   startPoint?: { readonly commit: FullCommitSha; readonly sourceCheckout: AbsolutePath },

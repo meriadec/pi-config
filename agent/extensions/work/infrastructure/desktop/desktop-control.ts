@@ -85,6 +85,8 @@ type DesktopEffect<A> = Effect.Effect<A, DesktopFailure, DesktopRequirements>;
 /** Semantic i3, Kitty, Main Agent, and browser actions. */
 export interface DesktopControl {
   readonly accessWorkspace: (topicId: TopicId) => DesktopEffect<WorkspaceActionResult>;
+  /** Observes the current or next available Topic workspace without changing focus. */
+  readonly topicWorkspace: (topicId: TopicId) => DesktopEffect<number | undefined>;
   readonly openTerminal: (
     topicId: TopicId,
     worktreePath: AbsolutePath,
@@ -189,6 +191,13 @@ export function makeDesktopControl(
     });
 
   return {
+    topicWorkspace: (topicId) =>
+      getTree.pipe(
+        Effect.map((tree) => selectTopicWorkspace(tree, topicId)),
+        Effect.map((selection) =>
+          selection.kind === "selected" ? selection.workspace : undefined,
+        ),
+      ),
     accessWorkspace: (topicId) =>
       Effect.gen(function* () {
         const selection = selectTopicWorkspace(yield* getTree, topicId);
