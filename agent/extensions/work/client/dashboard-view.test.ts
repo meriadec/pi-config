@@ -131,6 +131,22 @@ describe("Effect dashboard product UI", () => {
     expect(lines).toHaveLength(30);
   });
 
+  test("keeps the helper row at the bottom of the screen", () => {
+    const lines = renderDashboardView(initialDashboardViewState(), snapshot(), 120, 30);
+
+    expect(lines.at(-1)).toContain("j/k select");
+  });
+
+  test("opens a full-height sidebar focused on its action rail", () => {
+    const state = reconcileDashboardSelection(initialDashboardViewState(), snapshot());
+    const opened = handleDashboardViewInput(state, snapshot(), "l").state;
+    const lines = renderDashboardView(opened, snapshot(), 120, 30);
+
+    expect(opened.focus).toBe("actions");
+    expect(lines.every((line) => line.includes("│"))).toBeTrue();
+    expect(lines.join("\n")).toContain("> Copy Branch Name");
+  });
+
   test("keeps the previous wide Topic column order", () => {
     const current = snapshot();
     const withNote: WorkSnapshot = {
@@ -151,6 +167,16 @@ describe("Effect dashboard product UI", () => {
       expect(position).toBeGreaterThan(previousPosition);
       previousPosition = position;
     }
+  });
+
+  test("leaves settled and absent Topic status cells empty", () => {
+    const row = renderDashboardView(initialDashboardViewState(), snapshot(), 120, 30).find((line) =>
+      line.includes("Checkpoint"),
+    );
+
+    expect(row).not.toContain("stopped");
+    expect(row).not.toContain("—");
+    expect(row).not.toContain("ready");
   });
 
   test("uses the previous subtle background for the selected Topic row", () => {

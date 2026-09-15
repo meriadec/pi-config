@@ -156,7 +156,15 @@ export function handleDashboardViewInput(
     return { state: moveSelection(state, topics, -1) };
   }
   if (matchesKey(data, Key.right) || data === "l") {
-    if (!state.sidebarOpen) return { state: { ...state, sidebarOpen: true, focus: "detail" } };
+    if (!state.sidebarOpen)
+      return {
+        state: {
+          ...state,
+          sidebarOpen: true,
+          focus: "actions",
+          focusedAction: firstAvailableAction(state, snapshot),
+        },
+      };
     return {
       state: { ...state, focus: "actions", focusedAction: firstAvailableAction(state, snapshot) },
     };
@@ -167,7 +175,15 @@ export function handleDashboardViewInput(
     return { state };
   }
   if (matchesKey(data, Key.enter)) {
-    if (!state.sidebarOpen) return { state: { ...state, sidebarOpen: true, focus: "detail" } };
+    if (!state.sidebarOpen)
+      return {
+        state: {
+          ...state,
+          sidebarOpen: true,
+          focus: "actions",
+          focusedAction: firstAvailableAction(state, snapshot),
+        },
+      };
     if (state.focus === "detail")
       return {
         state: { ...state, focus: "actions", focusedAction: firstAvailableAction(state, snapshot) },
@@ -361,10 +377,15 @@ function renderList(
     const pullRequest = pullRequestCell(snapshot, topic.id);
     const integration = integrationGlyph(observation?.integrationStatus ?? "unknown");
     const prefix = selected ? (state.focus === "list" ? "> " : "* ") : "  ";
+    const setupSegment = setup === "" ? "" : ` · ${setup}`;
+    const activitySegment = activity === "" ? "" : ` · ${activity}`;
+    const pullRequestSegment = pullRequest === "" ? "" : ` · ${pullRequest}`;
+    const compactNote =
+      state.sidebarOpen || topic.note === undefined ? "" : ` ${yellow(topic.note)}`;
     const row =
       columns === undefined
         ? truncateToWidth(
-            `${prefix}${integration} ${displayName}${topic.note === undefined ? "" : ` ${yellow(topic.note)}`} · ${topic.repository} · ${pullRequest} · ${setup} · ${activity}`,
+            `${prefix}${integration} ${displayName}${compactNote}${setupSegment}${activitySegment}${pullRequestSegment}`,
             width,
           )
         : `${prefix}${pad(integration, columns.integration)} ${pad(displayName, columns.name)} ${pad(topic.note === undefined ? "" : yellow(topic.note), columns.note)} ${pad(topic.repository, columns.repository)} ${pad(pullRequest, columns.pullRequest)} ${pad(setup, columns.setup)} ${pad(activity, columns.mainAgent)}`;
@@ -377,9 +398,10 @@ function renderList(
     );
     if (lines.length >= height - 2) break;
   }
+  while (lines.length < Math.max(1, height - 2)) lines.push("");
   lines.push(
     state.message ?? "",
-    "j/k select · l/Enter details · J/K move Partition · n note · s rebase · m agent · o workspace · r refresh · q close",
+    "j/k select · l/Enter actions · J/K move Partition · n note · s rebase · m agent · o workspace · r refresh · q close",
   );
   return lines;
 }
@@ -446,16 +468,16 @@ function topicDisplayName(topic: DurableTopic, topics: readonly DurableTopic[]):
 }
 
 function setupCell(topic: DurableTopic): string {
-  if (topic.setup.state === "ready") return green("ready");
+  if (topic.setup.state === "ready") return "";
   if (topic.setup.state === "provisioning") return yellow("provisioning");
-  return red(topic.setup.state.replace("setup-", ""));
+  return red(topic.setup.state);
 }
 
 function pullRequestCell(snapshot: WorkSnapshot, topicId: TopicId): string {
   const pullRequest = snapshot.observed.pullRequests.find(
     (entry) => entry.topicId === topicId,
   )?.value;
-  if (pullRequest === undefined) return "—";
+  if (pullRequest === undefined) return "";
   if (pullRequest.state !== "open") return pullRequest.state;
   return pullRequest.ci === "failing" ? red("●") : green("●");
 }
@@ -609,6 +631,7 @@ function isLastChild(topic: DurableTopic, topics: readonly DurableTopic[]): bool
 }
 
 function renderActivity(activity: MainAgentActivity, phase: number): string {
+  if (activity === "stopped") return "";
   if (activity !== "thinking" && activity !== "thinking-sub" && activity !== "tracking-pr")
     return activity;
   const palette = phase % 3 === 0 ? "\x1b[95m" : phase % 3 === 1 ? "\x1b[94m" : "\x1b[96m";
