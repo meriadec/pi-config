@@ -2,7 +2,7 @@
 
 Status: ready-for-agent
 
-Depends on: 03, 04, 07, 08, 12
+Depends on: 03, 04, 07, 08, 10, 12
 
 Suggested commit: `feat(work): implement durable Topic provisioning`
 

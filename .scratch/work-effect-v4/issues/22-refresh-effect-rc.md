@@ -24,7 +24,7 @@ Before live migration, evaluate the current Effect v4 RC as one dependency famil
 4. Never save the moving `rc` tag in `package.json`.
 5. Run focused contract tests first, then all Work tests, then the root harness.
 6. Repeat daemon startup, Unix RPC, SQLite transaction, process-group cleanup, ManagedRuntime disposal, and TestClock contract checks.
-7. Record the checked version, date, relevant changes, and decision in the Work engineering note, even when no upgrade is needed.
+7. Record the checked version, date, relevant changes, and decision in the Work engineering note at `agent/extensions/work/docs/engineering-notes.md`, even when no upgrade is needed.
 8. Fix only migration-related compatibility changes in this issue.
 
 ## Acceptance

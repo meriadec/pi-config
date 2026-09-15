@@ -26,7 +26,7 @@ Install one exact Effect v4 RC family and prove that its required Bun integratio
    - SQLite migration, commit, rollback, foreign keys, and clean scoped close
    - child-process interruption that terminates a descendant process group
    - bounded combined process output
-3. Measure direct-module import startup and root-barrel import startup. Record the baseline in a short Work engineering note.
+3. Measure direct-module import startup and root-barrel import startup. Record the baseline in the Work engineering note at `agent/extensions/work/docs/engineering-notes.md`.
 4. Establish direct Effect imports as the Work convention.
 5. If an upstream adapter fails a required contract, implement one minimal Effect-native adapter and record the failed contract. Do not keep two implementations.
 

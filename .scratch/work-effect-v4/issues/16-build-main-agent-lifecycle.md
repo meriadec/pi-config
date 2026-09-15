@@ -30,6 +30,7 @@ Replace the manual Main Agent manager with a deep Effect module that separates d
 10. Publish live lease changes through Work state.
 11. Keep Pi session contents unread.
 12. Add restart, expiry, adoption, cross-Topic rejection, reset, and Delegation Job isolation tests with `TestClock`.
+13. Serve Main Agent registration, adoption, and reset as separate direct RPCs on this module and the state projection, not as operation-engine Atomic Commands. This module therefore does not depend on issue 12.
 
 ## Acceptance
 
