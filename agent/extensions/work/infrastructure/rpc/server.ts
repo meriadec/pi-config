@@ -30,9 +30,16 @@ export interface WorkRpcApplication {
   readonly mainAgentCall: (request: unknown) => Effect.Effect<unknown, PublicWorkFailure>;
   /** A deep Ephemeral Action boundary. Work ends when the request scope ends. */
   readonly ephemeralAction: (request: {
-    readonly action: "refresh" | "refresh-local" | "refresh-pull-requests" | "rebase";
+    readonly action:
+      | "refresh"
+      | "refresh-local"
+      | "refresh-pull-requests"
+      | "rebase"
+      | "workspace"
+      | "terminal"
+      | "pull-request";
     readonly topicId?: import("../../domain/index.ts").TopicId | undefined;
-  }) => Effect.Effect<void, PublicWorkFailure>;
+  }) => Effect.Effect<unknown, PublicWorkFailure>;
 }
 
 export interface WorkRpcServerOptions {

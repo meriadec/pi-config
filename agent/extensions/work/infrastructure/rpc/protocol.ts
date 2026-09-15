@@ -250,10 +250,18 @@ export const MainAgentCallRpc = Rpc.make("MainAgentCall", {
 });
 export const EphemeralActionRpc = Rpc.make("EphemeralAction", {
   payload: {
-    action: Schema.Literals(["refresh", "refresh-local", "refresh-pull-requests", "rebase"]),
+    action: Schema.Literals([
+      "refresh",
+      "refresh-local",
+      "refresh-pull-requests",
+      "rebase",
+      "workspace",
+      "terminal",
+      "pull-request",
+    ]),
     topicId: Schema.optional(TopicId),
   },
-  success: Schema.Void,
+  success: boundedFrame(Schema.Unknown),
   error,
 });
 

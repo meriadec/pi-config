@@ -212,6 +212,39 @@ export function makeProductionWorkApplication(
               return observations.refreshPullRequests;
             case "rebase":
               return topicId === undefined ? Effect.void : observations.rebase(topicId);
+            case "workspace":
+              return topicId === undefined
+                ? Effect.succeed({ kind: "unavailable", message: "No Topic was selected." })
+                : desktop.accessWorkspace(topicId);
+            case "terminal":
+              return topicId === undefined
+                ? Effect.succeed({ kind: "unavailable", message: "No Topic was selected." })
+                : topics.get(topicId).pipe(
+                    Effect.flatMap(({ topic }) =>
+                      topic.worktreePath === null
+                        ? Effect.succeed({
+                            kind: "unavailable",
+                            message: "The Topic Worktree is unavailable.",
+                          })
+                        : desktop.openTerminal(topicId, topic.worktreePath),
+                    ),
+                  );
+            case "pull-request":
+              return topicId === undefined
+                ? Effect.succeed({ kind: "unavailable", message: "No Topic was selected." })
+                : state.snapshot.pipe(
+                    Effect.flatMap((snapshot) => {
+                      const pullRequest = snapshot.observed.pullRequests.find(
+                        (entry) => entry.topicId === topicId,
+                      )?.value;
+                      return pullRequest === undefined
+                        ? Effect.succeed({
+                            kind: "unavailable",
+                            message: "The Topic has no observed pull request.",
+                          })
+                        : desktop.openBrowser(pullRequest.url);
+                    }),
+                  );
           }
         })();
         return runScoped(actionEffect);

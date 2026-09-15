@@ -53,9 +53,16 @@ export interface WorkClientRuntime {
     request: import("../infrastructure/rpc/client.ts").MainAgentCallRequest,
   ) => Promise<unknown>;
   readonly ephemeralAction: (
-    action: "refresh" | "refresh-local" | "refresh-pull-requests" | "rebase",
+    action:
+      | "refresh"
+      | "refresh-local"
+      | "refresh-pull-requests"
+      | "rebase"
+      | "workspace"
+      | "terminal"
+      | "pull-request",
     topicId?: TopicId,
-  ) => Promise<void>;
+  ) => Promise<unknown>;
   /** Starts one supervised state fiber. The returned function interrupts only this subscription. */
   readonly subscribeState: (
     onItem: (item: WorkStreamItem) => void,

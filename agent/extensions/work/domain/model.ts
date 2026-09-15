@@ -88,7 +88,7 @@ export const StorageSchemaVersion = positiveVersion.pipe(Schema.brand("Work/Stor
 export type StorageSchemaVersion = typeof StorageSchemaVersion.Type;
 
 /** Current branded versions for the new Work control-plane boundaries. */
-export const WORK_PROTOCOL_VERSION = ProtocolVersion.make(2);
+export const WORK_PROTOCOL_VERSION = ProtocolVersion.make(3);
 export const WORK_STORAGE_SCHEMA_VERSION = StorageSchemaVersion.make(2);
 
 /** A bearer value. Its normal rendering and inspection do not expose the value. */

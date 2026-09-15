@@ -162,7 +162,7 @@ export class EffectDashboardRuntime {
   }
 
   refresh(): Promise<void> {
-    return this.client.ephemeralAction("refresh");
+    return this.client.ephemeralAction("refresh").then(() => undefined);
   }
 
   mutate(key: string, command: TopicCommand): Promise<DurableOperationResult> {
