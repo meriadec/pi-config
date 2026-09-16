@@ -83,6 +83,39 @@ describe("Effect desktop adapter", () => {
     ).toEqual({ kind: "selected", workspace: 5 });
   });
 
+  test("distinguishes one Main Agent window from absent and ambiguous windows", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "pi-work-desktop-presence-"));
+    roots.push(temporary);
+    const topicId = Schema.decodeUnknownSync(TopicId)("11111111-1111-4111-8111-111111111111");
+    const mark = mainAgentMark(topicId);
+    const processes = new FakeProcesses();
+    processes.trees.push(
+      root(workspace(1)),
+      root(workspace(1, [windowNode(1, mark)])),
+      root(workspace(1, [windowNode(1, mark), windowNode(2, mark)])),
+    );
+
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const desktop = makeDesktopControl(processes, fs, {
+            processCwd: decodeAbsolutePath(temporary),
+            runtimeDirectory: decodeAbsolutePath(temporary),
+          });
+          const absent = yield* desktop.hasMainAgentWindow(topicId);
+          const present = yield* desktop.hasMainAgentWindow(topicId);
+          const ambiguous = yield* Effect.flip(desktop.hasMainAgentWindow(topicId));
+          return { absent, present, ambiguous };
+        }),
+      ).pipe(Effect.provide([BunFileSystem.layer, ProcessPlatformLive])),
+    );
+
+    expect(result.absent).toBeFalse();
+    expect(result.present).toBeTrue();
+    expect(result.ambiguous.reason).toBe("ambiguous");
+  });
+
   test("uses a private zsh startup file and keeps capabilities only in the child environment", async () => {
     const temporary = await mkdtemp(join(tmpdir(), "pi-work-desktop-effect-"));
     roots.push(temporary);

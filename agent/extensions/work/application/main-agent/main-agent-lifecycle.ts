@@ -43,6 +43,7 @@ interface LiveLease extends MainAgentLease {
 }
 
 export interface MainAgentDesktop<R = never> {
+  readonly hasMainAgentWindow: (topicId: TopicId) => Effect.Effect<boolean, PublicWorkFailure, R>;
   readonly openMainAgent: (
     launch: MainAgentLaunch,
   ) => Effect.Effect<MainAgentActionResult, PublicWorkFailure, R>;
@@ -85,8 +86,8 @@ export interface MainAgentLifecycle<R = never> {
   readonly reset: (topicId: TopicId) => Effect.Effect<MainAgentActionResult, PublicWorkFailure, R>;
   readonly register: (
     input: MainAgentRegistration,
-  ) => Effect.Effect<MainAgentLease, PublicWorkFailure>;
-  readonly adopt: (input: MainAgentAdoption) => Effect.Effect<MainAgentLease, PublicWorkFailure>;
+  ) => Effect.Effect<MainAgentLease, PublicWorkFailure, R>;
+  readonly adopt: (input: MainAgentAdoption) => Effect.Effect<MainAgentLease, PublicWorkFailure, R>;
   readonly heartbeat: (connectionId: string) => Effect.Effect<MainAgentLease, MainAgentFailure>;
   readonly report: (
     connectionId: string,
@@ -355,6 +356,15 @@ export const makeMainAgentLifecycle = <R>(
                 new MainAgentFailure({
                   reason: "invalid-identity",
                   message: "The Main Agent affiliation does not match this Topic.",
+                  details: { topicId: input.topicId },
+                }),
+              );
+            }
+            if (!(yield* options.desktop.hasMainAgentWindow(input.topicId))) {
+              return yield* Effect.fail(
+                new MainAgentFailure({
+                  reason: "invalid-identity",
+                  message: "The Main Agent window is absent.",
                   details: { topicId: input.topicId },
                 }),
               );

@@ -145,6 +145,7 @@ class MemoryDesktop {
   readonly events: string[] = [];
   openResult: "launched" | "focused" = "launched";
   closeResult: "closed" | "unavailable" = "closed";
+  mainAgentPresent = true;
 
   readonly openMainAgent = (launch: MainAgentLaunch) =>
     Effect.sync(() => {
@@ -154,6 +155,8 @@ class MemoryDesktop {
         ? { kind: "focused" as const, workspace: 1, message: "Focused." }
         : { kind: "launched" as const, workspace: 1, message: "Opened." };
     });
+
+  readonly hasMainAgentWindow = (_topicId: TopicId) => Effect.succeed(this.mainAgentPresent);
 
   readonly closeMainAgent = (topicId: TopicId) =>
     Effect.sync(() => {
@@ -353,6 +356,51 @@ describe("Main Agent lifecycle", () => {
           expect(topics.rows.get(ID)?.topic.mainAgent).toEqual({
             sessionId: "adopted-session",
             sessionFile: ADOPTED_FILE,
+          });
+        }),
+      ),
+    );
+  });
+
+  test("rejects restart adoption when the Main Agent window is absent", async () => {
+    const topics = new MemoryTopics([topic(ID)]);
+    const capabilities = new MemoryCapabilities();
+    const desktop = new MemoryDesktop();
+    const generated = [capability("registration"), capability("affiliation")];
+    let index = 0;
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { lifecycle } = yield* make(
+            topics,
+            capabilities,
+            desktop,
+            () => generated[index++]!,
+          );
+          yield* lifecycle.open(ID);
+        }),
+      ),
+    );
+
+    desktop.mainAgentPresent = false;
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { lifecycle } = yield* make(topics, capabilities, desktop);
+          const rejected = yield* Effect.flip(
+            lifecycle.adopt({
+              connectionId: "stale-process",
+              topicId: ID,
+              sessionId: `session-${ID}`,
+              sessionFile: FILE,
+              affiliation: generated[1]!,
+            }),
+          );
+          expect(rejected.reason).toBe("invalid-identity");
+          expect((yield* lifecycle.snapshot)[0]).toMatchObject({
+            activity: "stopped",
+            connected: false,
           });
         }),
       ),

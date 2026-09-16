@@ -87,6 +87,8 @@ export interface DesktopControl {
   readonly accessWorkspace: (topicId: TopicId) => DesktopEffect<WorkspaceActionResult>;
   /** Observes the current or next available Topic workspace without changing focus. */
   readonly topicWorkspace: (topicId: TopicId) => DesktopEffect<number | undefined>;
+  /** True only when exactly one marked Main Agent window exists. */
+  readonly hasMainAgentWindow: (topicId: TopicId) => DesktopEffect<boolean>;
   readonly openTerminal: (
     topicId: TopicId,
     worktreePath: AbsolutePath,
@@ -197,6 +199,20 @@ export function makeDesktopControl(
         Effect.map((selection) =>
           selection.kind === "selected" ? selection.workspace : undefined,
         ),
+      ),
+    hasMainAgentWindow: (topicId) =>
+      getTree.pipe(
+        Effect.flatMap((tree) => {
+          const marked = findMarkedWindows(tree, mainAgentMark(topicId));
+          if (marked.length <= 1) return Effect.succeed(marked.length === 1);
+          return Effect.fail(
+            failure(
+              "ambiguous",
+              "Multiple Main Agent windows exist; presence is ambiguous.",
+              marked.length,
+            ),
+          );
+        }),
       ),
     accessWorkspace: (topicId) =>
       Effect.gen(function* () {

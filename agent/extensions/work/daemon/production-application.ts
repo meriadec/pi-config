@@ -139,6 +139,7 @@ export function makeProductionWorkApplication(
     const desktop = {
       accessWorkspace: (topicId: TopicId) => runScoped(rawDesktop.accessWorkspace(topicId)),
       topicWorkspace: (topicId: TopicId) => runScoped(rawDesktop.topicWorkspace(topicId)),
+      hasMainAgentWindow: (topicId: TopicId) => runScoped(rawDesktop.hasMainAgentWindow(topicId)),
       openTerminal: (topicId: TopicId, path: AbsolutePath) =>
         runScoped(rawDesktop.openTerminal(topicId, path)),
       openMainAgent: (launch: Parameters<typeof rawDesktop.openMainAgent>[0]) =>
