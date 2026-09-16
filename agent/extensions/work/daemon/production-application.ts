@@ -10,8 +10,11 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as FileSystem from "effect/FileSystem";
 import {
   AbsolutePath,
+  ClientId,
+  DomainFailure,
   PolicyFailure,
   PrivateLocalCapability,
+  RequestId,
   TopicId,
   WORK_PROTOCOL_VERSION,
   WORK_STORAGE_SCHEMA_VERSION,
@@ -146,6 +149,25 @@ export function makeProductionWorkApplication(
     const provisioningControl = yield* makeTopicProvisioningControl.pipe(
       Effect.provideService(ProcessExecutor, processes),
     );
+    let commands: ReturnType<typeof makeTopicCommands> | undefined;
+    const activatePendingChild = (topicId: TopicId) =>
+      Effect.suspend(() =>
+        commands === undefined
+          ? Effect.fail(
+              new DomainFailure({
+                reason: "invalid-relationship",
+                message: "Topic chain activation is unavailable.",
+                details: { topicId },
+              }),
+            )
+          : commands
+              .execute({
+                clientId: ClientId.make(randomUUID()),
+                requestId: RequestId.make(randomUUID()),
+                command: { _tag: "ActivatePendingChild", topicId },
+              })
+              .pipe(Effect.asVoid),
+      );
     const worker = makeProvisioningWorker({
       topics,
       operations: operationRepository,
@@ -161,6 +183,7 @@ export function makeProductionWorkApplication(
             maxOutputBytes: request.maxOutputBytes,
           }),
         ),
+      activatePendingChild,
     });
     const mainAgents = yield* makeMainAgentLifecycle({
       topics,
@@ -169,7 +192,6 @@ export function makeProductionWorkApplication(
       desktop,
       socketPath: AbsolutePath.make(lease.socketPath),
     });
-    let commands: ReturnType<typeof makeTopicCommands> | undefined;
     const terminalWorker: OperationWorker = {
       resumable: false,
       run: ({ operation }) =>
@@ -369,6 +391,14 @@ export function makeProductionWorkApplication(
       Effect.catch(() => Effect.void),
     );
     yield* operations.recover;
+    const recoverableChildren = (yield* topics.list).filter(
+      ({ topic }) => topic.chainState === "pending" && topic.setup.state === "ready",
+    );
+    yield* Effect.forEach(
+      recoverableChildren,
+      ({ topic }) => activatePendingChild(topic.id).pipe(Effect.catch(() => Effect.void)),
+      { concurrency: 1, discard: true },
+    );
     yield* observations.start;
 
     return {

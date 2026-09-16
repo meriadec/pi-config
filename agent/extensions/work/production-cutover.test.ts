@@ -5,9 +5,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import * as Effect from "effect/Effect";
+import {
+  AbsolutePath,
+  Branch,
+  ClientId,
+  Repository,
+  RequestId,
+  TopicId,
+  type DurableTopic,
+} from "./domain/index.ts";
 import { makeProductionWorkApplication } from "./daemon/production-application.ts";
 import { ProcessPlatformLive } from "./infrastructure/process/index.ts";
 import { createWorkPaths } from "./shared/paths.ts";
+import {
+  createCheckpointChild,
+  createParentBranchScenario,
+} from "./test-support/git-repository.ts";
 
 const roots = new Set<string>();
 
@@ -173,5 +186,202 @@ describe("final Effect control plane", () => {
     const database = new Database(join(fixture.rootPath, "work.db"), { readonly: true });
     expect(database.query("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
     database.close();
+  });
+
+  test("activates a provisioned child and makes it the Parent Topic Integration Target", async () => {
+    const fixture = await finalStorageFixture();
+    const scenario = await createParentBranchScenario(fixture.parent, { checkpointCount: 2 });
+    await scenario.repository.git("remote", "add", "origin", "https://github.com/owner/repo.git");
+    const childBranch = "checkpoint";
+    const childWorktree = join(fixture.parent, "checkpoint-worktree");
+    await createCheckpointChild(scenario.repository, {
+      branch: childBranch,
+      startPoint: scenario.checkpoints[0]!,
+      worktreePath: childWorktree,
+    });
+    await privateFile(join(fixture.rootPath, "config.json"), {
+      version: 2,
+      workBase: fixture.parent,
+      policies: {
+        defaults: {
+          "repository.clone": "allow",
+          "topic.create-worktree": "allow",
+          "topic.run-setup": "allow",
+          "terminal.open": "allow",
+          "agent.open": "ask",
+          "agent.reset": "ask",
+          "topic.delete": "ask",
+        },
+        repositories: {},
+        topics: {},
+      },
+      repositories: {
+        "owner/repo": {
+          basePath: scenario.repository.path,
+          integrationBranch: scenario.integrationBranch,
+          setupCommands: [],
+        },
+      },
+    });
+
+    const paths = createWorkPaths({ home: fixture.parent, runtime: fixture.runtime });
+    const lease = {
+      runtimeDirectory: fixture.runtime,
+      socketPath: paths.socket,
+      lockPath: join(fixture.runtime, "pi-workd.lock"),
+    };
+    await Effect.runPromise(
+      Effect.scoped(makeProductionWorkApplication(paths, lease)).pipe(
+        Effect.provide(ProcessPlatformLive),
+        Effect.provide(BunFileSystem.layer),
+      ),
+    );
+
+    const parentId = TopicId.make("10000000-0000-4000-8000-000000000001");
+    const childId = TopicId.make("10000000-0000-4000-8000-000000000002");
+    const now = "2026-01-01T00:00:00.000Z";
+    const database = new Database(join(fixture.rootPath, "work.db"));
+    database.run(
+      `INSERT INTO topics (id, name, branch, repository, worktree_path, partition_number, created_at, updated_at)
+       VALUES (?, 'Parent', ?, 'owner/repo', ?, 0, ?, ?)`,
+      [parentId, scenario.parentBranch, scenario.repository.path, now, now],
+    );
+    database.run(
+      `INSERT INTO topic_setup (topic_id, state, repository_available, worktree_created, setup_commands_run, completed_command_count)
+       VALUES (?, 'ready', 1, 1, 1, 0)`,
+      [parentId],
+    );
+    database.run(
+      `INSERT INTO topic_relationships (topic_id, integration_target_kind, chain_state)
+       VALUES (?, 'integration-branch', 'active')`,
+      [parentId],
+    );
+    database.run(
+      `INSERT INTO main_agent_identities (topic_id, session_id, session_file)
+       VALUES (?, 'parent-session', NULL)`,
+      [parentId],
+    );
+    database.close();
+
+    const child: DurableTopic = {
+      id: childId,
+      name: "Checkpoint",
+      branch: Branch.make(childBranch),
+      repository: Repository.make("owner/repo"),
+      setup: {
+        state: "provisioning",
+        repositoryAvailable: false,
+        worktreeCreated: false,
+        setupCommandsRun: false,
+        completedCommandCount: 0,
+      },
+      worktreePath: null,
+      mainAgent: { sessionId: "child-session", sessionFile: null },
+      partition: 0,
+      parentTopicId: parentId,
+      originCommit: scenario.checkpoints[0] as DurableTopic["originCommit"],
+      integrationTarget: { kind: "integration-branch" },
+      chainState: "pending",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        makeProductionWorkApplication(paths, lease).pipe(
+          Effect.flatMap((application) =>
+            Effect.gen(function* () {
+              const handle = yield* application.operations.start({
+                clientId: ClientId.make("20000000-0000-4000-8000-000000000001"),
+                requestId: RequestId.make("30000000-0000-4000-8000-000000000001"),
+                fingerprint: "a".repeat(64),
+                topicId: childId,
+                input: {
+                  version: 1,
+                  kind: "topic.provision",
+                  value: {
+                    attempt: "create-child",
+                    topic: child,
+                    workBase: AbsolutePath.make(fixture.parent),
+                    recipe: {
+                      basePath: AbsolutePath.make(scenario.repository.path),
+                      integrationBranch: Branch.make(scenario.integrationBranch),
+                      setupCommands: [],
+                    },
+                    policies: {
+                      "repository.clone": "allow",
+                      "topic.create-worktree": "allow",
+                      "topic.run-setup": "allow",
+                      "terminal.open": "allow",
+                      "agent.open": "ask",
+                      "agent.reset": "ask",
+                      "topic.delete": "ask",
+                    },
+                    startPoint: {
+                      commit: child.originCommit!,
+                      sourceCheckout: AbsolutePath.make(scenario.repository.path),
+                    },
+                  },
+                },
+              });
+              const completed = yield* application.operations.await(handle.id);
+              yield* application.ephemeralAction({ action: "refresh-integration" });
+              yield* application.ephemeralAction({ action: "refresh-integration" });
+              return { completed, snapshot: yield* application.state.snapshot };
+            }),
+          ),
+        ),
+      ).pipe(Effect.provide(ProcessPlatformLive), Effect.provide(BunFileSystem.layer)),
+    );
+
+    const parent = result.snapshot.durable.topics.find((row) => row.topic.id === parentId)?.topic;
+    const checkpoint = result.snapshot.durable.topics.find(
+      (row) => row.topic.id === childId,
+    )?.topic;
+    const observation = result.snapshot.observed.topics.find(
+      (row) => row.topicId === parentId,
+    )?.value;
+    expect(result.completed.result?.status).toBe("succeeded");
+    expect(checkpoint?.chainState).toBe("active");
+    expect(parent?.integrationTarget).toEqual({ kind: "topic", topicId: childId });
+    expect(observation?.integrationStatus).toMatchObject({
+      kind: "current",
+      target: childBranch,
+    });
+
+    const stale = new Database(join(fixture.rootPath, "work.db"));
+    stale.run(
+      `UPDATE topic_relationships
+       SET integration_target_kind = 'integration-branch', integration_target_topic_id = NULL
+       WHERE topic_id = ?`,
+      [parentId],
+    );
+    stale.run(`UPDATE topic_relationships SET chain_state = 'pending' WHERE topic_id = ?`, [
+      childId,
+    ]);
+    stale.close();
+
+    const recovered = await Effect.runPromise(
+      Effect.scoped(
+        makeProductionWorkApplication(paths, lease).pipe(
+          Effect.flatMap((application) =>
+            application
+              .ephemeralAction({ action: "refresh-integration" })
+              .pipe(
+                Effect.andThen(application.ephemeralAction({ action: "refresh-integration" })),
+                Effect.andThen(application.state.snapshot),
+              ),
+          ),
+        ),
+      ).pipe(Effect.provide(ProcessPlatformLive), Effect.provide(BunFileSystem.layer)),
+    );
+    const recoveredParent = recovered.durable.topics.find(
+      (row) => row.topic.id === parentId,
+    )?.topic;
+    const recoveredChild = recovered.durable.topics.find((row) => row.topic.id === childId)?.topic;
+    const recoveredStatus = recovered.observed.topics.find((row) => row.topicId === parentId)?.value
+      ?.integrationStatus;
+    expect(recoveredChild?.chainState).toBe("active");
+    expect(recoveredParent?.integrationTarget).toEqual({ kind: "topic", topicId: childId });
+    expect(recoveredStatus).toMatchObject({ kind: "current", target: childBranch });
   });
 });

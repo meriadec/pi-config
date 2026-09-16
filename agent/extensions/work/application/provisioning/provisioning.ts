@@ -162,21 +162,29 @@ export function makeProvisioningWorker(options: ProvisioningWorkerOptions): Oper
     run: (context) =>
       decodeInput(context.operation.input).pipe(
         Effect.flatMap((input) =>
-          options.concurrency.withKeys(
-            [
-              topicKey(input.topic.id),
-              repositoryKey(input.topic.repository),
-              creationKey(input.topic.repository, input.topic.branch),
-            ],
-            runAttempt(options, context, input, shell).pipe(
-              Effect.catch((failure) =>
-                markTopicSetup(options, input.topic.id, "setup-failed", failure.message).pipe(
-                  Effect.catch(() => Effect.void),
-                  Effect.andThen(Effect.fail(failure)),
+          options.concurrency
+            .withKeys(
+              [
+                topicKey(input.topic.id),
+                repositoryKey(input.topic.repository),
+                creationKey(input.topic.repository, input.topic.branch),
+              ],
+              runAttempt(options, context, input, shell).pipe(
+                Effect.catch((failure) =>
+                  markTopicSetup(options, input.topic.id, "setup-failed", failure.message).pipe(
+                    Effect.catch(() => Effect.void),
+                    Effect.andThen(Effect.fail(failure)),
+                  ),
                 ),
               ),
+            )
+            .pipe(
+              Effect.tap(() =>
+                input.topic.chainState === "pending"
+                  ? (options.activatePendingChild?.(input.topic.id) ?? Effect.void)
+                  : Effect.void,
+              ),
             ),
-          ),
         ),
       ),
     interrupted: (operation) =>
@@ -476,9 +484,6 @@ function runAttempt(
       ...setupWithoutReason,
       state: "ready",
     });
-    if (stored.topic.chainState === "pending") {
-      yield* options.activatePendingChild?.(stored.topic.id) ?? Effect.void;
-    }
     return {
       version: 1,
       status: "succeeded",
