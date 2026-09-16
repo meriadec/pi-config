@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import * as Effect from "effect/Effect";
@@ -21,7 +22,7 @@ async function privateFile(path: string, value: unknown): Promise<void> {
 }
 
 async function finalStorageFixture() {
-  const parent = await mkdtemp(join(process.cwd(), ".scratch/work-final-storage-test-"));
+  const parent = await mkdtemp(join(tmpdir(), "pi-work-final-storage-test-"));
   roots.add(parent);
   const rootPath = join(parent, "work");
   const runtime = join(parent, "runtime");

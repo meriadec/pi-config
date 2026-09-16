@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import * as Effect from "effect/Effect";
@@ -57,7 +58,7 @@ async function privateFile(path: string, value: unknown): Promise<void> {
 }
 
 async function fixture(policy: ActionPolicy, withOperationHistory = false) {
-  const parent = await mkdtemp(join(process.cwd(), ".scratch/work-delete-policy-test-"));
+  const parent = await mkdtemp(join(tmpdir(), "pi-work-delete-policy-test-"));
   roots.add(parent);
   const root = join(parent, "work");
   const runtime = join(parent, "runtime");
