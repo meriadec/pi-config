@@ -218,6 +218,67 @@ describe("Main Agent lifecycle", () => {
     );
   });
 
+  test("preserves local Git facts when Main Agent activity changes", async () => {
+    const topics = new MemoryTopics([topic(ID)]);
+    const capabilities = new MemoryCapabilities();
+    const desktop = new MemoryDesktop();
+    const generated = [capability("registration"), capability("affiliation")];
+    let index = 0;
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { lifecycle, state } = yield* make(
+            topics,
+            capabilities,
+            desktop,
+            () => generated[index++]!,
+          );
+          yield* lifecycle.open(ID);
+          const launch = desktop.launches[0]!;
+          yield* lifecycle.register({
+            connectionId: "connection",
+            topicId: ID,
+            sessionId: launch.sessionId,
+            sessionFile: FILE,
+            registration: launch.registrationToken,
+          });
+          yield* state.publish({
+            _tag: "ObservedChanged",
+            topics: {
+              upsert: [
+                {
+                  topicId: ID,
+                  freshness: { _tag: "Fresh", observedAt: START },
+                  value: {
+                    topicId: ID,
+                    integrationStatus: { kind: "behind", target: decodeBranch("main") },
+                    gitOperationState: "none",
+                    checkedOutBranch: topic(ID).branch,
+                    gitOperationConflict: null,
+                    worktreePresent: true,
+                    worktreeClean: true,
+                    orphan: false,
+                    mainAgentActivity: "idle",
+                  },
+                },
+              ],
+            },
+          });
+
+          yield* lifecycle.report("connection", "thinking");
+          const observed = (yield* state.snapshot).observed.topics[0]?.value;
+          expect(observed).toMatchObject({
+            checkedOutBranch: topic(ID).branch,
+            gitOperationState: "none",
+            worktreeClean: true,
+            mainAgentActivity: "thinking",
+          });
+        }),
+      ),
+    );
+  });
+
   test("registers once, adopts in-window sessions, rejects cross-Topic use, and survives restart", async () => {
     const topics = new MemoryTopics([topic(ID), topic(OTHER_ID)]);
     const capabilities = new MemoryCapabilities();

@@ -127,13 +127,15 @@ export const makeMainAgentLifecycle = <R>(
       Effect.gen(function* () {
         const snapshot = yield* options.state.snapshot;
         const old = snapshot.observed.topics.find((item) => item.topicId === lease.topicId);
+        const previous = old?.value;
         const value = {
+          ...previous,
           topicId: lease.topicId,
-          integrationStatus: old?.value?.integrationStatus ?? { kind: "unknown" },
-          gitOperationState: old?.value?.gitOperationState ?? "unknown",
-          worktreePresent: old?.value?.worktreePresent ?? false,
-          worktreeClean: old?.value?.worktreeClean ?? null,
-          orphan: old?.value?.orphan ?? false,
+          integrationStatus: previous?.integrationStatus ?? { kind: "unknown" },
+          gitOperationState: previous?.gitOperationState ?? "unknown",
+          worktreePresent: previous?.worktreePresent ?? false,
+          worktreeClean: previous?.worktreeClean ?? null,
+          orphan: previous?.orphan ?? false,
           mainAgentActivity: lease.activity,
         } as const;
         yield* options.state.publish({
