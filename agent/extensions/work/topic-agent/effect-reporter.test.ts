@@ -180,6 +180,37 @@ describe("Effect Topic Agent reporter", () => {
     await reporter.shutdown();
   });
 
+  test("reattaches quietly after a normal daemon restart closes the current transport", async () => {
+    let restarting = false;
+    let closingCalls = 0;
+    const logs: string[] = [];
+    const socketClose = Object.assign(new Error("SocketCloseError: 1000"), {
+      name: "SocketCloseError",
+      code: 1000,
+    });
+    const fake = makeRuntime((request) => {
+      if (request.action === "heartbeat") {
+        restarting = true;
+        throw socketClose;
+      }
+      if (restarting && closingCalls++ < 2) throw socketClose;
+    });
+    const reporter = new EffectTopicAgentReporter({
+      environment,
+      makeRuntime: () => fake.runtime,
+      log: (message) => logs.push(message),
+    });
+
+    await reporter.sessionStart(context());
+    await reporter.thinking();
+    await fake.cycle();
+    await fake.cycle();
+
+    expect(logs).toEqual([]);
+    expect(fake.calls.slice(-2)).toEqual(["register", "report:thinking"]);
+    await reporter.shutdown();
+  });
+
   test("logs re-attach failure only when register and adopt both fail", async () => {
     let registrations = 0;
     const logs: string[] = [];

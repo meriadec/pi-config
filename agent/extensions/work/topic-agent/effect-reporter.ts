@@ -138,7 +138,11 @@ export class EffectTopicAgentReporter {
           await this.register();
         } catch (error) {
           this.registered = false;
-          this.log(`re-attach failed: ${error instanceof Error ? error.message : "unknown error"}`);
+          if (!isNormalDaemonRestartClose(error)) {
+            this.log(
+              `re-attach failed: ${error instanceof Error ? error.message : "unknown error"}`,
+            );
+          }
         }
       }
     } finally {
@@ -208,9 +212,11 @@ export class EffectTopicAgentReporter {
     } catch (error) {
       this.registered = false;
       this.lastReported = undefined;
-      this.log(
-        `activity report failed: ${error instanceof Error ? error.message : "unknown error"}`,
-      );
+      if (!isNormalDaemonRestartClose(error)) {
+        this.log(
+          `activity report failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        );
+      }
     }
   }
 
@@ -228,6 +234,17 @@ export class EffectTopicAgentReporter {
     this.registered = false;
     await runtime.dispose();
   }
+}
+
+/** Code 1000 is the clean transport close emitted while systemd replaces the daemon. */
+function isNormalDaemonRestartClose(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const close = error as Error & { readonly code?: unknown; readonly closeCode?: unknown };
+  const code = close.code ?? close.closeCode;
+  return (
+    (close.name === "SocketCloseError" && (code === 1000 || code === "1000")) ||
+    /\bSocketCloseError\b.*\b1000\b/.test(close.message)
+  );
 }
 
 /** Registers the lazy Effect Topic Agent adapter at the Pi lifecycle boundary. */
