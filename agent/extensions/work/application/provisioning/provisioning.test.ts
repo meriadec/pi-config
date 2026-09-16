@@ -332,7 +332,7 @@ describe("durable Topic provisioning", () => {
             id: "55555555-5555-4555-8555-555555555555",
             name: "Earlier Topic",
             branch: "feature/earlier",
-            partition: 1,
+            partition: 0,
             setup: {
               state: "ready",
               repositoryAvailable: true,
@@ -359,8 +359,9 @@ describe("durable Topic provisioning", () => {
           })
           .pipe(Effect.timeoutOption(25));
         yield* Deferred.succeed(releaseSetup, undefined);
-        yield* engine.await(handle.id);
-        return { movedBeforeSetupFinished: Option.isSome(moved) };
+        const completed = yield* engine.await(handle.id);
+        const provisioned = yield* topics.get(TOPIC.id);
+        return { movedBeforeSetupFinished: Option.isSome(moved), completed, provisioned };
       }).pipe(
         Effect.scoped,
         Effect.provide(
@@ -373,6 +374,13 @@ describe("durable Topic provisioning", () => {
     );
 
     expect(result.movedBeforeSetupFinished).toBeTrue();
+    expect(result.completed.result?.status).toBe("succeeded");
+    expect(result.provisioned.topic.setup).toMatchObject({
+      state: "ready",
+      setupCommandsRun: true,
+      completedCommandCount: 2,
+    });
+    expect(result.provisioned.topic.partition).toBe(1);
   });
 
   test("runs Repository Recipes with the operating-system login shell", async () => {

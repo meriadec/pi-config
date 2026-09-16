@@ -13,6 +13,7 @@ import {
   OperationFailure,
   PolicyFailure,
   RepositoryRecipe,
+  StorageFailure,
   StartPoint,
   type Branch,
   type DurableOperationInput,
@@ -413,18 +414,19 @@ function runAttempt(
     const setupCommandsRun = firstWorktreeCheckpoint
       ? !created
       : stored.topic.setup.setupCommandsRun;
-    stored = yield* updateTopic(options, stored, {
-      ...stored.topic,
+    const worktreeUpdatedAt = yield* nowIso;
+    stored = yield* updateTopic(options, stored, (latest) => ({
+      ...latest,
       worktreePath,
       setup: {
-        ...stored.topic.setup,
+        ...latest.setup,
         state: "provisioning",
         repositoryAvailable: true,
         worktreeCreated: true,
         setupCommandsRun,
       },
-      updatedAt: yield* nowIso,
-    });
+      updatedAt: worktreeUpdatedAt,
+    }));
 
     if (!stored.topic.setup.setupCommandsRun) {
       yield* requirePolicy(input, "topic.run-setup");
@@ -518,19 +520,39 @@ function updateSetup(
   current: RevisionedTopic,
   setup: TopicSetup,
 ) {
-  return options.topics
-    .updateSetup(current.topic.id, setup, current.revision)
-    .pipe(Effect.tap((topic) => publishTopic(options.state, topic)));
+  const write = (candidate: RevisionedTopic): ReturnType<TopicRepository["updateSetup"]> =>
+    options.topics
+      .updateSetup(candidate.topic.id, setup, candidate.revision)
+      .pipe(
+        Effect.catch((error) =>
+          isTopicRevisionConflict(error)
+            ? options.topics.get(candidate.topic.id).pipe(Effect.flatMap(write))
+            : Effect.fail(error),
+        ),
+      );
+  return write(current).pipe(Effect.tap((topic) => publishTopic(options.state, topic)));
 }
 
 function updateTopic(
   options: ProvisioningWorkerOptions,
   current: RevisionedTopic,
-  topic: DurableTopic,
+  change: (latest: DurableTopic) => DurableTopic,
 ) {
-  return options.topics
-    .update(topic, current.revision)
-    .pipe(Effect.tap((value) => publishTopic(options.state, value)));
+  const write = (candidate: RevisionedTopic): ReturnType<TopicRepository["update"]> =>
+    options.topics
+      .update(change(candidate.topic), candidate.revision)
+      .pipe(
+        Effect.catch((error) =>
+          isTopicRevisionConflict(error)
+            ? options.topics.get(candidate.topic.id).pipe(Effect.flatMap(write))
+            : Effect.fail(error),
+        ),
+      );
+  return write(current).pipe(Effect.tap((value) => publishTopic(options.state, value)));
+}
+
+function isTopicRevisionConflict(error: unknown): error is StorageFailure {
+  return error instanceof StorageFailure && error.reason === "conflict";
 }
 
 function publishTopic(state: WorkStateProjection, value: RevisionedTopic) {
