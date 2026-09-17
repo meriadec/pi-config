@@ -257,7 +257,7 @@ export function handleDashboardViewInput(
     };
   }
   if (matchesKey(data, Key.escape)) return { state, exit: true };
-  if (data === "q" || data === "Q") {
+  if (data === "q") {
     if (!state.sidebarOpen) return { state };
     return {
       state: { ...state, sidebarOpen: false, focus: "list", focusedAction: 0 },

@@ -2114,11 +2114,10 @@ describe("Effect dashboard product UI", () => {
 
     expect(handleDashboardViewInput(detail, snapshot(), "l").state).toEqual(detail);
     expect(handleDashboardViewInput(selected, snapshot(), "l").state).toEqual(selected);
-    for (const key of ["q", "Q"]) {
-      const closed = handleDashboardViewInput(detail, snapshot(), key);
-      expect(closed.exit).toBeUndefined();
-      expect(closed.state).toMatchObject({ sidebarOpen: false, focus: "list" });
-    }
+    const closed = handleDashboardViewInput(detail, snapshot(), "q");
+    expect(closed.exit).toBeUndefined();
+    expect(closed.state).toMatchObject({ sidebarOpen: false, focus: "list" });
+    expect(handleDashboardViewInput(detail, snapshot(), "Q").state).toEqual(detail);
     expect(handleDashboardViewInput(selected, snapshot(), "q").state).toEqual(selected);
     expect(handleDashboardViewInput(detail, snapshot(), "\x1b").exit).toBeTrue();
     expect(handleDashboardViewInput(detail, snapshot(), "\x03").exit).toBeTrue();
