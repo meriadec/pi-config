@@ -22,6 +22,7 @@ Start Pi in TUI mode and run `/work`. The dashboard connects to the daemon throu
 
 - Press `r` to refresh observations.
 - Press `q` or `Q` to close Topic details. Press `esc` or `ctrl-c` to close the dashboard.
+- A saved Topic Note gets a bright background when it contains the exact uppercase word `LAUNCHPAD`.
 
 Closing the dashboard closes its client runtime. It does not stop the daemon or a Main Agent.
 

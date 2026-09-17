@@ -909,6 +909,8 @@ function renderList(
     previousPartition = topic.partition;
     const selected = topic.id === state.selectedTopicId;
     const observation = topicObservation(snapshot, topic.id);
+    const orphan = observation?.orphan === true;
+    const inactive = isInactive(observation?.mainAgentActivity);
     const displayName = topicDisplayName(topic, topics);
     const setup = setupCell(state, snapshot, topic);
     const activity = renderListActivity(
@@ -921,18 +923,17 @@ function renderList(
     const setupSegment = setup === "" ? "" : ` · ${setup}`;
     const activitySegment = activity === "" ? "" : ` · ${activity}`;
     const pullRequestSegment = pullRequest === "" ? "" : ` · ${pullRequest}`;
-    const compactNote =
-      state.sidebarOpen || topic.note === undefined ? "" : ` ${yellow(topic.note)}`;
+    const note =
+      topic.note === undefined ? "" : renderTopicNote(topic.note, { selected, orphan, inactive });
+    const compactNote = state.sidebarOpen || note === "" ? "" : ` ${note}`;
     const row =
       columns === undefined
         ? truncateToWidth(
             `${prefix}${integration} ${displayName}${compactNote}${setupSegment}${activitySegment}${pullRequestSegment}`,
             width,
           )
-        : `${prefix}${pad(integration, columns.integration)} ${pad(displayName, columns.name)} ${pad(topic.note === undefined ? "" : yellow(topic.note), columns.note)} ${pad(topic.repository, columns.repository)} ${pad(pullRequest, columns.pullRequest)} ${pad(setup, columns.setup)} ${pad(activity, columns.mainAgent)}`;
-    const styled = observation?.orphan
-      ? brightRed(row)
-      : dimIfInactive(row, observation?.mainAgentActivity);
+        : `${prefix}${pad(integration, columns.integration)} ${pad(displayName, columns.name)} ${pad(note, columns.note)} ${pad(topic.repository, columns.repository)} ${pad(pullRequest, columns.pullRequest)} ${pad(setup, columns.setup)} ${pad(activity, columns.mainAgent)}`;
+    const styled = orphan ? brightRed(row) : dimIfInactive(row, observation?.mainAgentActivity);
     lines.push(selected ? highlight(styled, width) : styled);
   }
   while (lines.length < Math.max(1, height - 2)) lines.push("");
@@ -1183,7 +1184,7 @@ function renderDetails(
             ? [`PR diagnostic: ${pullRequestEntry.freshness.message}`]
             : []),
         ]),
-    topic.note === undefined ? "Note: —" : `Note: ${yellow(topic.note)}`,
+    topic.note === undefined ? "Note: —" : `Note: ${renderTopicNote(topic.note)}`,
     "",
     state.focus === "actions" ? bright("Actions") : "Actions",
   ];
@@ -1408,15 +1409,34 @@ function highlight(value: string, width: number): string {
   const padded = `${highlighted}${" ".repeat(Math.max(0, width - visibleWidth(truncated)))}`;
   return `${open}${padded}\x1b[49m`;
 }
+function isInactive(activity: MainAgentActivity | undefined): boolean {
+  return activity === undefined || activity === "stopped" || activity === "failed";
+}
 function dimIfInactive(value: string, activity: MainAgentActivity | undefined): string {
-  return activity === undefined || activity === "stopped" || activity === "failed"
-    ? dim(value)
-    : value;
+  return isInactive(activity) ? dim(value) : value;
 }
 function dim(value: string): string {
   const open = "\x1b[2m";
   return `${open}${reopenAfterReset(value, open)}\x1b[22m`;
 }
+const LAUNCHPAD_NOTE = /(^|[^A-Za-z0-9_])LAUNCHPAD(?=$|[^A-Za-z0-9_])/;
+
+function renderTopicNote(
+  note: string,
+  context: {
+    readonly selected?: boolean;
+    readonly orphan?: boolean;
+    readonly inactive?: boolean;
+  } = {},
+): string {
+  if (!LAUNCHPAD_NOTE.test(note)) return yellow(note);
+  const restore =
+    `${context.selected === true ? "\x1b[48;2;59;66;82m" : ""}` +
+    `${context.orphan === true ? "\x1b[91m" : ""}` +
+    `${context.inactive === true ? "\x1b[2m" : ""}`;
+  return `\x1b[22m\x1b[48;2;235;203;139m\x1b[38;2;46;52;64m\x1b[1m${note}\x1b[22m\x1b[39m\x1b[49m${restore}`;
+}
+
 function underlinedHyperlink(label: string, url: string): string {
   return `\x1b[4m\x1b]8;;${url}\x07${label}\x1b]8;;\x07\x1b[24m`;
 }

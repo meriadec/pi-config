@@ -1222,6 +1222,43 @@ describe("Effect dashboard product UI", () => {
     }
   });
 
+  test("highlights saved Notes that contain the exact LAUNCHPAD word", () => {
+    const current = snapshot();
+    const withNote = (note: string): WorkSnapshot => ({
+      ...current,
+      durable: {
+        ...current.durable,
+        topics: current.durable.topics.map((entry) =>
+          entry.topic.id === topicId ? { ...entry, topic: { ...entry.topic, note } } : entry,
+        ),
+      },
+    });
+    const launchpad = withNote("Ready for LAUNCHPAD review");
+    const state = reconcileDashboardSelection(initialDashboardViewState(), launchpad);
+    const list = renderDashboardView(state, launchpad, 160, 30).join("\n");
+
+    expect(list).toContain(
+      "\x1b[22m\x1b[48;2;235;203;139m\x1b[38;2;46;52;64m\x1b[1mReady for LAUNCHPAD review",
+    );
+    expect(list).toContain("\x1b[22m\x1b[39m\x1b[49m\x1b[48;2;59;66;82m");
+
+    const details = renderDashboardView(
+      { ...state, sidebarOpen: true, focus: "detail" },
+      launchpad,
+      120,
+      30,
+    ).join("\n");
+    expect(details).toContain(
+      "Note: \x1b[22m\x1b[48;2;235;203;139m\x1b[38;2;46;52;64m\x1b[1mReady for LAUNCHPAD review",
+    );
+
+    for (const note of ["launchpad", "LAUNCHPADS", "MYLAUNCHPAD"]) {
+      expect(renderDashboardView(state, withNote(note), 160, 30).join("\n")).not.toContain(
+        "\x1b[48;2;235;203;139m",
+      );
+    }
+  });
+
   test("leaves settled and absent Topic status cells empty", () => {
     const row = renderDashboardView(initialDashboardViewState(), snapshot(), 120, 30).find((line) =>
       line.includes("Checkpoint"),
