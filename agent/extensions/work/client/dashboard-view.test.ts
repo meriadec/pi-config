@@ -277,8 +277,8 @@ describe("Effect dashboard product UI", () => {
     expect(stripSgr(list)).toContain("thinking");
     expect(list).toContain("J/K move Partition");
 
-    state = handleDashboardViewInput(state, snapshot(), "l").state;
-    state = handleDashboardViewInput(state, snapshot(), "l").state;
+    state = handleDashboardViewInput(state, snapshot(), "\x1b[C").state;
+    state = handleDashboardViewInput(state, snapshot(), "\x1b[C").state;
     const details = renderDashboardView(state, snapshot(), 120, 30).join("\n");
     expect(details).toContain("Repository: owner/repo");
     expect(details).toContain("> Copy Branch Name");
@@ -399,7 +399,7 @@ describe("Effect dashboard product UI", () => {
     expect(stripSgr(delegatedList)).toContain("thinking (sub)");
     expect(delegatedList).toContain("\x1b[38;5;231m");
 
-    state = handleDashboardViewInput(state, delegated, "l").state;
+    state = handleDashboardViewInput(state, delegated, "\x1b[C").state;
     const delegatedDetails = renderDashboardView(state, delegated, 140, 30).join("\n");
     expect(stripSgr(delegatedDetails)).toContain("Main Agent: thinking (sub)");
 
@@ -484,7 +484,7 @@ describe("Effect dashboard product UI", () => {
       topicId,
     });
 
-    state = handleDashboardViewInput(state, current, "l").state;
+    state = handleDashboardViewInput(state, current, "\x1b[C").state;
     const details = renderDashboardView(state, current, 160, 30).join("\n");
     expect(details).toContain("PR lifecycle: open");
     expect(details).toContain("PR CI: passing");
@@ -526,8 +526,8 @@ describe("Effect dashboard product UI", () => {
   test("shows and confirms Integration Branch reset only for inferred state", () => {
     const inferred = snapshot();
     let state = reconcileDashboardSelection(initialDashboardViewState(), inferred);
-    state = handleDashboardViewInput(state, inferred, "l").state;
-    state = handleDashboardViewInput(state, inferred, "l").state;
+    state = handleDashboardViewInput(state, inferred, "\x1b[C").state;
+    state = handleDashboardViewInput(state, inferred, "\x1b[C").state;
     const actions = topicActions(state, inferred);
     const resetIndex = actions.findIndex((item) => item.action._tag === "ResetIntegrationBranch");
     expect(resetIndex).toBeGreaterThanOrEqual(0);
@@ -554,7 +554,7 @@ describe("Effect dashboard product UI", () => {
       },
     };
     state = reconcileDashboardSelection(initialDashboardViewState(), configured);
-    state = handleDashboardViewInput(state, configured, "l").state;
+    state = handleDashboardViewInput(state, configured, "\x1b[C").state;
     expect(
       topicActions(state, configured).some((item) => item.action._tag === "ResetIntegrationBranch"),
     ).toBe(false);
@@ -1175,15 +1175,38 @@ describe("Effect dashboard product UI", () => {
     expect(lines).toHaveLength(30);
   });
 
-  test("keeps the helper row at the bottom of the screen", () => {
-    const lines = renderDashboardView(initialDashboardViewState(), snapshot(), 120, 30);
+  test("keeps the helper row at the bottom without l or q shortcuts", () => {
+    const lines = renderDashboardView(initialDashboardViewState(), snapshot(), 240, 30);
+    const help = lines.at(-1)!;
 
-    expect(lines.at(-1)).toContain("j/k select");
+    expect(help).toContain("j/k select");
+    expect(help).toContain("Enter details/actions");
+    expect(help).toContain("R re-arrange");
+    expect(help).not.toContain("l detail");
+    expect(help).not.toContain("q details");
+  });
+
+  test("re-arranges Work workspaces with uppercase R", async () => {
+    const fake = new FakeRuntime();
+    fake.ephemeralResult = { kind: "rearranged", message: "Moved 2 Work windows." };
+    const component = new EffectWorkDashboardComponent({
+      tui: { requestRender() {}, terminal: { rows: 30 } } as never,
+      client: fake.runtime,
+      done() {},
+    });
+    fake.stateHandler!({ _tag: "Snapshot", snapshot: snapshot() });
+
+    component.handleInput("R");
+    await Bun.sleep(0);
+
+    expect(fake.actions).toContainEqual({ action: "rearrange" });
+    expect(component.snapshotViewState().message).toBe("Moved 2 Work windows.");
+    await component.dispose();
   });
 
   test("opens a full-height sidebar and moves through all three focus positions", () => {
     const state = reconcileDashboardSelection(initialDashboardViewState(), snapshot());
-    const detail = handleDashboardViewInput(state, snapshot(), "l").state;
+    const detail = handleDashboardViewInput(state, snapshot(), "\x1b[C").state;
     const actions = handleDashboardViewInput(detail, snapshot(), "\x1b[C").state;
     const backToDetail = handleDashboardViewInput(actions, snapshot(), "h").state;
     const list = handleDashboardViewInput(backToDetail, snapshot(), "\x1b[D").state;
@@ -1358,7 +1381,7 @@ describe("Effect dashboard product UI", () => {
       topicId,
     });
 
-    state = handleDashboardViewInput(state, current, "l").state;
+    state = handleDashboardViewInput(state, current, "\x1b[C").state;
     expect(handleDashboardViewInput(state, current, "t").action).toBeUndefined();
 
     const unavailable: WorkSnapshot = {
@@ -1391,7 +1414,7 @@ describe("Effect dashboard product UI", () => {
       topicId,
     });
 
-    state = handleDashboardViewInput(state, current, "l").state;
+    state = handleDashboardViewInput(state, current, "\x1b[C").state;
     expect(handleDashboardViewInput(state, current, "m").action).toBeUndefined();
 
     const denied: WorkSnapshot = {
@@ -1422,7 +1445,7 @@ describe("Effect dashboard product UI", () => {
     };
     let state = reconcileDashboardSelection(initialDashboardViewState(), denied);
     expect(handleDashboardViewInput(state, denied, "t").action).toBeUndefined();
-    state = handleDashboardViewInput(state, denied, "l").state;
+    state = handleDashboardViewInput(state, denied, "\x1b[C").state;
     expect(renderDashboardView(state, denied, 200, 30).join("\n")).toContain(
       "Denied by Action policy",
     );
@@ -1443,7 +1466,7 @@ describe("Effect dashboard product UI", () => {
     const state = handleDashboardViewInput(
       reconcileDashboardSelection(initialDashboardViewState(), denied),
       denied,
-      "l",
+      "\x1b[C",
     ).state;
     expect(
       topicActions(state, denied).filter(
@@ -1474,8 +1497,8 @@ describe("Effect dashboard product UI", () => {
       copyToClipboard: async () => undefined,
     });
     fake.stateHandler!({ _tag: "Snapshot", snapshot: snapshot() });
-    component.handleInput("l");
-    component.handleInput("l");
+    component.handleInput("\x1b[C");
+    component.handleInput("\x1b[C");
     const screenLines = component.render(120);
     const screen = screenLines.join("\n");
     expect(screenLines).toHaveLength(30);
@@ -1512,8 +1535,8 @@ describe("Effect dashboard product UI", () => {
       copyToClipboard: () => copy,
     });
     fake.stateHandler!({ _tag: "Snapshot", snapshot: snapshot() });
-    component.handleInput("l");
-    component.handleInput("l");
+    component.handleInput("\x1b[C");
+    component.handleInput("\x1b[C");
     const before = component.render(120);
 
     component.handleInput("\r");
@@ -1559,8 +1582,8 @@ describe("Effect dashboard product UI", () => {
       },
     });
     fake.stateHandler!({ _tag: "Snapshot", snapshot: snapshot() });
-    component.handleInput("l");
-    component.handleInput("l");
+    component.handleInput("\x1b[C");
+    component.handleInput("\x1b[C");
     component.handleInput("\r");
     await Bun.sleep(0);
 
@@ -1596,8 +1619,8 @@ describe("Effect dashboard product UI", () => {
       copyToClipboard: () => copy,
     });
     fake.stateHandler!({ _tag: "Snapshot", snapshot: snapshot() });
-    component.handleInput("l");
-    component.handleInput("l");
+    component.handleInput("\x1b[C");
+    component.handleInput("\x1b[C");
     component.handleInput("\r");
     const requestsAtDisposal = renderRequests;
 
@@ -1724,7 +1747,8 @@ describe("Effect dashboard product UI", () => {
     expect(component.snapshotViewState().editor).toBeUndefined();
     expect(component.render(120).join("\n")).not.toContain(CURSOR_MARKER);
 
-    component.handleInput("q");
+    component.handleInput("\x1b[D");
+    component.handleInput("\x1b[D");
     component.handleInput("n");
     component.handleInput("\x1b[200~waiting\r\nfor Tom\x1b[201~");
     expect(component.snapshotViewState().editor?.value).toBe("waiting for Tom");
@@ -2084,16 +2108,16 @@ describe("Effect dashboard product UI", () => {
     }
   });
 
-  test("closes details with q or Q and exits safely with Escape or Ctrl-C", () => {
+  test("does not assign l or q and exits safely with Escape or Ctrl-C", () => {
     const selected = reconcileDashboardSelection(initialDashboardViewState(), snapshot());
-    const detail = handleDashboardViewInput(selected, snapshot(), "l").state;
+    const detail = handleDashboardViewInput(selected, snapshot(), "\x1b[C").state;
 
-    for (const key of ["q", "Q"]) {
-      const closed = handleDashboardViewInput(detail, snapshot(), key);
-      expect(closed.exit).toBeUndefined();
-      expect(closed.state).toMatchObject({ sidebarOpen: false, focus: "list" });
+    for (const key of ["l", "q", "Q"]) {
+      const ignored = handleDashboardViewInput(detail, snapshot(), key);
+      expect(ignored.exit).toBeUndefined();
+      expect(ignored.state).toEqual(detail);
     }
-    expect(handleDashboardViewInput(selected, snapshot(), "q").exit).toBeUndefined();
+    expect(handleDashboardViewInput(selected, snapshot(), "l").state).toEqual(selected);
     expect(handleDashboardViewInput(detail, snapshot(), "\x1b").exit).toBeTrue();
     expect(handleDashboardViewInput(detail, snapshot(), "\x03").exit).toBeTrue();
   });
@@ -2107,7 +2131,7 @@ describe("Effect dashboard product UI", () => {
       expect(result.state.editor).toBeUndefined();
     }
 
-    const detail = handleDashboardViewInput(selected, snapshot(), "l").state;
+    const detail = handleDashboardViewInput(selected, snapshot(), "\x1b[C").state;
     for (const key of ["m", "o", "t", "s", "n", "J", "K"]) {
       expect(handleDashboardViewInput(detail, snapshot(), key).action).toBeUndefined();
     }

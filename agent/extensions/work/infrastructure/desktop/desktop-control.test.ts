@@ -19,7 +19,9 @@ import {
   mainAgentShellInvocation,
   mainAgentWindowIdentity,
   makeDesktopControl,
+  planWorkspaceRearrangement,
   selectTopicWorkspace,
+  topicMark,
 } from "./desktop-control.ts";
 
 const roots: string[] = [];
@@ -81,6 +83,25 @@ describe("Effect desktop adapter", () => {
         topic,
       ),
     ).toEqual({ kind: "selected", workspace: 5 });
+  });
+
+  test("moves only Work-managed windows into earlier workspace gaps", () => {
+    const first = "11111111-1111-4111-8111-111111111111";
+    const second = "22222222-2222-4222-8222-222222222222";
+    expect(
+      planWorkspaceRearrangement(
+        root(
+          workspace(1, [windowNode(1, "browser")]),
+          workspace(2, [windowNode(2, "work-dashboard")]),
+          workspace(4, [windowNode(4, topicMark(first)), windowNode(14, mainAgentMark(first))]),
+          workspace(6, [windowNode(6, topicMark(second))]),
+          workspace(9, [windowNode(9, "slack")]),
+        ),
+      ),
+    ).toEqual([
+      { from: 4, to: 3, conIds: [4, 14] },
+      { from: 6, to: 4, conIds: [6] },
+    ]);
   });
 
   test("distinguishes one Main Agent window from absent and ambiguous windows", async () => {

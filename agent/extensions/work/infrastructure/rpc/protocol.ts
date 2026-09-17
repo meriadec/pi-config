@@ -261,6 +261,7 @@ export const EphemeralActionRpc = Rpc.make("EphemeralAction", {
       "refresh-local",
       "refresh-integration",
       "refresh-pull-requests",
+      "rearrange",
       "rebase",
       "workspace",
       "terminal",

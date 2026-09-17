@@ -147,6 +147,20 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
       return;
     }
     if (
+      data === "R" &&
+      !this.viewState.pending.has("rearrange") &&
+      this.viewState.editor === undefined &&
+      this.viewState.confirmation === undefined &&
+      this.viewState.parentChooser === undefined &&
+      this.viewState.chainTargetChooser === undefined
+    ) {
+      void this.run("rearrange", undefined, async () => {
+        const result = await this.options.client.ephemeralAction("rearrange");
+        this.setMessage(actionMessage(result, "Work workspaces were re-arranged."));
+      });
+      return;
+    }
+    if (
       data === "r" &&
       this.viewState.editor === undefined &&
       this.viewState.confirmation === undefined

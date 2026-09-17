@@ -257,12 +257,6 @@ export function handleDashboardViewInput(
     };
   }
   if (matchesKey(data, Key.escape)) return { state, exit: true };
-  if (data === "q" || data === "Q") {
-    if (!state.sidebarOpen) return { state };
-    return {
-      state: { ...state, sidebarOpen: false, focus: "list", focusedAction: 0 },
-    };
-  }
   if (topics.length === 0) return { state };
   const selected = selectedTopic(state, topics) ?? topics[0]!;
   const topicBusy = state.pending.has(selected.id);
@@ -328,7 +322,7 @@ export function handleDashboardViewInput(
     if (state.focus === "list") return { state: moveSelection(state, topics, -1) };
     return { state };
   }
-  if (matchesKey(data, Key.right) || data === "l") {
+  if (matchesKey(data, Key.right)) {
     if (!state.sidebarOpen) {
       return { state: { ...state, sidebarOpen: true, focus: "detail" } };
     }
@@ -939,7 +933,7 @@ function renderList(
   while (lines.length < Math.max(1, height - 2)) lines.push("");
   lines.push(
     state.message ?? "",
-    "a add Topic · j/k select · l detail · Enter actions · J/K move Partition · n note · s rebase · m agent · o workspace · p pull request · t terminal · r refresh · q details · esc quit",
+    "a add Topic · j/k select · Enter details/actions · J/K move Partition · n note · s rebase · m agent · o workspace · p pull request · t terminal · r refresh · R re-arrange · esc quit",
   );
   return lines;
 }
@@ -1205,7 +1199,7 @@ function renderDetails(
         : ` · ${renderActionFeedback(feedback)}`;
     lines.push(`${marker} ${action.available ? action.label : dim(action.label)}${suffix}`);
   }
-  lines.push("", "h/l focus · j/k action · Enter run · q close details · esc quit");
+  lines.push("", "←/→ focus · j/k action · Enter run · esc quit");
   return lines.slice(0, height).map((line) => truncateToWidth(line, width));
 }
 

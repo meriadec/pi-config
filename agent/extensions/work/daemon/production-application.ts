@@ -138,6 +138,7 @@ export function makeProductionWorkApplication(
     });
     const desktop = {
       accessWorkspace: (topicId: TopicId) => runScoped(rawDesktop.accessWorkspace(topicId)),
+      rearrangeWorkspaces: () => runScoped(rawDesktop.rearrangeWorkspaces()),
       topicWorkspace: (topicId: TopicId) => runScoped(rawDesktop.topicWorkspace(topicId)),
       hasMainAgentWindow: (topicId: TopicId) => runScoped(rawDesktop.hasMainAgentWindow(topicId)),
       openTerminal: (topicId: TopicId, path: AbsolutePath) =>
@@ -437,6 +438,8 @@ export function makeProductionWorkApplication(
               return observations.refreshIntegration;
             case "refresh-pull-requests":
               return observations.refreshPullRequests;
+            case "rearrange":
+              return desktop.rearrangeWorkspaces();
             case "rebase":
               return topicId === undefined ? Effect.void : observations.rebase(topicId);
             case "workspace":

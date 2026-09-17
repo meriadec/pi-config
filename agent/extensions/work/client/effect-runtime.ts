@@ -58,6 +58,7 @@ export interface WorkClientRuntime {
       | "refresh-local"
       | "refresh-integration"
       | "refresh-pull-requests"
+      | "rearrange"
       | "rebase"
       | "workspace"
       | "terminal"

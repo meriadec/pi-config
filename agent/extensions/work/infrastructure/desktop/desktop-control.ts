@@ -68,6 +68,12 @@ export type CloseMainAgentResult =
 export type BrowserActionResult =
   | { readonly kind: "opened"; readonly message: string }
   | { readonly kind: "unavailable"; readonly message: string };
+export type RearrangeWorkspacesResult = {
+  readonly kind: "rearranged";
+  readonly movedWindows: number;
+  readonly movedWorkspaces: number;
+  readonly message: string;
+};
 
 export interface MainAgentLaunch {
   readonly topicId: TopicId;
@@ -85,6 +91,8 @@ type DesktopEffect<A> = Effect.Effect<A, DesktopFailure, DesktopRequirements>;
 /** Semantic i3, Kitty, Main Agent, and browser actions. */
 export interface DesktopControl {
   readonly accessWorkspace: (topicId: TopicId) => DesktopEffect<WorkspaceActionResult>;
+  /** Moves Work-managed windows into earlier unoccupied workspaces. */
+  readonly rearrangeWorkspaces: () => DesktopEffect<RearrangeWorkspacesResult>;
   /** Observes the current or next available Topic workspace without changing focus. */
   readonly topicWorkspace: (topicId: TopicId) => DesktopEffect<number | undefined>;
   /** True only when exactly one marked Main Agent window exists. */
@@ -214,6 +222,28 @@ export function makeDesktopControl(
           );
         }),
       ),
+    rearrangeWorkspaces: () =>
+      Effect.gen(function* () {
+        const moves = planWorkspaceRearrangement(yield* getTree);
+        for (const move of moves) {
+          for (const conId of move.conIds) {
+            yield* i3Command(
+              `[con_id=${conId}] move container to workspace number ${move.to}`,
+              "The i3 workspace re-arrangement",
+            );
+          }
+        }
+        const movedWindows = moves.reduce((count, move) => count + move.conIds.length, 0);
+        return {
+          kind: "rearranged" as const,
+          movedWindows,
+          movedWorkspaces: moves.length,
+          message:
+            movedWindows === 0
+              ? "Work workspaces are already arranged."
+              : `Moved ${movedWindows} Work window${movedWindows === 1 ? "" : "s"} across ${moves.length} workspace${moves.length === 1 ? "" : "s"}.`,
+        };
+      }),
     accessWorkspace: (topicId) =>
       Effect.gen(function* () {
         const selection = selectTopicWorkspace(yield* getTree, topicId);
@@ -472,6 +502,48 @@ export function selectTopicWorkspace(
     kind: "unavailable",
     message: "No empty workspace is available in the temporary pool (1-10).",
   };
+}
+
+export interface WorkspaceRearrangementMove {
+  readonly from: number;
+  readonly to: number;
+  readonly conIds: readonly number[];
+}
+
+/** Plans stable compaction around workspaces occupied by windows that Work does not manage. */
+export function planWorkspaceRearrangement(tree: I3Node): readonly WorkspaceRearrangementMove[] {
+  const managedByWorkspace = new Map<number, number[]>();
+  const unmanagedWorkspaces = new Set<number>();
+  walk(tree, undefined, (node, workspace) => {
+    if (!isPoolWorkspace(workspace) || node.window === undefined || node.window === null) return;
+    if (isWorkManagedWindow(node) && node.id !== undefined) {
+      const ids = managedByWorkspace.get(workspace) ?? [];
+      ids.push(node.id);
+      managedByWorkspace.set(workspace, ids);
+    } else {
+      unmanagedWorkspaces.add(workspace);
+    }
+  });
+  const groups = [...managedByWorkspace.entries()].sort(([left], [right]) => left - right);
+  const assigned = new Set<number>();
+  const moves: WorkspaceRearrangementMove[] = [];
+  for (const [from, conIds] of groups) {
+    let to = FIRST_WORKSPACE;
+    while (to <= LAST_WORKSPACE && (unmanagedWorkspaces.has(to) || assigned.has(to))) to += 1;
+    if (to < from) {
+      assigned.add(to);
+      moves.push({ from, to, conIds });
+    } else {
+      assigned.add(from);
+    }
+  }
+  return moves;
+}
+
+function isWorkManagedWindow(node: I3Node): boolean {
+  return nodeMarks(node).some(
+    (mark) => mark.startsWith("pi-work-topic-") || mark.startsWith("pi-work-agent-"),
+  );
 }
 
 function decodeI3Node(value: unknown): I3Node {

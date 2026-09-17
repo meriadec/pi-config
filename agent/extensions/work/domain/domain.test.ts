@@ -150,7 +150,7 @@ describe("Work domain codecs", () => {
   });
 
   test("uses explicit compatible protocol and storage versions", () => {
-    expect(Number(decodeUnknown(ProtocolVersion, WORK_PROTOCOL_VERSION))).toBe(4);
+    expect(Number(decodeUnknown(ProtocolVersion, WORK_PROTOCOL_VERSION))).toBe(5);
     expect(Number(decodeUnknown(StorageSchemaVersion, WORK_STORAGE_SCHEMA_VERSION))).toBe(2);
     expect(() => decodeUnknown(ProtocolVersion, "1")).toThrow();
     expect(() => decodeUnknown(StorageSchemaVersion, 0)).toThrow();
