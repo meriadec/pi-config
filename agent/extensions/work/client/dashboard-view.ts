@@ -257,6 +257,12 @@ export function handleDashboardViewInput(
     };
   }
   if (matchesKey(data, Key.escape)) return { state, exit: true };
+  if (data === "q" || data === "Q") {
+    if (!state.sidebarOpen) return { state };
+    return {
+      state: { ...state, sidebarOpen: false, focus: "list", focusedAction: 0 },
+    };
+  }
   if (topics.length === 0) return { state };
   const selected = selectedTopic(state, topics) ?? topics[0]!;
   const topicBusy = state.pending.has(selected.id);
@@ -1199,7 +1205,7 @@ function renderDetails(
         : ` · ${renderActionFeedback(feedback)}`;
     lines.push(`${marker} ${action.available ? action.label : dim(action.label)}${suffix}`);
   }
-  lines.push("", "←/→ focus · j/k action · Enter run · esc quit");
+  lines.push("", "←/→ focus · j/k action · Enter run · q close details · esc quit");
   return lines.slice(0, height).map((line) => truncateToWidth(line, width));
 }
 

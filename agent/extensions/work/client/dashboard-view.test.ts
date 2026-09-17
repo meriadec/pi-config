@@ -2108,16 +2108,18 @@ describe("Effect dashboard product UI", () => {
     }
   });
 
-  test("does not assign l or q and exits safely with Escape or Ctrl-C", () => {
+  test("keeps l unassigned, closes details with q, and exits safely", () => {
     const selected = reconcileDashboardSelection(initialDashboardViewState(), snapshot());
     const detail = handleDashboardViewInput(selected, snapshot(), "\x1b[C").state;
 
-    for (const key of ["l", "q", "Q"]) {
-      const ignored = handleDashboardViewInput(detail, snapshot(), key);
-      expect(ignored.exit).toBeUndefined();
-      expect(ignored.state).toEqual(detail);
-    }
+    expect(handleDashboardViewInput(detail, snapshot(), "l").state).toEqual(detail);
     expect(handleDashboardViewInput(selected, snapshot(), "l").state).toEqual(selected);
+    for (const key of ["q", "Q"]) {
+      const closed = handleDashboardViewInput(detail, snapshot(), key);
+      expect(closed.exit).toBeUndefined();
+      expect(closed.state).toMatchObject({ sidebarOpen: false, focus: "list" });
+    }
+    expect(handleDashboardViewInput(selected, snapshot(), "q").state).toEqual(selected);
     expect(handleDashboardViewInput(detail, snapshot(), "\x1b").exit).toBeTrue();
     expect(handleDashboardViewInput(detail, snapshot(), "\x03").exit).toBeTrue();
   });
