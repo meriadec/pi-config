@@ -101,9 +101,13 @@ describe("Effect GitHub pull request adapter", () => {
     const command = processes.requests[0]!.command;
     expect(command._tag).toBe("Executable");
     if (command._tag === "Executable") {
-      expect(command.arguments).toContain("owner=owner");
-      expect(command.arguments).toContain("repo=repo");
-      expect(command.arguments).toContain("branch=feat-x");
+      const arguments_ = command.arguments ?? [];
+      expect(arguments_).toContain("owner=owner");
+      expect(arguments_).toContain("repo=repo");
+      expect(arguments_).toContain("branch=feat-x");
+      const query = arguments_.find((argument) => argument.startsWith("query="));
+      expect(query).toContain("states:[OPEN,MERGED]");
+      expect(query).not.toContain("CLOSED");
     }
   });
 

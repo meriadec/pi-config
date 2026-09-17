@@ -143,6 +143,23 @@ describe("SQLite Topic repository", () => {
     expect((await run(path, (repository) => repository.get(PARENT))).topic.pullRequest).toEqual({
       number: 42,
     });
+
+    const wrongIdentity = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const repository = yield* TopicRepository;
+        return yield* repository.dissociatePullRequest(PARENT, 43, "2026-06-01T10:03:00.000Z");
+      }).pipe(Effect.provide(topicRepositoryLayer({ filename: path }))),
+    );
+    expect(Exit.isFailure(wrongIdentity)).toBe(true);
+
+    const dissociated = await run(path, (repository) =>
+      repository.dissociatePullRequest(PARENT, 42, "2026-06-01T10:04:00.000Z"),
+    );
+    expect(dissociated.topic.pullRequest).toBeUndefined();
+    expect(dissociated.revision).toBe(2);
+    expect(
+      (await run(path, (repository) => repository.get(PARENT))).topic.pullRequest,
+    ).toBeUndefined();
   });
 
   test("enforces unique Branches and rolls the complete failed create back", async () => {

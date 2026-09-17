@@ -105,6 +105,12 @@ export interface TopicRepository {
     number: number,
     updatedAt: string,
   ) => Effect.Effect<RevisionedTopic, StorageFailure>;
+  /** Removes an association only when it still identifies the expected pull request. */
+  readonly dissociatePullRequest: (
+    topicId: TopicId,
+    number: number,
+    updatedAt: string,
+  ) => Effect.Effect<RevisionedTopic, StorageFailure>;
   readonly applyChainPlan: (
     plan: ChainPlanWrite,
   ) => Effect.Effect<ReadonlyArray<RevisionedTopic>, StorageFailure>;
@@ -445,12 +451,32 @@ function makeRepository(sql: SqlClient.SqlClient, faultAt?: string): TopicReposi
       ),
     );
 
+  const dissociatePullRequest = (topicId: TopicId, number: number, updatedAt: string) =>
+    catchSql(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
+            UPDATE topics
+            SET pull_request_number = NULL, revision = revision + 1, updated_at = ${updatedAt}
+            WHERE id = ${topicId} AND pull_request_number = ${number}
+          `;
+          const value = yield* get(topicId);
+          if (value.topic.pullRequest !== undefined)
+            return yield* Effect.fail(
+              storageFailure("conflict", "Topic has a different pull request.", number, topicId),
+            );
+          return value;
+        }),
+      ),
+    );
+
   return {
     list: rows,
     get,
     create,
     update,
     associatePullRequest,
+    dissociatePullRequest,
     applyChainPlan: (plan) => catchSql(sql.withTransaction(applyEdits(plan))),
     updateFamilyPartition: ({ family, arrangement }) =>
       catchSql(

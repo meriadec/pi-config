@@ -387,6 +387,18 @@ export function makeProductionWorkApplication(
           ),
           Effect.asVoid,
         ),
+      dissociatePullRequest: (topicId, number, observedAt) =>
+        topics.dissociatePullRequest(topicId, number, observedAt).pipe(
+          Effect.flatMap((value) =>
+            state.publish({
+              _tag: "DurableCommitted",
+              topics: {
+                upsert: [{ topic: value.topic, rowRevision: value.revision }],
+              },
+            }),
+          ),
+          Effect.asVoid,
+        ),
     });
     refreshAfterIntegrationBranchReset = runScoped(observations.refreshIntegration).pipe(
       Effect.catch(() => Effect.void),

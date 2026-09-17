@@ -54,6 +54,12 @@ export interface ObservationWorkersOptions {
     number: number,
     observedAt: string,
   ) => Effect.Effect<void, unknown>;
+  /** Removes a confirmed closed-without-merge identity before its live facts disappear. */
+  readonly dissociatePullRequest?: (
+    topicId: TopicId,
+    number: number,
+    observedAt: string,
+  ) => Effect.Effect<void, unknown>;
   readonly maintenance?: StorageMaintenance;
   readonly now?: Effect.Effect<string>;
   readonly localIntervalMs?: number;
@@ -289,7 +295,13 @@ export const makeObservationWorkers = (
               Effect.flatMap((value) =>
                 Effect.gen(function* () {
                   const observedAt = yield* now;
-                  if (value !== null && topic.pullRequest === undefined)
+                  const closed = value?.state === "closed";
+                  if (closed && topic.pullRequest !== undefined)
+                    yield* (
+                      options.dissociatePullRequest?.(topic.id, value.number, observedAt) ??
+                        Effect.void
+                    );
+                  if (value !== null && !closed && topic.pullRequest === undefined)
                     yield* (
                       options.associatePullRequest?.(topic.id, value.number, observedAt) ??
                         Effect.void
@@ -301,7 +313,7 @@ export const makeObservationWorkers = (
                         {
                           topicId: topic.id,
                           freshness: { _tag: "Fresh", observedAt },
-                          ...(value === null ? {} : { value: projectPullRequest(value) }),
+                          ...(value === null || closed ? {} : { value: projectPullRequest(value) }),
                         },
                       ],
                     },

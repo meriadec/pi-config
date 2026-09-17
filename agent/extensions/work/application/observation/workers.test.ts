@@ -62,12 +62,18 @@ const make = (
     number: number,
     observedAt: string,
   ) => Effect.Effect<void, unknown>,
+  dissociatePullRequest?: (
+    topicId: typeof ID,
+    number: number,
+    observedAt: string,
+  ) => Effect.Effect<void, unknown>,
+  initialTopic: DurableTopic = topic(),
 ) =>
   Effect.gen(function* () {
     const state = yield* makeWorkState({
       daemon: { id: "daemon", startedAt: NOW },
       durable: {
-        topics: [{ topic: topic(), rowRevision: 0 }],
+        topics: [{ topic: initialTopic, rowRevision: 0 }],
         repositoryStates: [],
         operations: [],
       },
@@ -83,6 +89,7 @@ const make = (
       githubRetryDelay: () => Effect.succeed(100),
       workspace: () => Effect.succeed(4),
       ...(associatePullRequest === undefined ? {} : { associatePullRequest }),
+      ...(dissociatePullRequest === undefined ? {} : { dissociatePullRequest }),
     });
     return { state, workers };
   });
@@ -369,6 +376,41 @@ describe("observation workers", () => {
       _tag: "Failed",
       message: "x".repeat(1_000),
     });
+  });
+
+  test("removes a closed pull request from observation and requests durable dissociation", async () => {
+    const dissociated: number[] = [];
+    const github = {
+      observe: () =>
+        Effect.succeed({
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          state: "closed" as const,
+          draft: false,
+          ci: "none" as const,
+          reviewPending: false,
+          copilotReviewed: false,
+          changesRequested: false,
+          approved: false,
+          unresolvedThreads: 0,
+        }),
+    } as GitHubPullRequests;
+    const { state, workers } = await Effect.runPromise(
+      make(
+        gitWithInspection(() => Effect.succeed({ clean: true })),
+        github,
+        undefined,
+        (_topicId, number) => Effect.sync(() => dissociated.push(number)).pipe(Effect.asVoid),
+        { ...topic(), pullRequest: { number: 42 } },
+      ),
+    );
+
+    await Effect.runPromise(workers.refreshPullRequests as Effect.Effect<void>);
+
+    expect(dissociated).toEqual([42]);
+    expect(
+      (await Effect.runPromise(state.snapshot)).observed.pullRequests[0]?.value,
+    ).toBeUndefined();
   });
 
   test("projects the exact Integration Target and commit counts", async () => {

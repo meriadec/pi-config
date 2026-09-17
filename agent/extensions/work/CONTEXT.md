@@ -137,9 +137,9 @@ _Avoid_: non-secret credential, identity token.
 
 **Pull Request identity**:
 The durable GitHub pull request number that a Topic records after it first associates the pull request
-with its Branch. The daemon uses this identity to continue showing the pull request after it becomes
-merged or closed and after the daemon restarts. For an older Topic without this identity, the daemon
-accepts a terminal pull request only when its final head commit is the local Topic Branch tip.
+with its Branch. The daemon uses this identity to continue showing an open or merged pull request
+after restart. A pull request closed without merge removes the identity and becomes equivalent to no
+pull request. A later reopened or new pull request can then associate with the Topic.
 _Avoid_: pull request status, branch lookup.
 
 **Tracking PR**:

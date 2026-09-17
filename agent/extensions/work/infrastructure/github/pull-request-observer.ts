@@ -29,7 +29,7 @@ const PR_FIELDS = `
   reviewThreads(first:${MAX_REVIEW_THREADS}){nodes{isResolved}}
   commits(last:1){nodes{commit{statusCheckRollup{state}}}}
 `;
-const DISCOVERY_PR_QUERY = `query($owner:String!,$repo:String!,$branch:String!){repository(owner:$owner,name:$repo){pullRequests(headRefName:$branch,states:[OPEN,MERGED,CLOSED],first:1,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${PR_FIELDS}}}}}`;
+const DISCOVERY_PR_QUERY = `query($owner:String!,$repo:String!,$branch:String!){repository(owner:$owner,name:$repo){pullRequests(headRefName:$branch,states:[OPEN,MERGED],first:1,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${PR_FIELDS}}}}}`;
 const TRACKED_PR_QUERY = `query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){${PR_FIELDS}}}}`;
 
 const Review = Schema.Struct({
