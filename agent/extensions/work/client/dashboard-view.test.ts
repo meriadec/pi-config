@@ -174,6 +174,9 @@ class FakeRuntime {
   chainConfirmation: string | undefined;
   repeats: Array<() => void> = [];
   repeatStops = 0;
+  schedules: Array<() => void> = [];
+  scheduleIntervals: number[] = [];
+  scheduleStops = 0;
   awaitOperationCalls = 0;
   awaitOperationPending = false;
   ephemeralResult: unknown;
@@ -195,6 +198,17 @@ class FakeRuntime {
       this.repeats.push(task);
       return () => {
         this.repeatStops += 1;
+      };
+    },
+    schedule: (delay: number, task: () => void) => {
+      let active = true;
+      this.scheduleIntervals.push(delay);
+      this.schedules.push(() => {
+        if (active) task();
+      });
+      return () => {
+        active = false;
+        this.scheduleStops += 1;
       };
     },
     startOperation: async (request: unknown) => {
@@ -349,7 +363,6 @@ describe("Effect dashboard product UI", () => {
       "Setup operation: running · setup command 2",
       "Operation: running · setup command 2",
       "Active command: topic.rebase",
-      "Submission: ",
       "Observation: Observation failed 2026-01-01T00:02:00",
       "Git operation: ",
       "Main Agent:",
@@ -1449,6 +1462,116 @@ describe("Effect dashboard product UI", () => {
     await component.dispose();
   });
 
+  test("keeps the action rail stable and gives delayed inline copy feedback", async () => {
+    const fake = new FakeRuntime();
+    let finishCopy: (() => void) | undefined;
+    const copy = new Promise<void>((resolve) => {
+      finishCopy = resolve;
+    });
+    const component = new EffectWorkDashboardComponent({
+      tui: { requestRender() {}, terminal: { rows: 30 } } as never,
+      client: fake.runtime,
+      done() {},
+      copyToClipboard: () => copy,
+    });
+    fake.stateHandler!({ _tag: "Snapshot", snapshot: snapshot() });
+    component.handleInput("l");
+    component.handleInput("l");
+    const before = component.render(120);
+
+    component.handleInput("\r");
+    expect(component.render(120)).toEqual(before);
+
+    expect(fake.scheduleIntervals.at(-1)).toBe(120);
+    fake.schedules.at(-1)!();
+    const working = component.render(120);
+    expect(working).toHaveLength(before.length);
+    expect(stripSgr(working.join("\n"))).toContain("Copy Branch Name · Working…");
+    expect(stripSgr(working.join("\n"))).not.toContain("Submission: in progress");
+    expect(stripSgr(working.join("\n"))).not.toContain("A Topic action is already in progress");
+    expect(working.find((line) => line.includes("Access Topic Workspace"))).toBe(
+      before.find((line) => line.includes("Access Topic Workspace")),
+    );
+
+    finishCopy!();
+    await Bun.sleep(0);
+    const copied = component.render(120).join("\n");
+    expect(stripSgr(copied)).toContain("Copy Branch Name · Copied");
+    expect(copied).toContain("\x1b[32mCopied\x1b[39m");
+    expect(component.snapshotViewState().message).toBeUndefined();
+
+    component.handleInput("j");
+    const movedFocus = stripSgr(component.render(120).join("\n"));
+    expect(movedFocus).toContain("  Copy Branch Name · Copied");
+    expect(movedFocus).toContain("> Access Topic Workspace");
+
+    expect(fake.scheduleIntervals.at(-1)).toBe(500);
+    fake.schedules.at(-1)!();
+    expect(stripSgr(component.render(120).join("\n"))).not.toContain(" · Copied");
+    await component.dispose();
+  });
+
+  test("keeps failed action feedback until Topic selection changes", async () => {
+    const fake = new FakeRuntime();
+    const component = new EffectWorkDashboardComponent({
+      tui: { requestRender() {}, terminal: { rows: 30 } } as never,
+      client: fake.runtime,
+      done() {},
+      copyToClipboard: async () => {
+        throw new Error("Clipboard unavailable.");
+      },
+    });
+    fake.stateHandler!({ _tag: "Snapshot", snapshot: snapshot() });
+    component.handleInput("l");
+    component.handleInput("l");
+    component.handleInput("\r");
+    await Bun.sleep(0);
+
+    const failed = component.render(120).join("\n");
+    expect(stripSgr(failed)).toContain("Copy Branch Name · Failed");
+    expect(failed).toContain("\x1b[31mFailed\x1b[39m");
+    expect(component.snapshotViewState().message).toBe("Clipboard unavailable.");
+
+    component.handleInput("h");
+    component.handleInput("h");
+    component.handleInput("j");
+    expect(component.snapshotViewState().selectedTopicId).toBe(childId);
+    expect(component.snapshotViewState().actionFeedback).toBeUndefined();
+    await component.dispose();
+  });
+
+  test("stops action feedback after dashboard disposal", async () => {
+    const fake = new FakeRuntime();
+    let renderRequests = 0;
+    let finishCopy: (() => void) | undefined;
+    const copy = new Promise<void>((resolve) => {
+      finishCopy = resolve;
+    });
+    const component = new EffectWorkDashboardComponent({
+      tui: {
+        requestRender() {
+          renderRequests += 1;
+        },
+        terminal: { rows: 30 },
+      } as never,
+      client: fake.runtime,
+      done() {},
+      copyToClipboard: () => copy,
+    });
+    fake.stateHandler!({ _tag: "Snapshot", snapshot: snapshot() });
+    component.handleInput("l");
+    component.handleInput("l");
+    component.handleInput("\r");
+    const requestsAtDisposal = renderRequests;
+
+    await component.dispose();
+    fake.schedules.at(-1)!();
+    finishCopy!();
+    await Bun.sleep(0);
+    expect(renderRequests).toBe(requestsAtDisposal);
+    expect(component.snapshotViewState().actionFeedback).toBeUndefined();
+  });
+
   test("opens the pull request from p and reports local refresh before background updates", async () => {
     const fake = new FakeRuntime();
     const component = new EffectWorkDashboardComponent({
@@ -1533,7 +1656,8 @@ describe("Effect dashboard product UI", () => {
     component.handleInput("y");
     await Bun.sleep(0);
     expect(fake.confirms).toEqual([`${terminalOperationId}:direct-secret`]);
-    expect(component.snapshotViewState().message).toBe("New Main Agent started.");
+    expect(stripSgr(component.render(120).join("\n"))).toContain("Start New Main Agent · Started");
+    expect(component.snapshotViewState().message).toBeUndefined();
     await component.dispose();
   });
 

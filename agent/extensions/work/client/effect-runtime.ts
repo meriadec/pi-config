@@ -76,6 +76,8 @@ export interface WorkClientRuntime {
     onUpdate: (operation: DurableOperation) => void,
     onError?: (error: unknown) => void,
   ) => () => void;
+  /** Runs one Effect-owned delayed callback. The returned function interrupts the schedule. */
+  readonly schedule: (delayMs: number, task: () => void) => () => void;
   /** Runs an Effect-owned periodic fiber. It does not use a JavaScript timer handle. */
   readonly repeat: (intervalMs: number, task: () => void) => () => void;
   /** Interrupts all calls, reconnect work, watches, schedules, streams, and the owned socket. */
@@ -143,6 +145,8 @@ export function makeWorkClientRuntime(options: WorkClientRuntimeOptions): WorkCl
       ),
       onError,
     );
+  const schedule: WorkClientRuntime["schedule"] = (delayMs, task) =>
+    runObserved(Effect.sleep(delayMs).pipe(Effect.andThen(Effect.sync(task))));
   const repeat: WorkClientRuntime["repeat"] = (intervalMs, task) =>
     runObserved(Effect.forever(Effect.sleep(intervalMs).pipe(Effect.andThen(Effect.sync(task)))));
   const dispose = async (): Promise<void> => {
@@ -170,6 +174,7 @@ export function makeWorkClientRuntime(options: WorkClientRuntimeOptions): WorkCl
     ephemeralAction: (action, topicId) =>
       withClient((client) => client.ephemeralAction(action, topicId)),
     watchOperation,
+    schedule,
     repeat,
     subscribeState,
     dispose,

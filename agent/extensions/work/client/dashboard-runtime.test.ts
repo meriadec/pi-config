@@ -157,6 +157,7 @@ class FakeRuntime {
     watchOperation: () => () => {
       this.watchStops += 1;
     },
+    schedule: () => () => undefined,
     repeat: (_interval: number, task: () => void) => {
       this.repeats.push(task);
       return () => {

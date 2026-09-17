@@ -45,6 +45,9 @@ import {
   type RootTopicWizardState,
 } from "./root-topic-wizard.ts";
 
+const ACTION_PROGRESS_DELAY_MS = 120;
+const ACTION_SUCCESS_DURATION_MS = 500;
+
 export interface EffectWorkDashboardComponentOptions {
   readonly tui: TUI;
   readonly client: WorkClientRuntime;
@@ -73,6 +76,9 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
   private childWaitAbort: AbortController | undefined;
   private stopChildWatch: (() => void) | undefined;
   private childSubmissionSerial = 0;
+  private stopActionFeedbackSchedule: (() => void) | undefined;
+  private actionFeedbackGeneration = 0;
+  private disposed = false;
   private _focused = false;
   private readonly runtime: EffectDashboardRuntime;
   private readonly options: EffectWorkDashboardComponentOptions;
@@ -145,7 +151,7 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
       this.viewState.editor === undefined &&
       this.viewState.confirmation === undefined
     ) {
-      void this.run("refresh", async () => {
+      void this.run("refresh", undefined, async () => {
         await this.runtime.refresh();
         this.setMessage("Local repository state refreshed; pull requests are updating.");
       });
@@ -167,8 +173,10 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
     if (this.viewState.editor !== undefined && this.textEntry !== undefined) {
       this.viewState = updateDashboardEditorValue(this.viewState, this.textEntry.getValue());
     }
+    const selectedTopicId = this.viewState.selectedTopicId;
     const result = handleDashboardViewInput(this.viewState, this.effectState.snapshot, data);
     this.viewState = result.state;
+    if (this.viewState.selectedTopicId !== selectedTopicId) this.clearActionFeedback();
     this.syncTextEntry();
     if (result.exit) {
       this.options.done();
@@ -217,6 +225,9 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
   }
 
   async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.clearActionFeedback();
     this.releaseTextEntry();
     this.releaseRootWizardEntry();
     this.cancelChildWait();
@@ -669,26 +680,30 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
 
   private async execute(action: DashboardAction): Promise<void> {
     const key = action.topicId;
-    if (this.viewState.pending.has(key)) return;
-    await this.run(key, async () => {
+    if (this.viewState.pending.has(key)) {
+      this.showBusyFeedback(action);
+      return;
+    }
+    await this.run(key, action, async () => {
       switch (action._tag) {
         case "CopyBranch":
           await (this.options.copyToClipboard ?? copyTextToClipboard)(action.branch);
-          this.setMessage("Branch name copied.");
+          this.showActionSuccess(action, "Copied");
           return;
-        case "OpenWorkspace":
-          this.setMessage(
-            actionMessage(
-              await this.options.client.ephemeralAction("workspace", action.topicId),
-              "Topic workspace opened.",
-            ),
-          );
+        case "OpenWorkspace": {
+          const result = await this.options.client.ephemeralAction("workspace", action.topicId);
+          if (isUnavailableActionResult(result)) {
+            this.setMessage(actionMessage(result, "The Topic workspace is unavailable."));
+          } else {
+            this.showActionSuccess(action, "Opened");
+          }
           return;
+        }
         case "OpenTerminal":
-          await this.startSensitiveAction(action.topicId, "terminal.open");
+          await this.startSensitiveAction(action, "terminal.open");
           return;
         case "RetrySetup":
-          await this.startRetrySetup(action.topicId);
+          await this.startRetrySetup(action);
           return;
         case "CancelSetup": {
           const cancellation = await this.runtime.requestCancelSetup(action.operationId);
@@ -705,7 +720,10 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
         }
         case "ConfirmCancelSetup": {
           const operation = await this.runtime.confirmCancelSetup();
-          this.setMessage(setupCancellationResultMessage(operation));
+          const message = setupCancellationResultMessage(operation);
+          if (operation.state === "cancelled") this.showActionSuccess(action, "Cancelled");
+          else if (operation.state === "failed") this.showActionFailure(action);
+          this.setMessage(message);
           return;
         }
         case "RejectCancelSetup":
@@ -715,8 +733,11 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
         case "ConfirmRetrySetup": {
           await this.options.client.confirmOperation(action.operationId, action.confirmation);
           const operation = await this.options.client.awaitOperation(action.operationId);
+          const succeeded = operation.result?.status === "succeeded";
+          if (succeeded) this.showActionSuccess(action, "Completed");
+          else this.showActionFailure(action);
           this.setMessage(
-            operation.result?.status === "succeeded"
+            succeeded
               ? "Setup retry completed."
               : (operationResultMessage(operation) ?? "Setup retry failed."),
           );
@@ -727,10 +748,10 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
           this.setMessage("Setup retry rejected.");
           return;
         case "OpenMainAgent":
-          await this.startSensitiveAction(action.topicId, "agent.open");
+          await this.startSensitiveAction(action, "agent.open");
           return;
         case "ResetMainAgent":
-          await this.startSensitiveAction(action.topicId, "agent.reset");
+          await this.startSensitiveAction(action, "agent.reset");
           return;
         case "ConfirmSensitiveAction": {
           const replacement = selectionAfterTopicDeletion(
@@ -739,7 +760,7 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
           );
           await this.options.client.confirmOperation(action.operationId, action.confirmation);
           const operation = await this.options.client.awaitOperation(action.operationId);
-          this.setMessage(sensitiveActionResultMessage(action.kind, operation));
+          this.reportSensitiveActionResult(action, action.kind, operation);
           this.selectAfterSuccessfulDeletion(action.kind, operation, replacement);
           return;
         }
@@ -747,17 +768,18 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
           await this.options.client.rejectOperation(action.operationId);
           this.setMessage(rejectedMessage(action.kind));
           return;
-        case "OpenPullRequest":
-          this.setMessage(
-            actionMessage(
-              await this.options.client.ephemeralAction("pull-request", action.topicId),
-              "Pull request opened.",
-            ),
-          );
+        case "OpenPullRequest": {
+          const result = await this.options.client.ephemeralAction("pull-request", action.topicId);
+          if (isUnavailableActionResult(result)) {
+            this.setMessage(actionMessage(result, "The Topic has no pull request."));
+          } else {
+            this.showActionSuccess(action, "Opened");
+          }
           return;
+        }
         case "Rebase":
           await this.options.client.ephemeralAction("rebase", action.topicId);
-          this.setMessage("Rebase finished.");
+          this.showActionSuccess(action, "Rebased");
           return;
         case "Rename":
           await this.runtime.mutate(`rename:${action.topicId}`, {
@@ -765,7 +787,7 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
             topicId: action.topicId,
             name: action.name,
           });
-          this.setMessage("Topic renamed.");
+          this.showActionSuccess(action, "Renamed");
           return;
         case "SetNote":
           await this.runtime.mutate(`note:${action.topicId}`, {
@@ -773,11 +795,11 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
             topicId: action.topicId,
             note: action.note,
           });
-          this.setMessage(action.note.length === 0 ? "Topic Note removed." : "Topic Note saved.");
+          this.showActionSuccess(action, action.note.length === 0 ? "Removed" : "Saved");
           return;
         case "MovePartition":
           await this.runtime.movePartition(action.topicId, action.direction);
-          this.setMessage("Topic Partition moved.");
+          this.showActionSuccess(action, "Moved");
           return;
         case "ChooseParent":
         case "ChooseChainTarget":
@@ -788,13 +810,14 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
             topicId: action.topicId,
             parentTopicId: action.parentTopicId,
           });
-          this.setMessage("Parent Topic changed.");
+          this.showActionSuccess(action, "Changed");
           return;
         case "RemoveParent":
           await this.runtime.mutate(`parent:${action.topicId}`, {
             _tag: "RemoveParent",
             topicId: action.topicId,
           });
+          this.showActionSuccess(action, "Removed");
           this.setMessage("Parent Topic removed.");
           return;
         case "MoveInChain": {
@@ -818,7 +841,7 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
             this.setMessage("Integration Chain move needs confirmation.");
             return;
           }
-          this.setMessage("Integration Chain moved.");
+          this.showActionSuccess(action, "Moved");
           return;
         }
         case "ResetIntegrationTarget":
@@ -826,23 +849,27 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
             _tag: "ResetIntegrationTarget",
             topicId: action.topicId,
           });
-          this.setMessage("Integration Target reset.");
+          this.showActionSuccess(action, "Reset");
           return;
         case "ResetIntegrationBranch":
           await this.runtime.resetIntegrationBranch(action.repository, action.expectedRevision);
+          this.showActionSuccess(action, "Reset");
           this.setMessage("Integration Branch inference reset. No Branch or Git history moved.");
           return;
         case "AddChild":
           this.openChildWizard(action.topicId);
           return;
         case "Delete":
-          await this.startSensitiveAction(action.topicId, "topic.delete");
+          await this.startSensitiveAction(action, "topic.delete");
           return;
       }
     });
   }
 
-  private async startRetrySetup(topicId: DashboardAction["topicId"]): Promise<void> {
+  private async startRetrySetup(
+    action: Extract<DashboardAction, { _tag: "RetrySetup" }>,
+  ): Promise<void> {
+    const topicId = action.topicId;
     const snapshot = this.effectState.snapshot;
     const configuration = this.options.configuration;
     if (snapshot === undefined) throw new Error("Work state is not available.");
@@ -880,17 +907,21 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
     }
     this.setMessage("Setup retry started.");
     const operation = await this.options.client.awaitOperation(handle.id);
+    const succeeded = operation.result?.status === "succeeded";
+    if (succeeded) this.showActionSuccess(action, "Completed");
+    else this.showActionFailure(action);
     this.setMessage(
-      operation.result?.status === "succeeded"
+      succeeded
         ? "Setup retry completed."
         : (operationResultMessage(operation) ?? "Setup retry failed."),
     );
   }
 
   private async startSensitiveAction(
-    topicId: DashboardAction["topicId"],
+    action: DashboardAction,
     kind: SensitiveActionKind,
   ): Promise<void> {
+    const topicId = action.topicId;
     const replacement = selectionAfterTopicDeletion(this.effectState.snapshot, topicId);
     const handle = await this.options.client.startOperation({
       fingerprint: `${kind}:${topicId}`,
@@ -927,8 +958,26 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
       return;
     }
     const operation = await this.options.client.awaitOperation(handle.id);
-    this.setMessage(sensitiveActionResultMessage(kind, operation));
+    this.reportSensitiveActionResult(action, kind, operation);
     this.selectAfterSuccessfulDeletion(kind, operation, replacement);
+  }
+
+  private reportSensitiveActionResult(
+    action: DashboardAction,
+    kind: SensitiveActionKind,
+    operation: Awaited<ReturnType<WorkClientRuntime["awaitOperation"]>>,
+  ): void {
+    const message = sensitiveActionResultMessage(kind, operation);
+    if (
+      operation.result?.status === "succeeded" &&
+      !isUnavailableActionResult(operation.result.value)
+    ) {
+      this.showActionSuccess(action, sensitiveActionSuccessLabel(kind));
+      if (kind === "topic.delete") this.setMessage(message);
+      return;
+    }
+    if (operation.result?.status === "failed") this.showActionFailure(action);
+    this.setMessage(message);
   }
 
   private selectAfterSuccessfulDeletion(
@@ -945,14 +994,29 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
     }
   }
 
-  private async run(key: string, operation: () => Promise<unknown>): Promise<void> {
+  private async run(
+    key: string,
+    action: DashboardAction | undefined,
+    operation: () => Promise<unknown>,
+  ): Promise<void> {
     this.setPending(key, true);
+    if (action !== undefined) this.startActionFeedback(action);
     try {
       await operation();
     } catch (error) {
-      this.setMessage(error instanceof Error ? error.message : "The Work action failed.");
+      const message = error instanceof Error ? error.message : "The Work action failed.";
+      this.setMessage(message);
+      if (action !== undefined) this.showActionFailure(action);
     } finally {
       this.setPending(key, false);
+      if (
+        action !== undefined &&
+        this.viewState.actionFeedback?.topicId === action.topicId &&
+        this.viewState.actionFeedback.action === feedbackAction(action) &&
+        this.viewState.actionFeedback.status === "working"
+      ) {
+        this.clearActionFeedback();
+      }
     }
   }
 
@@ -961,13 +1025,128 @@ export class EffectWorkDashboardComponent implements Component, Focusable {
     if (active) pending.add(key);
     else pending.delete(key);
     this.viewState = { ...this.viewState, pending };
+  }
+
+  private startActionFeedback(action: DashboardAction): void {
+    this.clearActionFeedback();
+    const { message: _message, ...viewState } = this.viewState;
+    this.viewState = viewState;
+    const generation = ++this.actionFeedbackGeneration;
+    this.scheduleActionFeedback(ACTION_PROGRESS_DELAY_MS, () => {
+      if (
+        this.disposed ||
+        generation !== this.actionFeedbackGeneration ||
+        this.viewState.selectedTopicId !== action.topicId
+      )
+        return;
+      this.viewState = {
+        ...this.viewState,
+        actionFeedback: {
+          topicId: action.topicId,
+          action: feedbackAction(action),
+          status: "working",
+          text: "Working…",
+        },
+      };
+      this.options.tui.requestRender();
+    });
+  }
+
+  private showActionSuccess(action: DashboardAction, text: string): void {
+    if (this.disposed || this.viewState.selectedTopicId !== action.topicId) return;
+    this.clearActionFeedback();
+    const generation = ++this.actionFeedbackGeneration;
+    this.viewState = {
+      ...this.viewState,
+      actionFeedback: {
+        topicId: action.topicId,
+        action: feedbackAction(action),
+        status: "success",
+        text,
+      },
+    };
+    this.options.tui.requestRender();
+    this.scheduleActionFeedback(ACTION_SUCCESS_DURATION_MS, () => {
+      if (this.disposed || generation !== this.actionFeedbackGeneration) return;
+      this.clearActionFeedback();
+      this.options.tui.requestRender();
+    });
+  }
+
+  private showActionFailure(action: DashboardAction): void {
+    if (this.disposed || this.viewState.selectedTopicId !== action.topicId) return;
+    this.clearActionFeedback();
+    this.viewState = {
+      ...this.viewState,
+      actionFeedback: {
+        topicId: action.topicId,
+        action: feedbackAction(action),
+        status: "failure",
+        text: "Failed",
+      },
+    };
     this.options.tui.requestRender();
   }
 
+  private showBusyFeedback(action: DashboardAction): void {
+    if (this.disposed || this.viewState.selectedTopicId !== action.topicId) return;
+    this.clearActionFeedback();
+    const generation = ++this.actionFeedbackGeneration;
+    this.viewState = {
+      ...this.viewState,
+      actionFeedback: {
+        topicId: action.topicId,
+        action: feedbackAction(action),
+        status: "busy",
+        text: "Busy",
+      },
+      message: "A Topic action is already in progress.",
+    };
+    this.options.tui.requestRender();
+    this.scheduleActionFeedback(ACTION_SUCCESS_DURATION_MS, () => {
+      if (this.disposed || generation !== this.actionFeedbackGeneration) return;
+      this.clearActionFeedback();
+      this.options.tui.requestRender();
+    });
+  }
+
+  private scheduleActionFeedback(delayMs: number, task: () => void): void {
+    this.stopActionFeedbackSchedule = this.options.client.schedule(delayMs, () => {
+      this.stopActionFeedbackSchedule = undefined;
+      task();
+    });
+  }
+
+  private clearActionFeedback(): void {
+    this.stopActionFeedbackSchedule?.();
+    this.stopActionFeedbackSchedule = undefined;
+    this.actionFeedbackGeneration += 1;
+    if (this.viewState.actionFeedback === undefined) return;
+    const { actionFeedback: _feedback, ...viewState } = this.viewState;
+    this.viewState = viewState;
+  }
+
   private setMessage(message: string): void {
+    if (this.disposed) return;
     this.viewState = { ...this.viewState, message };
     this.options.tui.requestRender();
   }
+}
+
+function feedbackAction(action: DashboardAction): DashboardAction["_tag"] {
+  if (action._tag === "ConfirmRetrySetup" || action._tag === "RejectRetrySetup")
+    return "RetrySetup";
+  if (action._tag === "ConfirmCancelSetup" || action._tag === "RejectCancelSetup")
+    return "CancelSetup";
+  if (action._tag === "ConfirmSensitiveAction" || action._tag === "RejectSensitiveAction") {
+    if (action.kind === "terminal.open") return "OpenTerminal";
+    if (action.kind === "agent.open") return "OpenMainAgent";
+    if (action.kind === "agent.reset") return "ResetMainAgent";
+    return "Delete";
+  }
+  if (action._tag === "ChangeParent") return "ChooseParent";
+  if (action._tag === "MoveInChain") return "ChooseChainTarget";
+  return action._tag;
 }
 
 function chainConfirmationMessage(error: unknown): string | undefined {
@@ -982,6 +1161,12 @@ function chainConfirmationMessage(error: unknown): string | undefined {
     return error.message;
   }
   return undefined;
+}
+
+function isUnavailableActionResult(value: unknown): boolean {
+  return (
+    typeof value === "object" && value !== null && "kind" in value && value.kind === "unavailable"
+  );
 }
 
 function actionMessage(value: unknown, fallback: string): string {
@@ -1013,6 +1198,13 @@ function confirmationText(kind: SensitiveActionKind, topicName?: string): string
 
 function rejectedMessage(kind: SensitiveActionKind): string {
   return `${actionLabel(kind)} rejected.`;
+}
+
+function sensitiveActionSuccessLabel(kind: SensitiveActionKind): string {
+  if (kind === "agent.reset") return "Started";
+  if (kind === "topic.delete" || kind === "terminal.open" || kind === "agent.open")
+    return kind === "topic.delete" ? "Deleted" : "Opened";
+  return "Completed";
 }
 
 function sensitiveActionResultMessage(

@@ -107,6 +107,13 @@ export type DashboardAction =
   | { readonly _tag: "AddChild"; readonly topicId: TopicId }
   | { readonly _tag: "Delete"; readonly topicId: TopicId };
 
+export interface DashboardActionFeedback {
+  readonly topicId: TopicId;
+  readonly action: DashboardAction["_tag"];
+  readonly status: "working" | "success" | "failure" | "busy";
+  readonly text: string;
+}
+
 export interface DashboardViewState {
   readonly selectedTopicId?: TopicId;
   /** The selected row position in the last reconciled ordering. */
@@ -121,6 +128,7 @@ export interface DashboardViewState {
   readonly parentChooser?: ParentTopicChooser;
   readonly chainTargetChooser?: ChainTargetChooser;
   readonly message?: string;
+  readonly actionFeedback?: DashboardActionFeedback;
   readonly pending: ReadonlySet<string>;
 }
 
@@ -273,21 +281,21 @@ export function handleDashboardViewInput(
       },
     };
   }
-  if (data === "s" && state.focus === "list") {
+  if (data === "s" && state.focus === "list" && !topicBusy) {
     const rebase = topicActions(state, snapshot).find((item) => item.action._tag === "Rebase");
     if (rebase?.available) return actionResult(state, rebase.action);
     return rebase === undefined
       ? { state }
       : { state: { ...state, message: rebase.reason ?? "Rebase is unavailable." } };
   }
-  if (data === "m" && state.focus === "list") {
+  if (data === "m" && state.focus === "list" && !topicBusy) {
     const agent = topicActions(state, snapshot).find(
       (item) => item.action._tag === "OpenMainAgent",
     );
     if (agent?.available) return actionResult(state, agent.action);
     return { state };
   }
-  if (data === "p" && state.focus === "list") {
+  if (data === "p" && state.focus === "list" && !topicBusy) {
     const pullRequest = topicActions(state, snapshot).find(
       (item) => item.action._tag === "OpenPullRequest",
     );
@@ -296,14 +304,14 @@ export function handleDashboardViewInput(
       return { state: { ...state, message: "The Topic has no pull request." } };
     return { state };
   }
-  if (data === "o" && state.focus === "list") {
+  if (data === "o" && state.focus === "list" && !topicBusy) {
     const workspace = topicActions(state, snapshot).find(
       (item) => item.action._tag === "OpenWorkspace",
     );
     if (workspace?.available) return actionResult(state, workspace.action);
     return { state };
   }
-  if (data === "t" && state.focus === "list") {
+  if (data === "t" && state.focus === "list" && !topicBusy) {
     const terminal = topicActions(state, snapshot).find(
       (item) => item.action._tag === "OpenTerminal",
     );
@@ -446,7 +454,6 @@ export function topicActions(
   const hasPullRequest = pullRequest !== undefined || topic.pullRequest !== undefined;
   const ready = topic.setup.state === "ready" && topic.worktreePath !== null;
   const rebaseReasons = rebaseUnavailabilityReasons(snapshot, topic);
-  const busy = state.pending.has(topic.id);
   const denied = (action: SensitiveActionKind | "topic.run-setup") =>
     snapshot?.observed.policies?.some(
       (policy) =>
@@ -474,7 +481,7 @@ export function topicActions(
   const retryDenied = denied("topic.run-setup");
   const retryReason = retryDenied
     ? "Denied by topic.run-setup Action policy"
-    : activeTopicWork || busy
+    : activeTopicWork
       ? "Topic work is active"
       : topic.worktreePath === null
         ? "Existing Topic Worktree unavailable"
@@ -511,12 +518,8 @@ export function topicActions(
   ): TopicActionView => ({
     label,
     action,
-    available: available && !busy,
-    ...(busy
-      ? { reason: "A Topic action is already in progress" }
-      : reason === undefined
-        ? {}
-        : { reason }),
+    available,
+    ...(reason === undefined ? {} : { reason }),
   });
   return [
     item("Copy Branch Name", { _tag: "CopyBranch", topicId: topic.id, branch: topic.branch }),
@@ -1049,7 +1052,6 @@ function setupCell(state: DashboardViewState, snapshot: WorkSnapshot, topic: Dur
   }
   const activeAction = snapshot.observed.activeActions.find((item) => item.topicId === topic.id);
   if (activeAction !== undefined) return yellow(activeAction.kind.replace("topic.", ""));
-  if (state.pending.has(topic.id)) return yellow("submitting");
   const operation = latestTopicOperation(snapshot, topic.id);
   if (
     operation !== undefined &&
@@ -1150,7 +1152,6 @@ function renderDetails(
     `Workspace: ${observation?.workspace ?? "not observable"}`,
     `Partition: ${topic.partition + 1}`,
     `Setup: ${topic.setup.state === "setup-interrupted" ? "Interrupted Setup" : topic.setup.state}`,
-    ...(state.pending.has(topic.id) ? [`Submission: ${yellow("in progress")}`] : []),
     ...(setupDetail === undefined ? [] : [`Setup operation: ${setupDetail}`]),
     ...(operation === undefined
       ? []
@@ -1190,11 +1191,27 @@ function renderDetails(
   for (let index = 0; index < actions.length; index += 1) {
     const action = actions[index]!;
     const marker = state.focus === "actions" && index === state.focusedAction ? ">" : " ";
-    const suffix = action.available ? "" : ` · ${action.reason ?? "unavailable"}`;
-    lines.push(`${marker} ${action.available ? action.label : dim(action.label)}${dim(suffix)}`);
+    const feedback =
+      state.actionFeedback?.topicId === topic.id &&
+      state.actionFeedback.action === action.action._tag
+        ? state.actionFeedback
+        : undefined;
+    const suffix =
+      feedback === undefined
+        ? action.available
+          ? ""
+          : dim(` · ${action.reason ?? "unavailable"}`)
+        : ` · ${renderActionFeedback(feedback)}`;
+    lines.push(`${marker} ${action.available ? action.label : dim(action.label)}${suffix}`);
   }
   lines.push("", "h/l focus · j/k action · Enter run · q close details · esc quit");
   return lines.slice(0, height).map((line) => truncateToWidth(line, width));
+}
+
+function renderActionFeedback(feedback: DashboardActionFeedback): string {
+  if (feedback.status === "success") return green(feedback.text);
+  if (feedback.status === "failure") return red(feedback.text);
+  return yellow(feedback.text);
 }
 
 function latestTopicOperation(snapshot: WorkSnapshot, topicId: TopicId) {
