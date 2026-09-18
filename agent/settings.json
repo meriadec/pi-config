@@ -5,7 +5,6 @@
   "hideThinkingBlock": false,
   "theme": "pi-nord-aurora",
   "defaultThinkingLevel": "medium",
-  "packages": [
-    "npm:pi-hashline-edit"
-  ]
+  "npmCommand": ["bun"],
+  "packages": ["npm:pi-hashline-edit", "../../git/pi-work"]
 }

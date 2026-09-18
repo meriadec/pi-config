@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import {
   TRACK_PR_ACTIVITY_EVENT,
   type TrackPrActivityEvent,
-} from "./work/shared/activity-events.ts";
+} from "./shared/work-activity-events.ts";
 
 const POLL_INTERVAL_MS = 60_000;
 const DEFAULT_TIMEOUT_MS = 60 * 60_000;

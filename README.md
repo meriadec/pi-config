@@ -18,6 +18,8 @@ agent/
 
 Runtime state and credentials are intentionally ignored. See `.gitignore` for the exact denylist.
 
+The Work control-plane package is developed in the separate `~/git/pi-work` repository. `agent/settings.json` loads that active checkout through the relative package path `../../git/pi-work`.
+
 ## Harness
 
 Use Bun for scripts and `tsgo` for typechecking:

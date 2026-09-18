@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readTopicAgentEnvironment } from "../work/topic-agent/environment.ts";
 import { buildChildEnvironment } from "./launcher.ts";
 
 const topicAgentEnvironment: NodeJS.ProcessEnv = {
@@ -40,7 +39,6 @@ describe("Delegation Job child environment", () => {
       PI_SUB_JOB_DIR: "/tmp/sub/job-123",
       PI_SUB_PARENT_CWD: "/repo",
     });
-    expect(readTopicAgentEnvironment(childEnvironment)).toBeUndefined();
     expect(parentEnvironment).toMatchObject(topicAgentEnvironment);
   });
 });
