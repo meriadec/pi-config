@@ -1115,7 +1115,10 @@ export default function ralphLoopExtension(pi: ExtensionAPI) {
     }
 
     if (startIndex === -1) return undefined;
-    return { messages: event.messages.slice(startIndex) };
+    const systemMessages = event.messages
+      .slice(0, startIndex)
+      .filter((message) => (message as { role?: unknown }).role === "system");
+    return { messages: [...systemMessages, ...event.messages.slice(startIndex)] };
   });
 
   pi.on("session_shutdown", async () => {

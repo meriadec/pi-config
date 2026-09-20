@@ -367,4 +367,74 @@ describe("ralph-loop git commits", () => {
       await rm(repoRoot, { recursive: true, force: true });
     }
   });
+
+  test("keeps system prompt and tool declarations when isolating issue context", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "ralph-loop-test-"));
+    const issueDir = join(repoRoot, ".scratch", "feature", "issues");
+    await mkdir(issueDir, { recursive: true });
+    await writeFile(join(issueDir, "01-test.md"), "# Test issue\n\nStatus: todo\n", "utf8");
+
+    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+    type ContextHandler = (event: {
+      messages: unknown[];
+    }) => Promise<{ messages: unknown[] } | undefined>;
+    let contextHandler: ContextHandler | undefined;
+    const sentMessages: string[] = [];
+    const pi = {
+      registerCommand(
+        name: string,
+        command: { handler: (args: string, ctx: unknown) => Promise<void> },
+      ) {
+        commands.set(name, command);
+      },
+      registerTool() {},
+      async exec(command: string, args: string[]) {
+        if (command === "git" && args.join(" ") === "rev-parse --show-toplevel") {
+          return { stdout: repoRoot, stderr: "", code: 0, killed: false };
+        }
+        if (command === "git" && args.includes("status")) {
+          return { stdout: "", stderr: "", code: 0, killed: false };
+        }
+        throw new Error(`Unexpected exec: ${command} ${args.join(" ")}`);
+      },
+      appendEntry() {},
+      sendUserMessage(message: string) {
+        sentMessages.push(message);
+      },
+      on(event: string, handler: ContextHandler) {
+        if (event === "context") contextHandler = handler;
+      },
+    };
+
+    const ctx = {
+      cwd: repoRoot,
+      ui: {
+        setStatus() {},
+        notify() {},
+      },
+      isIdle: () => true,
+    };
+
+    try {
+      ralphLoopExtension(pi as unknown as ExtensionAPI);
+      await commands.get("ralph-loop")!.handler("start .scratch/feature/issues:1", ctx);
+
+      const systemMessage = {
+        role: "system",
+        content: "",
+        toolsAdded: [{ name: "read" }, { name: "ralph_issue_result" }],
+      };
+      const oldUserMessage = { role: "user", content: "Previous issue" };
+      const oldAssistantMessage = { role: "assistant", content: [{ type: "text", text: "Done" }] };
+      const currentIssueMessage = { role: "user", content: sentMessages[0] };
+      const result = await contextHandler!({
+        messages: [systemMessage, oldUserMessage, oldAssistantMessage, currentIssueMessage],
+      });
+
+      expect(result?.messages).toEqual([systemMessage, currentIssueMessage]);
+    } finally {
+      await commands.get("ralph-loop")?.handler("stop", ctx);
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
 });
