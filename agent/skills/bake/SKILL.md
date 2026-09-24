@@ -35,6 +35,7 @@ If the user describes data instead, run `mktemp -d` once and write `<workspace>-
 3. Write a strict `manifestVersion: 2` manifest containing the requested state only.
 4. Use operator device indexes from `10` upward. When an account has no stated index, start at `0` for that currency. When governance is not stated, use `CLASSIC`, quorum `1`, and all requested operators as members. Give every account a `SEND` rule. Give `canton` and `canton_devnet` accounts a `RECEIVE` rule too. Add other rules only when the user requests them.
 5. Do not invent required domain values that have no clear type or repository precedent; ask for that value.
+6. Give every whitelist at least one address. If the user requests a whitelist without an address, ask for its name, currency, and address. An empty `addresses` array passes manifest validation but the HSM rejects it.
 
 ## Apply
 
