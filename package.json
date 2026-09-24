@@ -4,7 +4,7 @@
   "type": "module",
   "sideEffects": false,
   "scripts": {
-    "test": "bun test agent/extensions",
+    "test": "bun test agent/extensions agent/skills/create-pr",
     "typecheck": "tsgo --project tsconfig.json",
     "lint": "oxlint .",
     "format": "oxfmt --write .",

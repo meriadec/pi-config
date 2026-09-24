@@ -1,107 +1,85 @@
 ---
 name: create-pr
-description: Creates GitHub pull requests from the current repo context using the `gh` CLI, with a conventional-commit title and concise professional body. Use when the user asks to create, open, draft, or prepare a pull request/PR, including PRs from the current branch to a user-specified base branch.
+description: Creates GitHub pull requests from the current repo context using a deterministic local workflow and the `gh` CLI. Use when the user asks to create, open, draft, or prepare a pull request/PR, including PRs to a specified base branch.
 ---
 
 # Create PR
 
-Create a GitHub pull request from the current context. Default: current branch into the repo default branch, usually `main`. If the user names a target/base branch, create the PR against that branch instead.
-
-## Quick start
-
-1. Inspect repo state:
-   - `git status --short --branch`
-   - `git remote -v`
-   - `git branch --show-current`
-   - `gh repo view --json nameWithOwner,defaultBranchRef`
-2. Determine base/head:
-   - If the user specifies a target/base branch, use that exact branch as the base, even when it is not the repo default branch.
-   - Otherwise, base defaults to the repo default branch, usually `main`; if repo default branch differs, prefer the default branch unless user explicitly specified `main`.
-   - Head defaults to current branch.
-   - Never create a PR from the base/default branch to itself.
-3. Collect context:
-   - User request/conversation notes.
-   - Commits: `git log --oneline <base>..HEAD`
-   - Diff summary: `git diff --stat <base>...HEAD`
-   - Detailed diff if needed: `git diff <base>...HEAD`
-   - Existing PR check: `gh pr list --head "$(git branch --show-current)" --json number,url,title,state`
-4. Draft the PR:
-   - Determine PR state: if the user explicitly asks for a "draft PR", "draft pull request", or says to create/open it as draft, set state to draft; otherwise create a regular ready-for-review PR.
-   - Propose title, body, base, head, and state (draft or ready for review).
-   - Ask for explicit confirmation before creating anything.
-5. Refine with the user if requested:
-   - Ask targeted questions, suggest tighter options, and continue until title/body/base/head are agreed.
-6. Ensure branch is available on remote:
-   - If there are uncommitted changes that clearly belong in the PR, validate as appropriate, create a focused local signed commit, and include it in the PR branch.
-   - If not pushed: include the needed `git push -u origin HEAD` in the final confirmation, then run it after approval.
-7. Create the PR only after final agreement:
-   - Ready-for-review PR: `gh pr create --base <base> --head <head> --title '<title>' --body-file /tmp/pr-body.md`
-   - Draft PR: `gh pr create --draft --base <base> --head <head> --title '<title>' --body-file /tmp/pr-body.md`
-
-## Title rules
-
-Use a conventional-commit subject, sharp and under ~80 chars.
-
-- If there is exactly one commit in the PR, use its subject unless it is vague, too long, or not conventional; normalize only as needed.
-- If there are multiple commits, synthesize a concise title that summarizes the PR.
-- Format: `type(scope): subject`
-- Valid common types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `build`, `ci`.
-- Scope:
-  - If a ticket exists, use it as scope: `feat(VG-123): add billing retry state`
-  - Else use a meaningful domain/module scope: `fix(auth): handle expired sessions`
-  - Omit scope if it adds noise: `docs: document stack workflow`
-- Subject: imperative/lowercase unless proper noun; no trailing period.
-
-## Body format
-
-Write the body exactly in this shape. No giant markdown headings. No template leftovers. Do not hard-wrap body lines to a fixed column width (e.g. 80 chars); let each paragraph/bullet be a single line and rely on GitHub's soft wrapping, since manual line breaks render awkwardly there.
-
-```md
-A couple of sentences that gives high-level summary of PR purpose: why it exists, what changed, and how it works. Keep it human-digestible.
-
-- Key point of interest.
-- Another material change, tradeoff, or reviewer note.
-- Anything risky, intentionally omitted, or worth looking at.
-
-Optional extra information if genuinely useful.
-
-Tested with: `<command>`
-```
-
-Omit the `Tested with:` line by default, especially when it would only repeat routine local checks that CI already covers. Include it only when the testing information is reviewer-useful beyond "CI will pass/fail", such as a manual reproduction, environment-specific verification, non-obvious smoke test, skipped test with meaningful reason, or validation that CI cannot run. Do not add filler like "Not run (PR creation only)" or "no validation command was provided".
-
-Tone: sharp, precise, professional, unenthusiastic, and slightly bored. Add a tiny spark of fun only if it does not reduce clarity.
+Prepare and create a GitHub pull request from the current repository. The bundled helper owns repository inspection, safety checks, pushing, and PR creation. Run it from the target repository and resolve `scripts/create-pr.ts` relative to this skill directory.
 
 ## Workflow
 
-- Prefer facts from git over invention.
-- Mention user-specified ticket IDs, issue links, constraints, and testing notes.
-- Always show the proposed title/body/base/head/state before creation.
-- Treat user phrases like "against <branch>", "into <branch>", "target <branch>", "base <branch>", or "to <branch>" as a request to use that branch as the PR base instead of the default branch.
-- If the user requested a draft PR, create it with `gh pr create --draft`; do not create a regular PR and mark it draft later unless `gh pr create --draft` fails and the user approves the fallback.
-- Do not run `gh pr create` until the user explicitly confirms.
-- If the user wants changes, enter a refinement phase: identify unresolved parts, offer concrete alternatives, keep agreed wording, then summarize and ask for approval again.
-- If tests were explicitly skipped for a meaningful reason, say so plainly. If validation is routine CI-equivalent or otherwise not reviewer-useful, omit testing status rather than inventing a useless sentence.
-- If there is an existing PR for the branch, do not create a duplicate; offer to update title/body instead, with confirmation.
-- If there are uncommitted changes, inspect them. If they clearly belong in the requested PR, validate and create a focused local signed commit before pushing/creating the PR. If they are ambiguous or unrelated, stop and ask whether to include them or create the PR from committed work only.
-- If the branch is behind base, still create the PR unless the diff is confusing or conflicts are visible; mention notable risk in the body.
-- If `gh` is unauthenticated or repo remote is not GitHub, report the blocker and the exact next command the user should run.
+1. Inspect the repository with the helper:
 
-## Quality checklist
+   ```bash
+   bun <skill-directory>/scripts/create-pr.ts inspect [--base <branch>]
+   ```
 
-Before creating:
+   Use the user-specified base exactly. Otherwise, let the helper select the GitHub default branch.
 
-- [ ] Base/head/state are correct.
-- [ ] User has approved the final draft.
-- [ ] Any intended local changes are committed with a signed focused commit.
-- [ ] Branch is pushed or push command is included in the approved PR creation plan.
-- [ ] Title is conventional and <= ~80 chars.
-- [ ] Body explains why/what/how with reviewer-relevant bullets.
-- [ ] Testing status is omitted unless it is genuinely reviewer-useful beyond routine CI-equivalent checks.
-- [ ] No oversized headers, hype, or vague filler.
+2. Read the JSON result. It includes the base and head, clean state, commits, changed paths, bounded diff statistics, push state, existing PRs, available labels, and package-label candidates.
 
-After creating:
+   - If the worktree is dirty, inspect the changes. Commit clearly related changes with a focused signed commit after suitable validation. Ask the user about ambiguous or unrelated changes. Then run `inspect` again.
+   - If a PR already exists, show its URL and offer to update it as a separate operation.
+   - Read a detailed diff only when the commit list, paths, and statistics do not explain the change.
 
-- Return the PR URL.
-- Include title, base/head, and state.
-- Mention tests only when there is concrete, reviewer-useful testing information beyond routine CI-equivalent checks.
+3. Draft the title and body from Git facts and conversation context. Select exact labels from `availableLabels` and repository guidance.
+
+4. Show the proposed title, body, base, head, state, labels, and push action. Ask for explicit confirmation. Refine the proposal until all fields are approved.
+
+5. After confirmation, stream the exact approved body to the helper. Include `--draft` only for an approved draft PR and repeat `--label` for each approved label:
+
+   ```bash
+   cat <<'PI_PR_BODY' | bun <skill-directory>/scripts/create-pr.ts create \
+     --confirmed \
+     --base <base> \
+     --head <head> \
+     --title '<title>' \
+     [--draft] \
+     [--label '<exact label>']
+   <approved body>
+   PI_PR_BODY
+   ```
+
+   The helper requires a clean worktree, the current same-named head branch, `origin`, an exact existing label match, and a conventional title. It performs a normal push without force, sends the body to `gh pr create --body-file -`, and emits one bounded JSON result.
+
+6. Handle the result by its stable `code`:
+
+   - `created`: return the PR URL, title, base/head, and state.
+   - `existing_pr`: return the existing PR and do not create a duplicate.
+   - `dirty_worktree`, `head_mismatch`, `unsafe_upstream`, `unknown_labels`, or `push_rejected`: report the stated blocker and recovery facts.
+   - `pr_create_failed` with `pushed: true`: report that the branch is available remotely, fix the stated GitHub failure, re-inspect, and retry creation safely.
+
+## Drafting rules
+
+### Title
+
+Use a sharp conventional-commit subject of at most 80 characters.
+
+- Use the sole commit subject when it is clear and conventional.
+- Synthesize one subject when the PR has multiple commits.
+- Format: `type(scope): subject`. Common types are `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `build`, and `ci`.
+- Use a ticket as scope when one exists; otherwise use a useful domain scope or omit noisy scope.
+- Use an imperative subject with no trailing period.
+
+### Body
+
+Write the body in this shape without large headings, template remnants, or hard-wrapped prose:
+
+```md
+A short high-level summary that explains why the PR exists, what changed, and how it works.
+
+- A material implementation point.
+- A tradeoff or reviewer note.
+- A risk, intentional omission, or other useful fact.
+
+Optional extra information when genuinely useful.
+```
+
+Use a precise, professional, unenthusiastic tone. Prefer facts from Git over invention. Mention user-provided tickets, links, constraints, and meaningful testing notes.
+
+Omit routine CI-equivalent test status. Add `Tested with:` only for reviewer-useful manual, environment-specific, non-obvious, skipped, or CI-unavailable validation.
+
+## Fallback
+
+Use a direct `gh` workflow only when the bundled helper cannot execute because Bun or the script is unavailable. Preserve the same inspection, confirmation, clean-tree, duplicate, label, push, and title checks. Stream the approved body through stdin with `gh pr create --body-file -`; use no temporary body file.

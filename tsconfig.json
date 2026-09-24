@@ -26,6 +26,6 @@
     "skipLibCheck": true,
     "types": ["bun-types", "node"]
   },
-  "include": ["agent/extensions/**/*.ts"],
+  "include": ["agent/extensions/**/*.ts", "agent/skills/create-pr/**/*.ts"],
   "exclude": ["node_modules", "agent/npm", "agent/sessions"]
 }
