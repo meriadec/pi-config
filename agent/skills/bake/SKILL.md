@@ -33,7 +33,7 @@ If the user describes data instead, generate `.scratch/bake/<workspace>-manifest
 1. Read all of `~/ledger/revault/packages/sdk/src/bake/types.ts` for the current schema.
 2. Inspect only the closest examples in `~/ledger/revault/packages/cli/manifests/`.
 3. Write a strict `manifestVersion: 2` manifest containing the requested state only.
-4. Use operator device indexes from `10` upward. When an account has no stated index, start at `0` for that currency. When governance is not stated, use `CLASSIC`, quorum `1`, and all requested operators as members. For `ethereum`, include `SEND`, `SIGN_MESSAGE`, `EXECUTE_CONTRACT`, and `DEPLOY_CONTRACT` rules.
+4. Use operator device indexes from `10` upward. When an account has no stated index, start at `0` for that currency. When governance is not stated, use `CLASSIC`, quorum `1`, and all requested operators as members. Give every account a `SEND` rule. Give `canton` and `canton_devnet` accounts a `RECEIVE` rule too. Add other rules only when the user requests them.
 5. Do not invent required domain values that have no clear type or repository precedent; ask for that value.
 
 ## Apply
