@@ -28,7 +28,7 @@ If the user names a manifest path, use that exact file. For a bare name, check b
 
 If both locations contain that name, show both paths and ask which one to use.
 
-If the user describes data instead, generate `.scratch/bake/<workspace>-manifest.json` in the current checkout:
+If the user describes data instead, run `mktemp -d` once and write `<workspace>-manifest.json` in the returned temporary directory:
 
 1. Read all of `~/ledger/revault/packages/sdk/src/bake/types.ts` for the current schema.
 2. Inspect only the closest examples in `~/ledger/revault/packages/cli/manifests/`.
