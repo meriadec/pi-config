@@ -6,6 +6,9 @@
 - Do not use `..`, `../`, `find ..`, or another parent-directory traversal.
 - If work outside the boundary seems necessary, ask the user first.
 
+- Each bash call starts in the initial current working directory. Do not prefix commands with `cd <cwd>`.
+- Prefer relative path arguments over `cd <subdir> &&`. For package scripts, use tool flags such as `pnpm -C <dir>` or `--filter` when they work.
+
 - No tautological tests
 
 ## Reporting annoying things
