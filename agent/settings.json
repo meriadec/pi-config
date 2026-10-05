@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "1.0.2",
+  "lastChangelogVersion": "1.0.3",
   "defaultProvider": "github-copilot",
   "defaultModel": "claude-opus-5.5",
   "hideThinkingBlock": false,
