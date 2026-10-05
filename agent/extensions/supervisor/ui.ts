@@ -127,7 +127,6 @@ export class SupervisorComponent implements Component {
     this.clampSelection();
     this.ensureSelectedVisible(bodyRows);
 
-    lines.push(this.renderTitle(width));
     lines.push(this.renderColumnHeader(width));
 
     if (this.items.length === 0) {
@@ -137,7 +136,7 @@ export class SupervisorComponent implements Component {
           ? `No ${this.viewAll ? "notifications" : "unread notifications"}.`
           : "Loading notifications…";
       lines.push(this.dim(truncateToWidth(empty, width)));
-      while (lines.length < 2 + bodyRows) lines.push("");
+      while (lines.length < 1 + bodyRows) lines.push("");
     } else {
       for (let row = 0; row < bodyRows; row++) {
         const item = this.items[this.scroll + row];
@@ -181,15 +180,9 @@ export class SupervisorComponent implements Component {
       this.ensureSelectedVisible(this.bodyRows());
       if (newCount > 0) {
         setUrgent(true);
-        this.setStatus(
-          `${newCount} new · refreshed ${formatClock(this.refreshedAt)} · ${this.formatCounts()}`,
-          "success",
-        );
+        this.setStatus(`${newCount} new`, "success");
       } else {
-        this.setStatus(
-          `refreshed ${formatClock(this.refreshedAt)} · ${this.formatCounts()}`,
-          "success",
-        );
+        this.setStatus("refreshed", "success");
       }
     });
   }
@@ -357,19 +350,16 @@ export class SupervisorComponent implements Component {
   }
 
   private bodyRows(height = this.tui.terminal.rows): number {
-    return Math.max(MIN_BODY_ROWS, height - 5);
+    return Math.max(MIN_BODY_ROWS, height - 4);
   }
 
-  private renderTitle(width: number): string {
-    const left = this.theme.fg("accent", this.theme.bold("Supervisor GitHub Inbox"));
-    const rightParts = [this.formatCounts()];
-    if (this.refreshedAt) rightParts.push(`refreshed ${formatClock(this.refreshedAt)}`);
-    if (this.busy) rightParts.push("busy");
-    if (this.pendingDone > 0) rightParts.push(`done ${this.pendingDone}`);
-    if (this.pendingOpens > 0) rightParts.push(`opening ${this.pendingOpens}`);
-    const right = rightParts.join(" · ");
-    const spaces = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
-    return truncateToWidth(left + " ".repeat(spaces) + this.dim(right), width);
+  private renderSummary(): string {
+    const parts = [this.formatCounts()];
+    if (this.refreshedAt) parts.push(`refreshed ${formatClock(this.refreshedAt)}`);
+    if (this.busy) parts.push("busy");
+    if (this.pendingDone > 0) parts.push(`done ${this.pendingDone}`);
+    if (this.pendingOpens > 0) parts.push(`opening ${this.pendingOpens}`);
+    return parts.join(" · ");
   }
 
   private renderColumnHeader(width: number): string {
@@ -432,10 +422,17 @@ export class SupervisorComponent implements Component {
   }
 
   private renderStatus(width: number): string {
-    const line = truncateToWidth(this.status, width);
-    if (this.statusLevel === "error") return this.theme.fg("error", line);
-    if (this.statusLevel === "success") return this.theme.fg("success", line);
-    return this.dim(line);
+    const summary = truncateToWidth(this.renderSummary(), width);
+    const statusWidth = Math.max(0, width - visibleWidth(summary) - 1);
+    const status = truncateToWidth(this.status, statusWidth);
+    const spaces = Math.max(0, width - visibleWidth(status) - visibleWidth(summary));
+    return this.styleStatus(status) + " ".repeat(spaces) + this.dim(summary);
+  }
+
+  private styleStatus(text: string): string {
+    if (this.statusLevel === "error") return this.theme.fg("error", text);
+    if (this.statusLevel === "success") return this.theme.fg("success", text);
+    return this.dim(text);
   }
 
   private setStatus(status: string, level: StatusLevel): void {

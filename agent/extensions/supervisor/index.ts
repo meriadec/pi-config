@@ -15,10 +15,16 @@ export default function supervisorExtension(pi: ExtensionAPI) {
       let component: SupervisorComponent | undefined;
 
       try {
-        await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-          component = new SupervisorComponent(tui, theme, github, pi.exec.bind(pi), done);
-          return component;
-        });
+        await ctx.ui.custom<void>(
+          (tui, theme, _keybindings, done) => {
+            component = new SupervisorComponent(tui, theme, github, pi.exec.bind(pi), done);
+            return component;
+          },
+          {
+            overlay: true,
+            overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
+          },
+        );
       } finally {
         component?.dispose();
       }
