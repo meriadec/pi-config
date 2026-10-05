@@ -31,3 +31,7 @@ _Avoid_: socket, terminal output, session transcript
 **Context Packet**:
 The explicit, bounded startup information passed from the parent session to a Delegation Job, excluding the full parent conversation unless the user opts into a summary handoff.
 _Avoid_: conversation dump, prompt, system prompt
+
+**Supervisor**:
+A dedicated screen to triage GitHub notifications without leaving Pi.
+_Avoid_: GitHub Inbox, notification dashboard

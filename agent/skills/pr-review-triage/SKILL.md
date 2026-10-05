@@ -25,7 +25,7 @@ description: Fetches active GitHub pull request review threads plus top-level PR
 
 ### 1) Collect context
 
-- Inspect repo guidance (`README`, `CONTEXT.md`, `AGENTS.md`, package scripts) before judging feedback.
+- Inspect repo guidance (`README`, `GLOSSARY.md`, `AGENTS.md`, package scripts) before judging feedback.
 - Use GitHub CLI; do not rely on stale local review text.
 - Active review threads are unresolved and not outdated; unresolved outdated threads may still need a closing reply and resolution.
 - Do not leave addressed review threads silently resolved. If a thread is fixed by code/docs/tests, even if GitHub marks it outdated, plan a reply that references the fixing commit with subject and link, e.g. `Resolved in \`fix: harden snapshots benchmark reporting\` (https://github.com/org/repo/commit/<sha>) ...`, before resolving.
