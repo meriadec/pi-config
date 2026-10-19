@@ -15,3 +15,7 @@
 
 If you hit unexpected errors (e.g. during commands), that contradicts previous instructions, and if you
 judge it's worth mentionning, please append the file ~/AGENT_LOGGED_PROBLEMS.md with one line describing the problem.
+
+## Ralph Loop
+
+Only call `ralph_issue_result` when a Ralph Loop issue is actively running (the user started it or the system indicated one). Do not call it after finishing a skill, a task, or any other work that is not a Ralph Loop issue.
