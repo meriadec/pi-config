@@ -116,7 +116,16 @@ gh api graphql -f query='mutation($id:ID!,$body:String!){addPullRequestReviewThr
 gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}' -f id='THREAD_ID'
 # Top-level PR reply
 gh pr comment PR_NUMBER --body 'MESSAGE'
+# Request (or re-request) a Copilot review after pushing fixes
+gh pr edit PR_NUMBER --add-reviewer @copilot
 ```
+
+### Copilot review request
+
+When the user asks for a new Copilot review, run only `gh pr edit PR_NUMBER --add-reviewer @copilot`, after the push. A zero exit code and the PR URL as output mean success. Report "Copilot review requested" and stop.
+
+- Do not verify. `reviewRequests` and `requested_reviewers` stay empty for Copilot even when the request worked.
+- Do not retry with `gh api`, the bot login, or `sleep` polling.
 
 ## Safety rules
 
