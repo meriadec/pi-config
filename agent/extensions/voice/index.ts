@@ -1,17 +1,18 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createTranscriber } from "./transcriber.ts";
 import { isKittyProtocolActive, matchesKey, type KeyId } from "@earendil-works/pi-tui";
 
-// Env: PI_VOICE_MODEL (default "base"), PI_VOICE_LANG (default: auto-detect).
-const MODEL = process.env["PI_VOICE_MODEL"] ?? "base";
+// Env (read by daemon.py): PI_VOICE_MODEL (default "small"), PI_VOICE_LANG (default: auto-detect).
+const DAEMON = join(dirname(fileURLToPath(import.meta.url)), "daemon.py");
 // Push-to-talk key: hold to record, release to transcribe.
 const PTT_KEY = (process.env["PI_VOICE_KEY"] ?? "f9") as KeyId;
 // Without Kitty key-release events, treat "no key repeat for this long" as release.
 const RELEASE_TIMEOUT_MS = 700;
-const LANG = process.env["PI_VOICE_LANG"];
 
 interface Recording {
   proc: ChildProcess;
@@ -21,6 +22,7 @@ interface Recording {
 }
 
 export default function voiceExtension(pi: ExtensionAPI): void {
+  const transcriber = createTranscriber("uv", ["run", "--quiet", "--script", DAEMON]);
   let rec: Recording | undefined;
   let busy = false;
 
@@ -61,20 +63,7 @@ export default function voiceExtension(pi: ExtensionAPI): void {
     await current.exited;
     ctx.ui.setStatus("voice", "⏳ transcribing…");
     try {
-      const args = [
-        current.wav,
-        "--model",
-        MODEL,
-        "--output_format",
-        "txt",
-        "--output_dir",
-        current.dir,
-        "--fp16",
-        "False",
-      ];
-      if (LANG) args.push("--language", LANG);
-      await run("whisper", args);
-      const text = (await readFile(join(current.dir, "in.txt"), "utf8")).trim();
+      const text = (await transcriber.transcribe(current.wav)).trim();
       if (text.length === 0) {
         ctx.ui.notify("No speech detected.", "warning");
         return;
@@ -112,6 +101,7 @@ export default function voiceExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => {
     if (!ctx.hasUI) return;
+    transcriber.warmUp(); // load the model while the user is not talking yet
     unsubscribe?.();
     unsubscribe = ctx.ui.onTerminalInput((data) => {
       const ev = parsePttEvent(data);
@@ -135,26 +125,13 @@ export default function voiceExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async () => {
     unsubscribe?.();
     unsubscribe = undefined;
+    transcriber.close();
     if (releaseTimer) clearTimeout(releaseTimer);
     if (!rec) return;
     const current = rec;
     rec = undefined;
     current.proc.kill("SIGKILL");
     await rm(current.dir, { recursive: true, force: true });
-  });
-}
-
-function run(cmd: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
-    let err = "";
-    p.stderr.on("data", (d: Buffer) => {
-      err = (err + d.toString()).slice(-500);
-    });
-    p.once("error", reject);
-    p.once("exit", (code) =>
-      code === 0 ? resolve() : reject(new Error(err || `${cmd} exit ${code}`)),
-    );
   });
 }
 
