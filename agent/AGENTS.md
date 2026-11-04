@@ -1,21 +1,11 @@
 - Always talk in ASD-STE100 Simplified Technical English.
 
-- Treat the initial current working directory as a strict file-system boundary.
-- Do not read, list, search, write, execute, or inspect anything outside this boundary unless the
-- user explicitly asks for that specific access.
-- Do not use `..`, `../`, `find ..`, or another parent-directory traversal.
-- If work outside the boundary seems necessary, ask the user first.
+- Work only inside the initial current working directory. Ask the user before you access any other path.
 
-- Each bash call starts in the initial current working directory. Do not prefix commands with `cd <cwd>`.
-- Prefer relative path arguments over `cd <subdir> &&`. For package scripts, use tool flags such as `pnpm -C <dir>` or `--filter` when they work.
+- For package scripts, use tool flags such as `pnpm -C <dir>` or `--filter` instead of `cd <subdir> &&`.
 
-- No tautological tests
+- Each test must fail when the behavior it covers breaks.
 
 ## Reporting annoying things
 
-If you hit unexpected errors (e.g. during commands), that contradicts previous instructions, and if you
-judge it's worth mentionning, please append the file ~/AGENT_LOGGED_PROBLEMS.md with one line describing the problem.
-
-## Ralph Loop
-
-Only call `ralph_issue_result` when a Ralph Loop issue is actively running (the user started it or the system indicated one). Do not call it after finishing a skill, a task, or any other work that is not a Ralph Loop issue.
+When a command gives an unexpected error, or an instruction contradicts an earlier one, append one line to ~/AGENT_LOGGED_PROBLEMS.md. Format: `date | tool | symptom`. Log only problems worth the user's attention.
