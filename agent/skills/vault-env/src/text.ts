@@ -2,39 +2,45 @@ export const DEFAULT_TAIL = 200;
 export const DEFAULT_SINCE = "15m";
 export const MAX_TAIL = 2000;
 export const MAX_TABLE_LINES = 200;
+export const MAX_GREP_LENGTH = 200;
 
 export interface Capped {
   readonly text: string;
   readonly notice: string | undefined;
 }
 
+function droppedNotice(dropped: number): string {
+  return `truncated, ${dropped} more line${dropped === 1 ? "" : "s"} not shown`;
+}
+
 /** Keep the last `max` lines. Logs matter most at the end. */
 export function keepLastLines(lines: readonly string[], max: number): Capped {
   if (lines.length <= max) return { text: lines.join("\n"), notice: undefined };
-  const dropped = lines.length - max;
-  return {
-    text: lines.slice(-max).join("\n"),
-    notice: `truncated, ${dropped} more line${dropped === 1 ? "" : "s"} not shown`,
-  };
+  return { text: lines.slice(-max).join("\n"), notice: droppedNotice(lines.length - max) };
 }
 
 /** Keep the first `max` lines. Tables list the head. */
 export function keepFirstLines(lines: readonly string[], max: number): Capped {
   if (lines.length <= max) return { text: lines.join("\n"), notice: undefined };
-  const dropped = lines.length - max;
-  return {
-    text: lines.slice(0, max).join("\n"),
-    notice: `truncated, ${dropped} more line${dropped === 1 ? "" : "s"} not shown`,
-  };
+  return { text: lines.slice(0, max).join("\n"), notice: droppedNotice(lines.length - max) };
 }
 
-export function grepLines(
-  lines: readonly string[],
-  pattern: string | undefined,
-): readonly string[] {
-  if (pattern === undefined) return lines;
-  const regex = new RegExp(pattern, "i");
-  return lines.filter((line) => regex.test(line));
+/** Compile a user regex once, with a readable error. Call before any remote work. */
+export function compileGrep(pattern: string | undefined): RegExp | undefined {
+  if (pattern === undefined) return undefined;
+  if (pattern.length > MAX_GREP_LENGTH)
+    throw new Error(`--grep is limited to ${MAX_GREP_LENGTH} characters.`);
+  try {
+    return new RegExp(pattern, "i");
+  } catch (error) {
+    throw new Error(
+      `Invalid --grep regex: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+export function grepLines(lines: readonly string[], regex: RegExp | undefined): readonly string[] {
+  return regex === undefined ? lines : lines.filter((line) => regex.test(line));
 }
 
 export function parseImage(image: string): { repo: string; tag: string } {
@@ -54,28 +60,62 @@ export interface Workload {
   readonly tag: string;
   readonly ready: string;
   readonly argoApp: string;
+  /** `k=v,k=v` from spec.selector.matchLabels, or "" when absent. */
+  readonly selector: string;
+}
+
+interface KubeContainer {
+  name?: string;
+  image?: string;
 }
 
 interface KubeWorkloadItem {
   kind?: string;
   metadata?: { name?: string; annotations?: Record<string, string> };
-  spec?: { replicas?: number; template?: { spec?: { containers?: { image?: string }[] } } };
+  spec?: {
+    replicas?: number;
+    selector?: { matchLabels?: Record<string, string> };
+    template?: { spec?: { containers?: KubeContainer[] } };
+  };
   status?: { readyReplicas?: number };
+}
+
+function basename(repo: string): string {
+  return repo.slice(repo.lastIndexOf("/") + 1);
+}
+
+/** The app container: named like the workload, else image named like it, else the first. */
+function pickContainer(
+  name: string,
+  containers: readonly KubeContainer[],
+): KubeContainer | undefined {
+  return (
+    containers.find((c) => c.name === name) ??
+    containers.find(
+      (c) => c.image !== undefined && name.includes(basename(parseImage(c.image).repo)),
+    ) ??
+    containers[0]
+  );
 }
 
 export function parseWorkloads(json: string): readonly Workload[] {
   const items = (JSON.parse(json) as { items?: KubeWorkloadItem[] }).items ?? [];
   return items.map((item) => {
-    const imageRef = item.spec?.template?.spec?.containers?.[0]?.image ?? "?";
-    const { repo, tag } = parseImage(imageRef);
+    const name = item.metadata?.name ?? "?";
+    const container = pickContainer(name, item.spec?.template?.spec?.containers ?? []);
+    const { repo, tag } = parseImage(container?.image ?? "?");
     const tracking = item.metadata?.annotations?.["argocd.argoproj.io/tracking-id"];
+    const selector = Object.entries(item.spec?.selector?.matchLabels ?? {})
+      .map(([key, value]) => `${key}=${value}`)
+      .join(",");
     return {
       kind: item.kind ?? "?",
-      name: item.metadata?.name ?? "?",
-      image: repo.slice(repo.lastIndexOf("/") + 1),
+      name,
+      image: basename(repo),
       tag,
       ready: `${item.status?.readyReplicas ?? 0}/${item.spec?.replicas ?? 0}`,
       argoApp: tracking?.split(":")[0] ?? "-",
+      selector,
     };
   });
 }

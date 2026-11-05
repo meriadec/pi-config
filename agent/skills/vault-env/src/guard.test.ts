@@ -3,7 +3,7 @@ import { assertReadOnly } from "./guard.ts";
 
 describe("assertReadOnly", () => {
   test("allows read verbs after context and namespace flags", () => {
-    for (const verb of ["get", "logs", "describe", "top"]) {
+    for (const verb of ["get", "logs"]) {
       expect(() => assertReadOnly(["--context", "c", "-n", "ns", verb, "pods"])).not.toThrow();
     }
   });

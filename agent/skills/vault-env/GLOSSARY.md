@@ -25,4 +25,4 @@ The short name of an env: `vault-next`, `vault-prd`, or `sbx:<instance-name>`.
 As in `~/ledger/vault-remote/GLOSSARY.md`.
 
 **Bake**:
-Bring a workspace to a requested state with the `bake` skill. Never with the MCP.
+Bring a workspace to a requested state with the `bake` skill. The MCP only deploys and changes instances.

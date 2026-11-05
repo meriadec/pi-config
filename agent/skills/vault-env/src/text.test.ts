@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   filterWorkloads,
+  compileGrep,
   grepLines,
   keepFirstLines,
   keepLastLines,
@@ -20,15 +21,27 @@ describe("keepLastLines", () => {
 });
 
 describe("keepFirstLines", () => {
-  test("keeps the head", () => {
-    expect(keepFirstLines(["a", "b", "c"], 1).text).toBe("a");
+  test("keeps the head and reports the dropped count", () => {
+    expect(keepFirstLines(["a", "b", "c"], 1)).toEqual({
+      text: "a",
+      notice: "truncated, 2 more lines not shown",
+    });
+    expect(keepFirstLines(["a"], 1).notice).toBeUndefined();
   });
 });
 
 describe("grepLines", () => {
   test("filters case-insensitively and passes through without a pattern", () => {
-    expect(grepLines(["Error x", "ok"], "error")).toEqual(["Error x"]);
+    expect(grepLines(["Error x", "ok"], compileGrep("error"))).toEqual(["Error x"]);
     expect(grepLines(["a", "b"], undefined)).toEqual(["a", "b"]);
+  });
+});
+
+describe("compileGrep", () => {
+  test("rejects invalid and oversized patterns before any remote call", () => {
+    expect(() => compileGrep("(")).toThrow(/Invalid --grep regex/);
+    expect(() => compileGrep("a".repeat(201))).toThrow(/limited to 200/);
+    expect(compileGrep(undefined)).toBeUndefined();
   });
 });
 
@@ -76,6 +89,35 @@ const KUBE_JSON = JSON.stringify({
 });
 
 describe("parseWorkloads / filterWorkloads", () => {
+  test("reads the app container, not a sidecar listed first, and the selector", () => {
+    const json = JSON.stringify({
+      items: [
+        {
+          kind: "StatefulSet",
+          metadata: { name: "les-wallet-api" },
+          spec: {
+            replicas: 1,
+            selector: { matchLabels: { app: "les-wallet-api", tier: "x" } },
+            template: {
+              spec: {
+                containers: [
+                  { name: "proxy", image: "envoy/envoy:v1" },
+                  { name: "les-wallet-api", image: "r/les-wallet:0.9.0" },
+                ],
+              },
+            },
+          },
+          status: { readyReplicas: 1 },
+        },
+      ],
+    });
+    expect(parseWorkloads(json)[0]).toMatchObject({
+      kind: "StatefulSet",
+      tag: "0.9.0",
+      selector: "app=les-wallet-api,tier=x",
+    });
+  });
+
   test("extracts tag, ready count and ArgoCD app", () => {
     const [first, second] = parseWorkloads(KUBE_JSON);
     expect(first).toMatchObject({

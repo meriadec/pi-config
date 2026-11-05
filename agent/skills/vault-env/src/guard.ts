@@ -1,5 +1,5 @@
 /** The CLI only reads. Every kubectl call goes through this allowlist. */
-const READ_ONLY_VERBS: ReadonlySet<string> = new Set(["get", "logs", "describe", "top"]);
+const READ_ONLY_VERBS: ReadonlySet<string> = new Set(["get", "logs"]);
 const FLAGS_WITH_VALUE: ReadonlySet<string> = new Set(["--context", "-n", "--namespace"]);
 
 function verbOf(args: readonly string[]): string | undefined {
