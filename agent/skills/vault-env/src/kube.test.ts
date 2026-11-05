@@ -11,6 +11,7 @@ describe("explainKubeFailure", () => {
       "error: the server has asked for the client to provide credentials (Unauthorized)",
       "x509: certificate has expired",
       "You must login to Teleport",
+      "Unable to connect: getting credentials: exec: executable tsh failed with exit code 1",
     ]) {
       const message = explainKubeFailure(prd, stderr);
       expect(message).toContain("tsh kube login shared-application-2026-cluster");

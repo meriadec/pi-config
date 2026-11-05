@@ -4,7 +4,7 @@ import { assertReadOnly } from "./guard.ts";
 
 const MAX_BUFFER = 32 * 1024 * 1024;
 const LOGIN_FAILURE =
-  /context was not found|context .* does not exist|unauthorized|certificate has expired|must login|must be logged in|not logged in|please login|tsh kube login/i;
+  /context was not found|context .* does not exist|unauthorized|certificate has expired|must login|must be logged in|not logged in|please login|tsh kube login|getting credentials|executable tsh failed|session has expired/i;
 const FORBIDDEN = /forbidden/i;
 
 export class KubeError extends Error {}

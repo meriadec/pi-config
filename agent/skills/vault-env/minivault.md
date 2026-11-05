@@ -53,17 +53,18 @@ Wait for the user's answer before deploying.
 
 Read the tags with `version <env>`, then map the image name to the `versions` key of `deploy_instance`:
 
-| Image                                                                  | Key                              |
-| ---------------------------------------------------------------------- | -------------------------------- |
-| `revault-api`, `revault-web`, `revault-backoffice`, `revault-notifier` | same as the image                |
-| `les-wallet`                                                           | `lesWallet`                      |
-| `ledger-vault-front`                                                   | `front`                          |
-| `ledger-vault-api`                                                     | `gate`                           |
-| `vault-api-gateway`                                                    | `apiGateway`                     |
-| `coin-gateway`                                                         | `coinGateway`                    |
-| `vault-device-api` / `vault-device-registry`                           | `deviceAPI` / `deviceRegistry`   |
-| `vault-organizations-api`                                              | `orgAPI`                         |
-| `hsm-proxy` / `hsm-proxy-sequencer`                                    | `hsmProxy` / `hsmProxySequencer` |
+| Image                                                                                                                            | Key                              |
+| -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| `revault-api`, `revault-web`, `revault-backoffice`, `revault-notifier`, `vault-api-keys`, `leos-server`, `keycloak`, `tradelink` | same as the image                |
+| `vault-notification-center`                                                                                                      | `notificationCenter`             |
+| `les-wallet`                                                                                                                     | `lesWallet`                      |
+| `ledger-vault-front`                                                                                                             | `front`                          |
+| `ledger-vault-api`                                                                                                               | `gate`                           |
+| `vault-api-gateway`                                                                                                              | `apiGateway`                     |
+| `coin-gateway`                                                                                                                   | `coinGateway`                    |
+| `vault-device-api` / `vault-device-registry`                                                                                     | `deviceAPI` / `deviceRegistry`   |
+| `vault-organizations-api`                                                                                                        | `orgAPI`                         |
+| `hsm-proxy` / `hsm-proxy-sequencer`                                                                                              | `hsmProxy` / `hsmProxySequencer` |
 
 No row fits (or the key is typed `unknown` in the declaration): ask the user.
 

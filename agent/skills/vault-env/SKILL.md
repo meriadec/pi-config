@@ -32,6 +32,6 @@ If the env is unclear (a bare "ppr", "stg", or no env), ask which alias.
 
 `bun ~/.pi/agent/skills/vault-env/scripts/vault-env.ts <command>`. Run it without arguments for the command list and flags. `<env>` is an alias (`envs` lists them) or `sbx:<instance-name>`.
 
-- Output is capped. A `[vault-env] truncated` line means lines were dropped: narrow with `--grep` and `--since` before widening `--tail`.
+- Output is capped. A `[vault-env] truncated …` line means lines were dropped: narrow with `--grep` and `--since` before widening `--tail`.
 - A Teleport login error prints the `tsh` commands. Give them to the user to run.
 - Real-env log lines can hold customer data. Quote only short lines, and only when the answer needs them.

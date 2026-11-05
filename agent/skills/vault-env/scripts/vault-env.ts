@@ -22,6 +22,7 @@ import {
   grepLines,
   keepFirstLines,
   parseWorkloads,
+  resolveWorkload,
   type Capped,
 } from "../src/text.ts";
 
@@ -96,21 +97,6 @@ function cmdPods(env: Env, grep: string | undefined): void {
   print(keepFirstLines([header, ...grepLines(rows, regex)], MAX_TABLE_LINES));
 }
 
-function resolveWorkload(env: Env, query: string) {
-  const workloads = listWorkloads(env);
-  const exact = workloads.find((w) => w.name === query);
-  if (exact) return exact;
-  const candidates = workloads.filter((w) => w.name.includes(query));
-  if (candidates.length === 1) return candidates[0]!;
-  const shown =
-    candidates
-      .slice(0, 15)
-      .map((w) => w.name)
-      .join(", ") || "(none)";
-  const list = candidates.length > 15 ? `${shown}, … (${candidates.length - 15} more)` : shown;
-  throw new Error(`"${query}" matches ${candidates.length} workloads in ${env.alias}: ${list}`);
-}
-
 function cmdLogs(env: Env, app: string, flags: ReadonlyMap<string, string>): void {
   const options = {
     tail: validateTail(flags.get("tail"), DEFAULT_TAIL),
@@ -118,7 +104,7 @@ function cmdLogs(env: Env, app: string, flags: ReadonlyMap<string, string>): voi
     grep: flags.get("grep"),
   };
   compileGrep(options.grep);
-  const workload = resolveWorkload(env, app);
+  const workload = resolveWorkload(listWorkloads(env), app, env.alias);
   const { stdout, stderr } = kubectl(env, buildLogsArgs(workload, options));
   const grepNote = options.grep === undefined ? "" : ` grep=/${options.grep}/i`;
   console.log(
@@ -151,6 +137,7 @@ function main(argv: readonly string[]): void {
     if (command !== undefined && command !== "help" && command !== "--help") process.exitCode = 2;
     return;
   }
+  if (command === "name") return console.log(sanitizeInstanceName(rest.join(" ")));
   const { positional, flags } = parseArgs(command, rest, spec);
   switch (command) {
     case "envs":
@@ -164,8 +151,6 @@ function main(argv: readonly string[]): void {
     }
     case "version":
       return cmdVersion(requireEnv(positional), positional[1]);
-    case "name":
-      return console.log(sanitizeInstanceName(positional.join(" ")));
   }
 }
 

@@ -7,6 +7,7 @@ import {
   keepLastLines,
   parseImage,
   parseWorkloads,
+  resolveWorkload,
 } from "./text.ts";
 
 describe("keepLastLines", () => {
@@ -133,5 +134,48 @@ describe("parseWorkloads / filterWorkloads", () => {
     const all = parseWorkloads(KUBE_JSON);
     expect(filterWorkloads(all, "les-wallet").map((w) => w.name)).toEqual(["les-wallet-api"]);
     expect(filterWorkloads(all, "vault-front").map((w) => w.name)).toEqual(["front"]);
+  });
+});
+
+describe("resolveWorkload", () => {
+  const mk = (name: string) => ({
+    kind: "Deployment",
+    name,
+    image: name,
+    tag: "1",
+    ready: "1/1",
+    argoApp: "-",
+    selector: "a=b",
+  });
+  const all = [mk("revault-api"), mk("revault-api-internal"), mk("front")];
+
+  test("prefers the exact name, accepts a unique substring, lists ambiguous matches", () => {
+    expect(resolveWorkload(all, "revault-api", "e").name).toBe("revault-api");
+    expect(resolveWorkload(all, "fro", "e").name).toBe("front");
+    expect(() => resolveWorkload(all, "revault", "e")).toThrow(
+      /matches 2 workloads in e: revault-api, revault-api-internal/,
+    );
+    expect(() => resolveWorkload(all, "zzz", "e")).toThrow(/\(none\)/);
+  });
+});
+
+describe("parseWorkloads selector", () => {
+  test("leaves the selector empty when matchExpressions are used", () => {
+    const json = JSON.stringify({
+      items: [
+        {
+          kind: "Deployment",
+          metadata: { name: "x" },
+          spec: {
+            selector: {
+              matchLabels: { a: "b" },
+              matchExpressions: [{ key: "k", operator: "Exists" }],
+            },
+            template: { spec: { containers: [{ name: "x", image: "r/x:1" }] } },
+          },
+        },
+      ],
+    });
+    expect(parseWorkloads(json)[0]?.selector).toBe("");
   });
 });

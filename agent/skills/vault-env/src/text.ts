@@ -74,7 +74,7 @@ interface KubeWorkloadItem {
   metadata?: { name?: string; annotations?: Record<string, string> };
   spec?: {
     replicas?: number;
-    selector?: { matchLabels?: Record<string, string> };
+    selector?: { matchLabels?: Record<string, string>; matchExpressions?: unknown[] };
     template?: { spec?: { containers?: KubeContainer[] } };
   };
   status?: { readyReplicas?: number };
@@ -105,9 +105,13 @@ export function parseWorkloads(json: string): readonly Workload[] {
     const container = pickContainer(name, item.spec?.template?.spec?.containers ?? []);
     const { repo, tag } = parseImage(container?.image ?? "?");
     const tracking = item.metadata?.annotations?.["argocd.argoproj.io/tracking-id"];
-    const selector = Object.entries(item.spec?.selector?.matchLabels ?? {})
-      .map(([key, value]) => `${key}=${value}`)
-      .join(",");
+    const rawSelector = item.spec?.selector;
+    // matchExpressions cannot be expressed as a simple -l selector: leave it empty so logs fail loudly.
+    const selector = rawSelector?.matchExpressions?.length
+      ? ""
+      : Object.entries(rawSelector?.matchLabels ?? {})
+          .map(([key, value]) => `${key}=${value}`)
+          .join(",");
     return {
       kind: item.kind ?? "?",
       name,
@@ -141,4 +145,23 @@ export function formatTable(rows: readonly (readonly string[])[]): string[] {
       .join("  ")
       .trimEnd(),
   );
+}
+
+/** Exact name first, then a unique substring. Otherwise list the candidates. */
+export function resolveWorkload(
+  workloads: readonly Workload[],
+  query: string,
+  envAlias: string,
+): Workload {
+  const exact = workloads.find((w) => w.name === query);
+  if (exact) return exact;
+  const candidates = workloads.filter((w) => w.name.includes(query));
+  if (candidates.length === 1) return candidates[0]!;
+  const shown =
+    candidates
+      .slice(0, 15)
+      .map((w) => w.name)
+      .join(", ") || "(none)";
+  const list = candidates.length > 15 ? `${shown}, … (${candidates.length - 15} more)` : shown;
+  throw new Error(`"${query}" matches ${candidates.length} workloads in ${envAlias}: ${list}`);
 }

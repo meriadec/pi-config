@@ -73,7 +73,7 @@ export function processLogs(raw: string, options: LogOptions): Capped {
   const notices = [
     capped.notice,
     longLines > 0 ? `${longLines} line(s) shortened to ${MAX_LINE_CHARS} chars` : undefined,
-    bytes.dropped > 0 ? `size cap, ${bytes.dropped} older lines not shown` : undefined,
+    bytes.dropped > 0 ? `truncated (size cap), ${bytes.dropped} older lines not shown` : undefined,
   ];
   return {
     text: bytes.lines.join("\n"),
