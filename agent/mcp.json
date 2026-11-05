@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "enterprise-remote": {
+      "url": "https://remote.minivault.ledger-sbx.com/api/mcp",
+      "description": "Manage minivault instances and workspaces: deploy, upgrade, restart, diagnose, read pod logs, bake workspaces"
+    }
+  }
+}
