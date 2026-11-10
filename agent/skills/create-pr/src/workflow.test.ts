@@ -174,12 +174,63 @@ describe("pull request creation", () => {
       head: "feature",
       draft: false,
       labels: ["🎨 package:web"],
+      attachments: [],
       pushed: true,
     });
     const createRequest = runner.requests.find(
       ({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "create",
     );
     expect(createRequest?.input).toBe(options.body);
+  });
+
+  test("passes each attachment to gh with --attach", () => {
+    const runner = preparedRunner()
+      .respond("git", ["push", "-u", "origin", "HEAD:refs/heads/feature"], "")
+      .respond(
+        "gh",
+        [
+          "pr",
+          "create",
+          "--base",
+          "main",
+          "--head",
+          "feature",
+          "--title",
+          "fix(web): improve form navigation",
+          "--body-file",
+          "-",
+          "--label",
+          "🎨 package:web",
+          "--attach",
+          `${import.meta.path}#Demo`,
+        ],
+        "https://github.com/acme/widgets/pull/42\n",
+      );
+
+    const result = createPullRequest(
+      runner,
+      createOptions({ attachments: [`${import.meta.path}#Demo`] }),
+    );
+
+    expect(result).toMatchObject({ ok: true, attachments: [`${import.meta.path}#Demo`] });
+  });
+
+  test("stops before pushing when an attachment file is missing", () => {
+    const runner = preparedRunner();
+
+    const result = createPullRequest(
+      runner,
+      createOptions({ attachments: ["/nonexistent/login.gif#Demo"] }),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: "missing_attachments",
+      attachments: ["/nonexistent/login.gif#Demo"],
+    });
+    expect(
+      runner.requests.some(({ args }) => args[0] === "push" || args[1] === "create"),
+    ).toBeFalse();
   });
 
   test("stops before network mutation when the worktree is dirty", () => {

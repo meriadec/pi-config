@@ -17,7 +17,7 @@ description: Fetches active GitHub pull request review threads plus top-level PR
 3. Also fetch unresolved outdated review threads with GitHub CLI/GraphQL; include them unless they already have an adequate reply.
 4. Analyze each active review thread, unresolved outdated thread, top-level PR comment, and non-empty review summary.
 5. Produce a scannable report; discuss/revise until the user approves the implementation plan + local commit, or cancels.
-6. Only after implementation approval: apply planned code changes, run project checks, and create focused local signed commits for coherent fixes.
+6. Only after implementation approval: apply planned code changes, run project checks, and create focused local signed follow-up commits for coherent fixes. Never rewrite history of an open PR (no amend, fixup, squash, rebase or force-push).
 7. Stop after the local commit and ask for the second approval gate: push + approved replies/resolutions.
 8. Only after push/response approval: push the committed fixes, post approved replies on every addressed review thread, then resolve/discard approved review threads.
 
@@ -86,7 +86,7 @@ Only if the user approves the implementation plan + local commit:
 - Implement approved code changes.
 - Run relevant checks (`bun run ci`, `bun run format`, `bun test`, `npm test`, `pnpm test`, or repo-specific commands).
 - If checks fail, fix or report clearly.
-- Review `git diff`/`git status`, stage only intended changes, and create focused local signed commits with concise conventional-commit messages.
+- Review `git diff`/`git status`, stage only intended changes, and create focused local signed follow-up commits with concise conventional-commit messages. Add new commits on top of the PR branch. Never amend, fixup, squash, rebase or reset already-pushed commits, and never force-push: reviewers need the history. If the base moved, merge it or ask the user.
 - Ask the user to review/validate when the result involves judgment you cannot verify locally.
 - Stop after the local commit. Report the commit, verification, and exact push/reply/resolve actions you propose next.
 - Do not push, post PR replies, or resolve/discard review threads during this phase.
@@ -131,6 +131,7 @@ When the user asks for a new Copilot review, run only `gh pr edit PR_NUMBER --ad
 
 - Local signed commits are allowed after the implementation plan + local commit gate is approved and checks have run.
 - Pushes, PR replies, and review-thread resolutions/discards share a separate second approval gate after the local commit exists.
+- Never rewrite the history of an open PR branch. Review fixes are new commits, pushed with a normal push.
 - Never treat implementation approval as push/reply/resolve approval.
 - Never post, resolve, discard, or push without explicit user approval for the second gate.
 - Never silently resolve a review thread. Add a reply first, or verify an adequate reply already exists.

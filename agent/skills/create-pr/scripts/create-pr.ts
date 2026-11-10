@@ -49,7 +49,7 @@ function main(argv: string[]): number {
     if (command === "create") {
       const parsed = parseArguments(
         args,
-        new Set(["base", "head", "title", "label"]),
+        new Set(["base", "head", "title", "label", "attach"]),
         new Set(["confirmed", "draft"]),
       );
       const options: CreateOptions = {
@@ -59,6 +59,7 @@ function main(argv: string[]): number {
         body: readFileSync(0, "utf8"),
         draft: parsed.flags.has("draft"),
         labels: parsed.repeatedValues.get("label") ?? [],
+        attachments: parsed.repeatedValues.get("attach") ?? [],
       };
       const base = parsed.values.get("base");
       if (base !== undefined) options.base = base;
@@ -111,7 +112,7 @@ function parseArguments(
       throw new WorkflowError("usage", `Option --${name} requires a value.`);
     }
     index += 1;
-    if (name === "label") {
+    if (name === "label" || name === "attach") {
       const collected = repeatedValues.get(name) ?? [];
       collected.push(value);
       repeatedValues.set(name, collected);

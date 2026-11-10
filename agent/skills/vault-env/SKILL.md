@@ -1,6 +1,6 @@
 ---
 name: vault-env
-description: Operate Ledger Vault envs: spawn disposable minivaults, bake data, read pods, logs and versions on STG/PPR/PRD.
+description: "Operate Ledger Vault envs: spawn disposable minivaults, bake data, read pods, logs and versions on STG/PPR/PRD."
 disable-model-invocation: true
 ---
 

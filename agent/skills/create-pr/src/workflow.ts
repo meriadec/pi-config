@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 export interface CommandRequest {
   command: "git" | "gh";
   args: string[];
@@ -51,6 +53,8 @@ export interface CreateOptions {
   body: string;
   draft: boolean;
   labels: string[];
+  /** Local images or videos for `gh pr create --attach`, as `<path>` or `<path>#<alt text>`. */
+  attachments?: string[];
 }
 
 export type CreateResult =
@@ -63,6 +67,7 @@ export type CreateResult =
       head: string;
       draft: boolean;
       labels: string[];
+      attachments: string[];
       pushed: true;
     }
   | {
@@ -211,6 +216,16 @@ export function createPullRequest(runner: CommandRunner, options: CreateOptions)
       });
     }
 
+    const attachments = options.attachments ?? [];
+    const missingAttachments = attachments.filter(
+      (attachment) => !existsSync(attachmentPath(attachment)),
+    );
+    if (missingAttachments.length > 0) {
+      return failure("missing_attachments", "One or more attachment files do not exist.", {
+        attachments: missingAttachments,
+      });
+    }
+
     const missingLabels = options.labels.filter(
       (label) => !inspection.availableLabels.includes(label),
     );
@@ -253,6 +268,7 @@ export function createPullRequest(runner: CommandRunner, options: CreateOptions)
     ];
     if (options.draft) createArgs.push("--draft");
     for (const label of options.labels) createArgs.push("--label", label);
+    for (const attachment of attachments) createArgs.push("--attach", attachment);
 
     const created = runner.run({ command: "gh", args: createArgs, input: options.body });
     if (created.exitCode !== 0) {
@@ -284,12 +300,19 @@ export function createPullRequest(runner: CommandRunner, options: CreateOptions)
       head: inspection.head,
       draft: options.draft,
       labels: options.labels,
+      attachments,
       pushed: true,
     };
   } catch (error) {
     if (error instanceof WorkflowError) return failure(error.code, error.message, error.details);
     throw error;
   }
+}
+
+/** The file path of an `--attach` value: the text before the optional `#<alt text>`. */
+function attachmentPath(attachment: string): string {
+  const hash = attachment.indexOf("#");
+  return hash === -1 ? attachment : attachment.slice(0, hash);
 }
 
 function validateCreateOptions(options: CreateOptions): void {
