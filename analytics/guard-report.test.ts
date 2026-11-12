@@ -51,3 +51,22 @@ test("summarizeGuard reports the quiet rule apart from the cap rule", () => {
   expect(s.wouldRemoveMB).toBeCloseTo(0.0001);
   expect(formatGuardReport(s)).toContain("Quiet rule: 3 records, 3.50 MB removed");
 });
+
+test("summarizeGuard reports the reread rule: records, KB saved, top names", () => {
+  const s = summarizeGuard(
+    [
+      rec({ rule: "reread", path_ext: "AGENTS.md", bytes: 4000 }),
+      rec({ rule: "reread", path_ext: "AGENTS.md", bytes: 4000 }),
+      rec({ rule: "reread", path_ext: ".ts", bytes: 2500 }),
+      rec({ rule: "cap", family: "git diff", cmdSha1: "a", removed: 100 }),
+    ].join("\n"),
+  );
+  expect(s.reread.records).toBe(3);
+  expect(s.reread.savedKB).toBeCloseTo(10.5);
+  expect(s.reread.top).toEqual([
+    { name: "AGENTS.md", records: 2, bytes: 8000 },
+    { name: ".ts", records: 1, bytes: 2500 },
+  ]);
+  expect(s.wouldRemoveMB).toBeCloseTo(0.0001);
+  expect(formatGuardReport(s)).toContain("Reread rule: 3 records, 10.5 KB would be saved");
+});

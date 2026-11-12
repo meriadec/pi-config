@@ -32,6 +32,8 @@ The Work control-plane package is developed in the separate `~/git/pi-work` repo
 - Shadow records go to `analytics/data/context-guard.jsonl` (git-ignored). They hold only the two-word command family, the command sha1, sizes and the rule (`cap` or `refetch`). No command text and no output text.
 - Report: `bun analytics/guard-report.ts` prints records per rule, would-remove MB, the top 10 families and the re-fetch rate per family.
 
+- Reread rule (`reread.ts`): if a file of 1.5 KB or more is read again with the same path, mtime, size and offset/limit, and no compaction happened, the earlier result is still in context. `shadow` logs `rule: "reread"` with the extension only (or the basename for AGENTS.md, CONTEXT.md, GLOSSARY.md, SKILL.md, README.md, package.json). `live` blocks the call once; a repeat right after the block goes through. Images are skipped.
+
 - Quiet rule (`quiet.ts`): for a noisy bash command that succeeded (`isError === false`), it keeps the warning/error lines with 1 line of context, the last 15 lines and a marker line, and it strips ANSI. Noisy: `pnpm lint|typecheck|build|test`, `bun run`, `bun test`, `git add|commit`, `tsc`, `tsgo`. It never changes a failing result. It runs before the cap rule, in the same mode (`shadow` logs `rule: "quiet"`, `live` shortens).
 
 ## Harness

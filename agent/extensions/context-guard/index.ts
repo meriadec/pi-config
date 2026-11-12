@@ -1,13 +1,33 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { appendRecord, LOG_PATH, newSessionId, parseMode, type GuardMode } from "./log.ts";
 import { quietSuccess } from "./quiet.ts";
+import { ReadTracker } from "./reread.ts";
 import { byteLength, DEFAULT_CAP_BYTES, reduceOutput, removedBytes } from "./reduce.ts";
 
 /** Command families (first two words) that the cap must skip. */
 export const NEVER_CAP: string[] = [];
+
+/** Result text under this size is cheaper to re-read than to explain. */
+export const REREAD_MIN_BYTES = 1_500;
+const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+const KEEP_BASENAMES = new Set([
+  "AGENTS.md",
+  "CONTEXT.md",
+  "GLOSSARY.md",
+  "SKILL.md",
+  "README.md",
+  "package.json",
+]);
+
+/** Privacy: the extension, or the basename for a few known doc names. Never a directory. */
+export const pathExt = (path: string) => {
+  const name = basename(path);
+  return KEEP_BASENAMES.has(name) ? name : extname(name).toLowerCase().slice(0, 12);
+};
 
 export const SPILL_DIR = "/tmp/pi-out";
 const SPILL_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
@@ -48,6 +68,33 @@ export function createGuard(opts: GuardOptions) {
   let sessionId = newSessionId();
   let overCap = new Map<string, string>(); // command hash -> family
   let spills = new Map<string, { hash: string; family: string }>();
+  const tracker = new ReadTracker();
+  let turn = 0;
+  let blockedReads = new Set<string>(); // per-path counter: one block, then let the repeat through
+
+  /** Resolve the read path and stat it. Undefined when skipped or when stat fails. */
+  function readTarget(input: Record<string, unknown>, cwd: string) {
+    try {
+      const raw = input?.["path"];
+      if (typeof raw !== "string" || !raw) return;
+      let p = raw.startsWith("@") ? raw.slice(1) : raw;
+      if (p === "~" || p.startsWith("~/")) p = join(homedir(), p.slice(1));
+      const path = isAbsolute(p) ? p : resolve(cwd, p);
+      if (IMAGE_EXT.has(extname(path).toLowerCase())) return;
+      const st = statSync(path);
+      if (!st.isFile()) return;
+      const num = (v: unknown) => (typeof v === "number" ? v : undefined);
+      return {
+        path,
+        mtimeMs: st.mtimeMs,
+        size: st.size,
+        offset: num(input["offset"]),
+        limit: num(input["limit"]),
+      };
+    } catch {
+      return;
+    }
+  }
 
   const log = (r: Record<string, unknown>) => appendRecord({ session: sessionId, ...r }, logPath);
 
@@ -68,7 +115,82 @@ export function createGuard(opts: GuardOptions) {
       sessionId = newSessionId();
       overCap = new Map();
       spills = new Map();
+      tracker.reset();
+      blockedReads = new Set();
+      turn = 0;
       if (opts.mode === "live") cleanOldSpills();
+    },
+
+    onTurn() {
+      turn++;
+    },
+
+    /** Compaction removed old results from context: forget all reads. */
+    onCompact() {
+      tracker.reset();
+      blockedReads = new Set();
+    },
+
+    /** Check a read before it runs. Returns a block in live mode only. */
+    onReadCall(
+      event: { toolName: string; input: Record<string, unknown> },
+      cwd: string,
+    ): { block: true; reason: string } | undefined {
+      try {
+        if (opts.mode === "off" || event.toolName !== "read") return;
+        const t = readTarget(event.input, cwd);
+        if (!t) return;
+        const hit = tracker.check(t.path, t);
+        const k = JSON.stringify([t.path, t.offset ?? null, t.limit ?? null]);
+        if (!hit) {
+          blockedReads.delete(k);
+          return;
+        }
+        const turnsSince = turn - hit.firstTurn;
+        log({
+          tool: "read",
+          rule: "reread",
+          path_ext: pathExt(t.path),
+          bytes: hit.bytes,
+          turnsSince,
+          ...(opts.mode === "live" ? { blocked: !blockedReads.has(k) } : {}),
+        });
+        if (opts.mode !== "live") return;
+        if (blockedReads.has(k)) {
+          blockedReads.delete(k); // the model insists: let it through
+          return;
+        }
+        blockedReads.add(k);
+        return {
+          block: true,
+          reason: `File unchanged since your read at turn ${hit.firstTurn} (${hit.bytes} bytes). Use the earlier result, or read a different slice.`,
+        };
+      } catch {
+        return;
+      }
+    },
+
+    /** Record a successful read so a later identical read can be detected. */
+    onReadResult(
+      event: {
+        toolName: string;
+        input: Record<string, unknown>;
+        content: Part[];
+        isError?: boolean | undefined;
+      },
+      cwd: string,
+    ) {
+      try {
+        if (opts.mode === "off" || event.toolName !== "read" || event.isError !== false) return;
+        const parts = Array.isArray(event.content) ? event.content : [];
+        const texts = parts.filter((p) => p.type === "text" && typeof p.text === "string");
+        if (texts.length === 0) return;
+        const bytes = byteLength(texts.map((p) => p.text).join("\n"));
+        if (bytes < REREAD_MIN_BYTES) return;
+        const t = readTarget(event.input, cwd);
+        if (!t) return;
+        tracker.record(t.path, { ...t, turn, bytes });
+      } catch {}
     },
 
     onToolCall(event: { toolName: string; toolCallId: string; input: Record<string, unknown> }) {
@@ -174,8 +296,15 @@ export default function (pi: ExtensionAPI) {
   if (mode === "off") return;
   const guard = createGuard({ mode });
   pi.on("session_start", async () => guard.start());
-  pi.on("tool_call", async (event) => {
+  pi.on("session_tree", async () => guard.onCompact());
+  pi.on("session_compact", async () => guard.onCompact());
+  pi.on("turn_start", async () => guard.onTurn());
+  pi.on("tool_call", async (event, ctx) => {
     guard.onToolCall(event as never);
+    return guard.onReadCall(event as never, ctx.cwd) as never;
   });
-  pi.on("tool_result", async (event) => guard.onToolResult(event as never) as never);
+  pi.on("tool_result", async (event, ctx) => {
+    guard.onReadResult(event as never, ctx.cwd);
+    return guard.onToolResult(event as never) as never;
+  });
 }

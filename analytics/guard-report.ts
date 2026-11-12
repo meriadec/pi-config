@@ -6,6 +6,8 @@ interface GuardRecord {
   family?: string;
   cmdSha1?: string;
   removed?: number;
+  bytes?: number;
+  path_ext?: string;
 }
 
 export interface GuardSummary {
@@ -16,6 +18,11 @@ export interface GuardSummary {
     records: number;
     removedMB: number;
     topFamilies: { family: string; removedBytes: number; records: number }[];
+  };
+  reread: {
+    records: number;
+    savedKB: number;
+    top: { name: string; records: number; bytes: number }[];
   };
   refetch: { family: string; caps: number; refetches: number; rate: number }[];
 }
@@ -39,6 +46,9 @@ export function summarizeGuard(jsonl: string): GuardSummary {
   let quietRemoved = 0;
   let quietRecords = 0;
   const quietFam = new Map<string, { removedBytes: number; records: number }>();
+  let rereadBytes = 0;
+  let rereadRecords = 0;
+  const rereadTop = new Map<string, { records: number; bytes: number }>();
   const capHashes = new Map<string, string>();
   for (const r of records) {
     const rule = r.rule ?? "unknown";
@@ -51,6 +61,15 @@ export function summarizeGuard(jsonl: string): GuardSummary {
       quietFam.set(family, e);
       quietRemoved += r.removed ?? 0;
       quietRecords++;
+    }
+    if (rule === "reread") {
+      const name = r.path_ext || "(none)";
+      const e = rereadTop.get(name) ?? { records: 0, bytes: 0 };
+      e.records++;
+      e.bytes += r.bytes ?? 0;
+      rereadTop.set(name, e);
+      rereadBytes += r.bytes ?? 0;
+      rereadRecords++;
     }
     if (rule === "cap") {
       const e = get(r.family ?? "?");
@@ -84,6 +103,14 @@ export function summarizeGuard(jsonl: string): GuardSummary {
         .sort((a, b) => b.removedBytes - a.removedBytes)
         .slice(0, 10),
     },
+    reread: {
+      records: rereadRecords,
+      savedKB: rereadBytes / 1000,
+      top: [...rereadTop.entries()]
+        .map(([name, e]) => ({ name, ...e }))
+        .sort((a, b) => b.bytes - a.bytes)
+        .slice(0, 10),
+    },
     refetch: entries
       .map(([family, e]) => ({
         family,
@@ -111,6 +138,11 @@ export function formatGuardReport(s: GuardSummary): string {
   );
   for (const f of s.quiet.topFamilies)
     lines.push(`  ${f.family}: ${f.removedBytes} bytes (${f.records} results)`);
+  lines.push(
+    "",
+    `Reread rule: ${s.reread.records} records, ${s.reread.savedKB.toFixed(1)} KB would be saved`,
+  );
+  for (const f of s.reread.top) lines.push(`  ${f.name}: ${f.bytes} bytes (${f.records} reads)`);
   lines.push("", "Re-fetch rate per family:");
   for (const f of s.refetch)
     lines.push(`  ${f.family}: ${(f.rate * 100).toFixed(1)}% (${f.refetches}/${f.caps})`);
