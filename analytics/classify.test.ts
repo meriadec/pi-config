@@ -19,6 +19,19 @@ const cases: [string, string, string, string][] = [
     "$ biome check --error-on-warnings\nerror\n\nCommand exited with code 1",
     "check-failed",
   ],
+  ["bash tool timeout", "bash", "Command timed out after 20 seconds", "timeout"],
+  [
+    "browser wait gave up",
+    "bash",
+    "\u2713 Done\n\u2717 Wait timed out after 25000ms\n\nCommand exited with code 1",
+    "browser-wait-timeout",
+  ],
+  [
+    "word timeout in a test log",
+    "bash",
+    "FAIL timeout waiting for input\n\nCommand exited with code 1",
+    "exit-nonzero-other",
+  ],
   ["plain exit", "bash", "boom\n\nCommand exited with code 2", "exit-nonzero-other"],
   ["grep no match", "bash", "(no output)  Command exited with code 1", "empty-result-exit1"],
   [

@@ -18,6 +18,7 @@ export type FailureClass =
   | "t3-task-not-found"
   | "aborted"
   | "timeout"
+  | "browser-wait-timeout" // agent-browser `wait` gave up: the page state did not match, not a tool fault
   | "command-not-found"
   | "permission"
   | "browser-launch"
@@ -68,7 +69,8 @@ export function classifyFailure(tool: string, head: string, tail = head): Failur
   if (/is not defined/.test(all) && tool === "codemode") return "sandbox-capability";
   if (/task_not_found/.test(all)) return "t3-task-not-found";
   if (/Command aborted|aborted/i.test(tail)) return "aborted";
-  if (/timed out|ETIMEDOUT|timeout/i.test(all)) return "timeout";
+  if (/Wait timed out after \d+ms/.test(all)) return "browser-wait-timeout";
+  if (/Command timed out after \d+ seconds|ETIMEDOUT/.test(all)) return "timeout";
   if (/command not found|not recognized as/i.test(all)) return "command-not-found";
   if (/Permission denied|EACCES|Forbidden/i.test(all)) return "permission";
   if (/Chrome exited early|Auto-launch failed/.test(all)) return "browser-launch";
