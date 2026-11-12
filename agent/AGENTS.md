@@ -1,7 +1,5 @@
 - Always talk in ASD-STE100 Simplified Technical English.
 
-- Work only inside the initial current working directory. Ask the user before you access any other path.
-
 - For package scripts, use tool flags such as `pnpm -C <dir>` or `--filter` instead of `cd <subdir> &&`.
 
 - Each test must fail when the behavior it covers breaks.
