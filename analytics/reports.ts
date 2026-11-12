@@ -62,3 +62,27 @@ export async function avoidableRereads(db: DuckDBConnection) {
        and not exists (select 1 from w where w.file = r.file and w.p = r.p and w.ts > r.prev_ts and w.ts <= r.ts)`,
   );
 }
+
+/** Same as avoidableRereads but the slice (offset, limit) must match, so partial reads of big files do not count. */
+export async function avoidableRereadsSameSlice(db: DuckDBConnection) {
+  const base = `with r as (
+       select c.file, c.ts, c.args->>'path' as p,
+         coalesce(c.args->>'offset', '') || ':' || coalesce(c.args->>'limit', '') as slice, rr.size,
+         lag(c.ts) over (partition by c.file, c.args->>'path',
+           coalesce(c.args->>'offset', '') || ':' || coalesce(c.args->>'limit', '') order by c.ts) as prev_ts
+       from tool_calls c join tool_results rr using (call_id) where c.tool = 'read'),
+     w as (select file, args->>'path' as p, ts from tool_calls where tool in ('edit', 'write')),
+     a as (select * from r where prev_ts is not null
+       and not exists (select 1 from w where w.file = r.file and w.p = r.p and w.ts > r.prev_ts and w.ts <= r.ts))`;
+  const total = await rows(
+    db,
+    `${base} select count(*) as rereads, round(sum(size) / 1e6) as mb from a`,
+  );
+  const top = await rows(
+    db,
+    `${base} select regexp_replace(p, '^.*/(.*/.*)$', '\\1') as path, count(*) as rereads,
+       count(distinct file) as sessions, round(sum(size) / 1e6, 1) as mb
+     from a group by p order by sum(size) desc limit 15`,
+  );
+  return { total, top };
+}

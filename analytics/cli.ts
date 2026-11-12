@@ -1,6 +1,11 @@
 #!/usr/bin/env bun
 import { classifyFailure, TOOLING_CLASSES } from "./classify.ts";
-import { avoidableRereads, repeatedReads, retryLoops } from "./reports.ts";
+import {
+  avoidableRereads,
+  avoidableRereadsSameSlice,
+  repeatedReads,
+  retryLoops,
+} from "./reports.ts";
 import { detectPolling } from "../agent/extensions/wait/polling.ts";
 import { openSessions, rows } from "./db.ts";
 
@@ -83,7 +88,10 @@ async function loops() {
 async function reads() {
   const db = await openSessions();
   console.log(await repeatedReads(db));
-  console.log("avoidable (no edit in between):", await avoidableRereads(db));
+  console.log("avoidable, any slice:", await avoidableRereads(db));
+  const { total, top } = await avoidableRereadsSameSlice(db);
+  console.log("avoidable, same slice:", total);
+  for (const r of top) console.log(JSON.stringify(r));
 }
 
 const commands: Record<string, () => Promise<void>> = { errors, context, polling, loops, reads };
