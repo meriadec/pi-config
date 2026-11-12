@@ -15,6 +15,7 @@ import { buildProfile, formatProfile, type SessionProfileInput } from "./profile
 import { openSessions, rows } from "./db.ts";
 import { costBySession, summarizeCost, type MessageUsage } from "./cost.ts";
 import { PRICE_TABLE_VERSION } from "./prices.ts";
+import { runSample, runScore } from "./validate.ts";
 
 const [cmd = "help"] = process.argv.slice(2);
 const pct = (a: number, b: number) => `${((100 * a) / b).toFixed(1)}%`;
@@ -224,6 +225,23 @@ async function profile() {
   );
 }
 
+async function validate() {
+  const [, , , sub, ...rest] = process.argv;
+  const flag = (name: string, d: number) => {
+    const i = rest.indexOf(name);
+    return i >= 0 ? Number(rest[i + 1]) : d;
+  };
+  if (sub === "sample") {
+    const items = await runSample(
+      await sessionFeatures(await openSessions()),
+      flag("--n", 100),
+      flag("--seed", 1),
+    );
+    console.log(`sample: ${items.length} items -> analytics/data/validation/sample.md`);
+  } else if (sub === "score" && rest[0]) console.log(runScore(rest[0]));
+  else console.log("usage: validate sample [--n 100] [--seed 1] | validate score <answers-file>");
+}
+
 const commands: Record<string, () => Promise<void>> = {
   labels,
   errors,
@@ -233,9 +251,10 @@ const commands: Record<string, () => Promise<void>> = {
   reads,
   profile,
   cost,
+  validate,
 };
 if (commands[cmd]) await commands[cmd]();
 else
   console.log(
-    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|profile|cost>",
+    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|profile|cost|validate>",
   );
