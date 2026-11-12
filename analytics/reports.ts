@@ -12,11 +12,13 @@ export async function retryLoops(db: DuckDBConnection) {
     tail: string;
   }>(db, "select file, tool, is_error, head, tail from tool_results order by file, ts");
   const runs = new Map<string, number>();
+  const byFile = new Map<string, number>();
   let total = 0;
   let cur = { file: "", key: "", n: 0 };
   const flush = () => {
     if (cur.n < 3) return;
     runs.set(cur.key, (runs.get(cur.key) ?? 0) + 1);
+    byFile.set(cur.file, (byFile.get(cur.file) ?? 0) + 1);
     total++;
   };
   for (const r of res) {
@@ -28,7 +30,7 @@ export async function retryLoops(db: DuckDBConnection) {
     }
   }
   flush();
-  return { total, byKey: [...runs].sort((a, b) => b[1] - a[1]) };
+  return { total, byKey: [...runs].sort((a, b) => b[1] - a[1]), byFile };
 }
 
 /** Repeated reads of the same path in one session, and the bytes they cost. */
@@ -64,8 +66,7 @@ export async function avoidableRereads(db: DuckDBConnection) {
 }
 
 /** Same as avoidableRereads but the slice (offset, limit) must match, so partial reads of big files do not count. */
-export async function avoidableRereadsSameSlice(db: DuckDBConnection) {
-  const base = `with r as (
+const SAME_SLICE_BASE = `with r as (
        select c.file, c.ts, c.args->>'path' as p,
          coalesce(c.args->>'offset', '') || ':' || coalesce(c.args->>'limit', '') as slice, rr.size,
          lag(c.ts) over (partition by c.file, c.args->>'path',
@@ -74,6 +75,18 @@ export async function avoidableRereadsSameSlice(db: DuckDBConnection) {
      w as (select file, args->>'path' as p, ts from tool_calls where tool in ('edit', 'write')),
      a as (select * from r where prev_ts is not null
        and not exists (select 1 from w where w.file = r.file and w.p = r.p and w.ts > r.prev_ts and w.ts <= r.ts))`;
+
+/** Same-slice avoidable re-read bytes per session file. */
+export async function avoidableRereadBytesByFile(db: DuckDBConnection) {
+  const res = await rows<{ file: string; bytes: string }>(
+    db,
+    `${SAME_SLICE_BASE} select file, sum(size) as bytes from a group by file`,
+  );
+  return new Map(res.map((r) => [r.file, Number(r.bytes)]));
+}
+
+export async function avoidableRereadsSameSlice(db: DuckDBConnection) {
+  const base = SAME_SLICE_BASE;
   const total = await rows(
     db,
     `${base} select count(*) as rereads, round(sum(size) / 1e6) as mb from a`,

@@ -5,11 +5,13 @@ import { sessionFeatures } from "./sessions.ts";
 import { classifyFailure, TOOLING_CLASSES } from "./classify.ts";
 import {
   avoidableRereads,
+  avoidableRereadBytesByFile,
   avoidableRereadsSameSlice,
   repeatedReads,
   retryLoops,
 } from "./reports.ts";
 import { detectPolling } from "../agent/extensions/wait/polling.ts";
+import { buildProfile, formatProfile, type SessionProfileInput } from "./profile.ts";
 import { openSessions, rows } from "./db.ts";
 
 const [cmd = "help"] = process.argv.slice(2);
@@ -123,6 +125,52 @@ async function labels() {
   console.log("origin:", Object.fromEntries(origins));
 }
 
+async function profile() {
+  const db = await openSessions();
+  const sessions = await sessionFeatures(db);
+  const cache = loadCache();
+  const num = async (sql: string) =>
+    new Map((await rows<{ file: string; n: string }>(db, sql)).map((r) => [r.file, Number(r.n)]));
+  const [turns, calls, delegates, results, readBytes, rereads, loopStats] = await Promise.all([
+    num("select file, count(*) n from messages where message->>'role' = 'assistant' group by 1"),
+    num("select file, count(*) n from tool_calls group by 1"),
+    num("select file, count(*) n from tool_calls where tool like '%delegate_task' group by 1"),
+    num("select file, count(*) n from tool_results group by 1"),
+    num(
+      "select c.file, sum(r.size) n from tool_calls c join tool_results r using (call_id) where c.tool = 'read' group by 1",
+    ),
+    avoidableRereadBytesByFile(db),
+    retryLoops(db),
+  ]);
+  const errs = new Map<string, { e: number; t: number }>();
+  for (const r of await rows<{ file: string; tool: string; head: string; tail: string }>(
+    db,
+    "select file, tool, head, tail from tool_results where is_error",
+  )) {
+    const x = errs.get(r.file) ?? { e: 0, t: 0 };
+    x.e++;
+    if (TOOLING_CLASSES.has(classifyFailure(r.tool, r.head, r.tail))) x.t++;
+    errs.set(r.file, x);
+  }
+  const input: SessionProfileInput[] = sessions.map((s) => ({
+    label: labelByRules(s).label ?? cache.get(s.file)?.label ?? "UNLABELLED",
+    origin: originOf(s),
+    assistantTurns: turns.get(s.file) ?? 0,
+    toolCalls: calls.get(s.file) ?? 0,
+    toolResults: results.get(s.file) ?? 0,
+    errors: errs.get(s.file)?.e ?? 0,
+    toolingErrors: errs.get(s.file)?.t ?? 0,
+    readBytes: readBytes.get(s.file) ?? 0,
+    rereadBytes: rereads.get(s.file) ?? 0,
+    retryLoops: loopStats.byFile.get(s.file) ?? 0,
+    delegateCalls: delegates.get(s.file) ?? 0,
+  }));
+  const table = buildProfile(input);
+  console.log(
+    process.argv.includes("--json") ? JSON.stringify(table, null, 2) : formatProfile(table),
+  );
+}
+
 const commands: Record<string, () => Promise<void>> = {
   labels,
   errors,
@@ -130,6 +178,7 @@ const commands: Record<string, () => Promise<void>> = {
   polling,
   loops,
   reads,
+  profile,
 };
 if (commands[cmd]) await commands[cmd]();
-else console.log("usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads>");
+else console.log("usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|profile>");
