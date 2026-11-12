@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { classifyFailure, TOOLING_CLASSES } from "./classify.ts";
+import { avoidableRereads, repeatedReads, retryLoops } from "./reports.ts";
 import { detectPolling } from "../agent/extensions/wait/polling.ts";
 import { openSessions, rows } from "./db.ts";
 
@@ -73,6 +74,18 @@ async function polling() {
     console.log(String(v).padStart(6), k, "|", samples.get(k));
 }
 
-const commands: Record<string, () => Promise<void>> = { errors, context, polling };
+async function loops() {
+  const { total, byKey } = await retryLoops(await openSessions());
+  console.log(`retry loops (3+ same failure in a row): ${total}`);
+  for (const [k, v] of byKey.slice(0, 12)) console.log(String(v).padStart(6), k);
+}
+
+async function reads() {
+  const db = await openSessions();
+  console.log(await repeatedReads(db));
+  console.log("avoidable (no edit in between):", await avoidableRereads(db));
+}
+
+const commands: Record<string, () => Promise<void>> = { errors, context, polling, loops, reads };
 if (commands[cmd]) await commands[cmd]();
-else console.log("usage: bun analytics/cli.ts <errors|context|polling>");
+else console.log("usage: bun analytics/cli.ts <errors|context|polling|loops|reads>");
