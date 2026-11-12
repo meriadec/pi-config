@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "1.5.1",
+  "lastChangelogVersion": "1.5.2",
   "defaultProvider": "github-copilot",
   "defaultModel": "claude-sonnet-5.5",
   "hideThinkingBlock": false,
@@ -12,7 +12,6 @@
     "bun"
   ],
   "packages": [
-    "npm:pi-hashline-edit",
-    "../../git/pi-work"
+    "npm:pi-hashline-edit"
   ]
 }
