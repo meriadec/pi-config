@@ -1,10 +1,14 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export type GuardMode = "shadow" | "live" | "off";
 
-export const LOG_PATH = resolve(import.meta.dirname, "../../../analytics/data/context-guard.jsonl");
+export const LOG_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../analytics/data/context-guard.jsonl",
+);
 
 export function parseMode(value: string | undefined): GuardMode {
   const v = value?.trim().toLowerCase();
