@@ -70,6 +70,7 @@ export function createGuard(opts: GuardOptions) {
   let spills = new Map<string, { hash: string; family: string }>();
   const tracker = new ReadTracker();
   let turn = 0;
+  const preStat = new Map<string, NonNullable<ReturnType<typeof readTarget>>>(); // stat taken BEFORE the read ran
   let blockedReads = new Set<string>(); // per-path counter: one block, then let the repeat through
 
   /** Resolve the read path and stat it. Undefined when skipped or when stat fails. */
@@ -128,18 +129,21 @@ export function createGuard(opts: GuardOptions) {
     /** Compaction removed old results from context: forget all reads. */
     onCompact() {
       tracker.reset();
+      preStat.clear();
       blockedReads = new Set();
     },
 
     /** Check a read before it runs. Returns a block in live mode only. */
     onReadCall(
-      event: { toolName: string; input: Record<string, unknown> },
+      event: { toolName: string; toolCallId?: string; input: Record<string, unknown> },
       cwd: string,
     ): { block: true; reason: string } | undefined {
       try {
         if (opts.mode === "off" || event.toolName !== "read") return;
         const t = readTarget(event.input, cwd);
         if (!t) return;
+        // Remember the stat from before the read: a write that races with the read must not hide behind a later stat.
+        if (typeof event.toolCallId === "string") preStat.set(event.toolCallId, t);
         const hit = tracker.check(t.path, t);
         const k = JSON.stringify([t.path, t.offset ?? null, t.limit ?? null]);
         if (!hit) {
@@ -174,6 +178,7 @@ export function createGuard(opts: GuardOptions) {
     onReadResult(
       event: {
         toolName: string;
+        toolCallId?: string;
         input: Record<string, unknown>;
         content: Part[];
         isError?: boolean | undefined;
@@ -187,7 +192,10 @@ export function createGuard(opts: GuardOptions) {
         if (texts.length === 0) return;
         const bytes = byteLength(texts.map((p) => p.text).join("\n"));
         if (bytes < REREAD_MIN_BYTES) return;
-        const t = readTarget(event.input, cwd);
+        const pre =
+          typeof event.toolCallId === "string" ? preStat.get(event.toolCallId) : undefined;
+        if (typeof event.toolCallId === "string") preStat.delete(event.toolCallId);
+        const t = pre ?? readTarget(event.input, cwd);
         if (!t) return;
         tracker.record(t.path, { ...t, turn, bytes });
       } catch {}

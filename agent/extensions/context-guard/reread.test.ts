@@ -190,3 +190,14 @@ test("fails open when stat throws (missing file)", () => {
   expect(() => g.onReadResult(res({ path: join(dir, "none.md") }), dir)).not.toThrow();
   expect(g.onReadCall(call({}), dir)).toBeUndefined();
 });
+
+test("a file that changes while the read runs is not reported as unchanged", () => {
+  const g = mk("shadow");
+  g.onReadCall({ toolName: "read", toolCallId: "c1", input: { path: file } }, dir); // stat before the read
+  writeFileSync(file, body + "changed during the read");
+  const t = new Date(Date.now() + 9000);
+  utimesSync(file, t, t);
+  g.onReadResult({ ...res({ path: file }), toolCallId: "c1" }, dir);
+  g.onReadCall({ toolName: "read", toolCallId: "c2", input: { path: file } }, dir);
+  expect(rereads().length).toBe(0);
+});
