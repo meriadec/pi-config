@@ -142,39 +142,29 @@ test("result log classifies fetch failed and other errors", () => {
   expect(classes).toEqual(["fetch-failed", "other"]);
 });
 
-test("orphan note: sent once per distinct set, live only; check clears it", () => {
-  const { hooks, messages } = setup("live");
+test("unchecked async children are logged once per distinct set and never messaged", () => {
+  const { hooks, messages, logs } = setup("live");
+  const unchecked = () => logs.filter((r) => r["event"] === "unchecked-async");
   hooks.onToolCall(del("a", { n: "1" }));
   hooks.onToolResult(ok("a", "1"));
   hooks.onAgentEnd();
   hooks.onAgentEnd();
-  expect(messages.length).toBe(1);
-  expect(messages[0]!.content).toContain("1 async");
-  expect(messages[0]!.content).toContain("task_status");
-  expect(messages[0]!.content).toContain("task_cancel");
+  expect(unchecked().length).toBe(1);
+  expect(unchecked()[0]!["orphans"]).toBe(1);
   hooks.onToolCall(del("b", { n: "2" }));
   hooks.onToolResult(ok("b", "2"));
   hooks.onAgentEnd();
-  expect(messages.length).toBe(2);
-  expect(messages[1]!.content).toContain("2 async");
-  hooks.onToolCall({ toolName: `${T}task_status`, toolCallId: "s", input: { taskId: "task-1" } });
-  hooks.onToolCall({ toolName: `${T}task_cancel`, toolCallId: "s2", input: { taskId: "task-2" } });
-  hooks.onAgentEnd();
-  expect(messages.length).toBe(2);
+  expect(unchecked().length).toBe(2);
+  expect(messages.length).toBe(0);
 });
 
-test("orphan note: wait-mode children and shadow mode send nothing", () => {
+test("wait-mode children are not logged as unchecked", () => {
   const live = setup("live");
   live.hooks.onToolCall(del("a", { mode: "wait" }));
   live.hooks.onToolResult(ok("a", "1"));
   live.hooks.onAgentEnd();
+  expect(live.logs.filter((r) => r["event"] === "unchecked-async").length).toBe(0);
   expect(live.messages.length).toBe(0);
-  const sh = setup("shadow");
-  sh.hooks.onToolCall(del("a"));
-  sh.hooks.onToolResult(ok("a", "1"));
-  sh.hooks.onAgentEnd();
-  expect(sh.messages.length).toBe(0);
-  expect(wouldBlock(sh.logs, "orphan-note")).toBe(1);
 });
 
 test("a thread read of the child thread also counts as a check", () => {

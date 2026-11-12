@@ -265,7 +265,7 @@ export function formatSummary(title: string, s: DelegationSummary | LiveSummary)
     `Per role: ${top(s.perRole)}`,
     `Per mode: ${top(s.perMode)}`,
     `Errors: ${s.errors} (${(s.errorRate * 100).toFixed(1)}%) — classes: ${top(s.errorClasses)}`,
-    `Orphan candidates (async, never checked): ${s.orphans}`,
+    `Async children never checked (T3 wakes the parent on completion, so not necessarily lost): ${s.orphans}`,
     `Retry duplicates after fetch failed: ${s.retryDuplicates}`,
     `Peak children in one session: ${s.peakChildren}`,
   ];

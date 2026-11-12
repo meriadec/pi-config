@@ -263,7 +263,7 @@ export class DelegationState {
     return [...this.children.values()].filter((c) => c.ok && c.mode !== "wait" && !c.followed);
   }
 
-  /** At agent_end. Once per distinct set of orphans. */
+  /** At agent_end. Logs once per distinct set of unchecked async children. Never sends a message. */
   onAgentEnd(): { records: Rec[]; message?: string } {
     const orphans = this.orphans();
     const key = orphans
@@ -273,13 +273,8 @@ export class DelegationState {
     if (key === this.lastOrphanKey) return { records: [] };
     this.lastOrphanKey = key;
     if (orphans.length === 0) return { records: [] };
-    if (this.opts.mode !== "live")
-      return {
-        records: [{ event: "would_block", rule: "orphan-note", orphans: orphans.length }],
-      };
-    return {
-      records: [{ event: "orphan-note", orphans: orphans.length }],
-      message: `${orphans.length} async delegated ${orphans.length === 1 ? "child was" : "children were"} started in this session and never checked or cancelled. Use ${ORPHAN_TOOLS} to check or stop them.`,
-    };
+    // Log only, in every mode. T3 wakes the parent when an async child ends, so "never checked" is not "lost".
+    // A message here would push the agent to poll, which T3 tells it not to do.
+    return { records: [{ event: "unchecked-async", orphans: orphans.length }] };
   }
 }
