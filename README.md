@@ -36,6 +36,14 @@ The Work control-plane package is developed in the separate `~/git/pi-work` repo
 
 - Quiet rule (`quiet.ts`): for a noisy bash command that succeeded (`isError === false`), it keeps the warning/error lines with 1 line of context, the last 15 lines and a marker line, and it strips ANSI. Noisy: `pnpm lint|typecheck|build|test`, `bun run`, `bun test`, `git add|commit`, `tsc`, `tsgo`. It never changes a failing result. It runs before the cap rule, in the same mode (`shadow` logs `rule: "quiet"`, `live` shortens).
 
+## Delegation guard
+
+- `agent/extensions/delegation-guard/` watches `delegate_task`, `t3_thread_launch` and `create_threads` (T3 Code). Env `PI_DELEGATION_GUARD`: `shadow` (default: only log), `live` (apply the rules) or `off`. `PI_DELEGATION_MAX` sets the child cap (default 6).
+- Log: `analytics/data/delegation.jsonl` (git-ignored). Each record has the tool, role, mode, isolation, model, task byte length, task sha1, and sha1 of task/thread ids. No task text. `task_status`, `task_cancel` and thread tools are linked to the earlier delegation by id hash.
+- Rules: `child-cap` (more than the cap started in one session), `duplicate` (same task sha1 after `fetch failed`, or with no result yet, and no `clientRequestId`: retry with one), `orphan-note` (at `agent_end`, one message per distinct set of async children that nobody checked or cancelled). In `shadow` mode each rule only logs `would_block`.
+- Report: `bun analytics/delegation-report.ts`. Part 1 reads all past sessions: calls, per model/role/mode, error rate and classes, orphan candidates, retry duplicates, peak children per session. Part 2 reads the live log: same counts plus `would_block` per rule.
+- History (2026-11): 323 delegations in 57 sessions, 12 errors (8 `fetch failed`), 203 orphan candidates, 2 retry duplicates, peak 37 children in one session.
+
 ## Tool hints
 
 - `agent/extensions/tool-hints/` adds one short hint (400 bytes at most) to a failing `read` (path not found: similar names, nearest existing directory, parallel-call note for images) or `edit` (hashline anchor error: never shown, edited since read, malformed). It only adds text to results that already failed, and it fails open. Causes and counts: `docs/tooling-errors.md`. Replay on history: `bun analytics/tool-hints-replay.ts`.
