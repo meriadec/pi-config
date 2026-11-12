@@ -26,8 +26,20 @@ interface Part {
 }
 
 export const sha1 = (s: string) => createHash("sha1").update(s).digest("hex");
-export const commandFamily = (cmd: string) =>
-  cmd.trim().split(/\s+/).slice(0, 2).join(" ").slice(0, 60);
+const CD_PREFIX = /^cd\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:&&|;)\s*/;
+const ENV_PREFIX = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+/;
+
+/** First two words of the first real command. Skips `cd <dir> &&` and `FOO=1` prefixes. */
+export const commandFamily = (cmd: string) => {
+  let rest = cmd.trim();
+  for (;;) {
+    const next = rest.replace(CD_PREFIX, "").replace(ENV_PREFIX, "");
+    if (next === rest) break;
+    rest = next;
+  }
+  const segment = rest.split(/&&|\|\||[;|\n]/)[0] ?? "";
+  return segment.trim().split(/\s+/).slice(0, 2).join(" ").slice(0, 60);
+};
 
 export function createGuard(opts: GuardOptions) {
   const cap = opts.capBytes ?? DEFAULT_CAP_BYTES;

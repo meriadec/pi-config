@@ -50,6 +50,16 @@ test("parseMode defaults to shadow", () => {
   expect(commandFamily("git diff --stat HEAD")).toBe("git diff");
 });
 
+test("commandFamily skips cd and env prefixes and logs no extra words", () => {
+  expect(commandFamily("cd ~/.pi && bun test foo")).toBe("bun test");
+  expect(commandFamily("cd /a/b; git status -s")).toBe("git status");
+  expect(commandFamily('cd "/a b" && cd c && FOO=1 BAR="x y" pnpm lint --fix')).toBe("pnpm lint");
+  expect(commandFamily("FOO=1 rg -n x")).toBe("rg -n");
+  expect(commandFamily("ls -la | grep secret")).toBe("ls -la");
+  expect(commandFamily("git diff && cat /secret/path")).toBe("git diff");
+  expect(commandFamily("  ls")).toBe("ls");
+});
+
 test("shadow mode keeps content and logs without command or output text", () => {
   const g = mk("shadow");
   g.start();
