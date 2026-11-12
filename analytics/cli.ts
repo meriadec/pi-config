@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+import { labelByRules, originOf } from "./label.ts";
+import { labelWithLlm, loadCache } from "./llm-label.ts";
+import { sessionFeatures } from "./sessions.ts";
 import { classifyFailure, TOOLING_CLASSES } from "./classify.ts";
 import {
   avoidableRereads,
@@ -94,6 +97,39 @@ async function reads() {
   for (const r of top) console.log(JSON.stringify(r));
 }
 
-const commands: Record<string, () => Promise<void>> = { errors, context, polling, loops, reads };
+async function labels() {
+  const args = process.argv.slice(3);
+  const limit = Number(args[args.indexOf("--limit") + 1]) || undefined;
+  const all = await sessionFeatures(await openSessions());
+  const decided = all.map((s) => ({ s, r: labelByRules(s) }));
+  const unclear = decided.filter((d) => d.r.label === null).map((d) => d.s);
+  if (args.includes("--llm")) {
+    const { asked, partialOrFailedBatches } = await labelWithLlm(unclear, { limit });
+    console.log(`llm asked: ${asked}, partial or failed batches: ${partialOrFailedBatches}`);
+  }
+  const cache = loadCache();
+  const counts = new Map<string, number>();
+  const origins = new Map<string, number>();
+  for (const { s, r } of decided) {
+    const label = r.label ?? cache.get(s.file)?.label ?? "UNLABELLED";
+    const key = `${label}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    const o = originOf(s);
+    origins.set(o, (origins.get(o) ?? 0) + 1);
+  }
+  console.log(`sessions: ${all.length}, rules decided: ${all.length - unclear.length}`);
+  for (const [k, v] of [...counts].sort((a, b) => b[1] - a[1]))
+    console.log(String(v).padStart(6), k);
+  console.log("origin:", Object.fromEntries(origins));
+}
+
+const commands: Record<string, () => Promise<void>> = {
+  labels,
+  errors,
+  context,
+  polling,
+  loops,
+  reads,
+};
 if (commands[cmd]) await commands[cmd]();
-else console.log("usage: bun analytics/cli.ts <errors|context|polling|loops|reads>");
+else console.log("usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads>");
