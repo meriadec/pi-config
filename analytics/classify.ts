@@ -63,7 +63,7 @@ export function classifyFailure(tool: string, head: string, tail = head): Failur
     return "network-or-5xx";
   }
   if (/^remote: |! \[remote rejected\]/m.test(all)) return "git-remote-rejected";
-  if (tool === "bash" && /\(no output\)\s+Command exited with code 1\b/.test(all))
+  if (tool === "bash" && /\(no output\)(?:\s|\\n)+Command exited with code 1\b/.test(all))
     return "empty-result-exit1";
   if (tool === "bash" && /Command exited with code 143/.test(all)) return "killed-sigterm";
   if (tool === "bash" && /lefthook|ERR_PNPM|Cannot find module/.test(head)) return "check-failed";

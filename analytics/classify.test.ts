@@ -21,6 +21,12 @@ const cases: [string, string, string, string][] = [
   ],
   ["plain exit", "bash", "boom\n\nCommand exited with code 2", "exit-nonzero-other"],
   ["grep no match", "bash", "(no output)  Command exited with code 1", "empty-result-exit1"],
+  [
+    "grep no match in raw JSON",
+    "bash",
+    String.raw`[{"text":"(no output)\n\nCommand exited with code 1"}]`,
+    "empty-result-exit1",
+  ],
   ["sigterm", "bash", "(no output)  Command exited with code 143", "killed-sigterm"],
   ["abort", "bash", "x\n\nCommand aborted", "aborted"],
   [
