@@ -12,7 +12,14 @@ import {
 } from "./reports.ts";
 import { detectPolling } from "../agent/extensions/wait/polling.ts";
 import { buildProfile, formatProfile, type SessionProfileInput } from "./profile.ts";
-import { openSessions, rows } from "./db.ts";
+import { openSessions, rows, SESSIONS_GLOB } from "./db.ts";
+import {
+  findRereads,
+  formatRereads,
+  loadCompactions,
+  loadRereadEvents,
+  summarizeRereads,
+} from "./rereads.ts";
 import { costBySession, summarizeCost, type MessageUsage } from "./cost.ts";
 import { PRICE_TABLE_VERSION } from "./prices.ts";
 import { runSample, runScore } from "./validate.ts";
@@ -100,6 +107,16 @@ async function reads() {
   const { total, top } = await avoidableRereadsSameSlice(db);
   console.log("avoidable, same slice:", total);
   for (const r of top) console.log(JSON.stringify(r));
+}
+
+async function rereads() {
+  const db = await openSessions();
+  const i = process.argv.indexOf("--near");
+  const near = i >= 0 ? Number(process.argv[i + 1]) : 20;
+  const { events, totalReadBytes } = await loadRereadEvents(db);
+  events.push(...(await loadCompactions(db, SESSIONS_GLOB)));
+  const found = findRereads(events, { nearTurns: near });
+  console.log(formatRereads(summarizeRereads(found, totalReadBytes), near));
 }
 
 async function labels() {
@@ -249,6 +266,7 @@ const commands: Record<string, () => Promise<void>> = {
   polling,
   loops,
   reads,
+  rereads,
   profile,
   cost,
   validate,
@@ -256,5 +274,5 @@ const commands: Record<string, () => Promise<void>> = {
 if (commands[cmd]) await commands[cmd]();
 else
   console.log(
-    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|profile|cost|validate>",
+    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|rereads|profile|cost|validate>",
   );
