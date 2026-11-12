@@ -36,6 +36,10 @@ The Work control-plane package is developed in the separate `~/git/pi-work` repo
 
 - Quiet rule (`quiet.ts`): for a noisy bash command that succeeded (`isError === false`), it keeps the warning/error lines with 1 line of context, the last 15 lines and a marker line, and it strips ANSI. Noisy: `pnpm lint|typecheck|build|test`, `bun run`, `bun test`, `git add|commit`, `tsc`, `tsgo`. It never changes a failing result. It runs before the cap rule, in the same mode (`shadow` logs `rule: "quiet"`, `live` shortens).
 
+## Tool hints
+
+- `agent/extensions/tool-hints/` adds one short hint (400 bytes at most) to a failing `read` (path not found: similar names, nearest existing directory, parallel-call note for images) or `edit` (hashline anchor error: never shown, edited since read, malformed). It only adds text to results that already failed, and it fails open. Causes and counts: `docs/tooling-errors.md`. Replay on history: `bun analytics/tool-hints-replay.ts`.
+
 ## Harness
 
 Use Bun for scripts and `tsgo` for typechecking:

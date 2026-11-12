@@ -2,6 +2,8 @@
 
 - For package scripts, use tool flags such as `pnpm -C <dir>` or `--filter` instead of `cd <subdir> &&`.
 
+- Tool calls in one message run in parallel: never `read` a file in the same message as the command that creates it (screenshot, export, build).
+
 - Each test must fail when the behavior it covers breaks.
 
 - You can attach files (images etc.) to PRs with `gh`, see https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli
