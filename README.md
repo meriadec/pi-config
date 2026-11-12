@@ -26,6 +26,12 @@ The Work control-plane package is developed in the separate `~/git/pi-work` repo
 - `analytics/` loads `agent/sessions` into DuckDB: `bun analytics/cli.ts <errors|context|polling>`.
 - `experiments/waits/` holds the mock comparison and the display mock.
 
+## Context guard
+
+- `agent/extensions/context-guard/` reduces large `bash` results. Env `PI_CONTEXT_GUARD` selects the mode: `shadow` (default: change nothing, only log), `live` (cut to a 20 KB head+tail and write the full output to `/tmp/pi-out/`, 0600, deleted after 7 days) or `off`.
+- Shadow records go to `analytics/data/context-guard.jsonl` (git-ignored). They hold only the two-word command family, the command sha1, sizes and the rule (`cap` or `refetch`). No command text and no output text.
+- Report: `bun analytics/guard-report.ts` prints records per rule, would-remove MB, the top 10 families and the re-fetch rate per family.
+
 ## Harness
 
 Use Bun for scripts and `tsgo` for typechecking:
