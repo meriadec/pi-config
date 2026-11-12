@@ -91,3 +91,14 @@ test("provider spellings of one model are merged in the by-model summary", () =>
   expect(s.byModel).toHaveLength(1);
   expect(s.byModel[0]!.messages).toBe(2);
 });
+
+test("gpt-5.5 prompt above 272k tokens uses the long-context tier (session logs billed it flat)", () => {
+  // Real shape: github-copilot gpt-5.5 message, 300k prompt.
+  const u = { input: 20_000, output: 2_000, cacheRead: 280_000, cacheWrite: 0 };
+  const flat = (20_000 * 5 + 2_000 * 30 + 280_000 * 0.5) / 1e6; // what the notional log shows
+  const tier = (20_000 * 10 + 2_000 * 45 + 280_000 * 1) / 1e6; // OpenAI public long-context price
+  expect(computeCost(u, "gpt-5.5")).toBeCloseTo(tier, 10);
+  expect(computeCost(u, "gpt-5.5")).not.toBeCloseTo(flat, 3);
+  // At exactly 272k the base price still applies.
+  expect(computeCost({ input: 272_000 }, "gpt-5.5")).toBeCloseTo((272_000 * 5) / 1e6, 10);
+});
