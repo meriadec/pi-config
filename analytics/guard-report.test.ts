@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { summarizeGuard } from "./guard-report.ts";
+import { formatGuardReport, summarizeGuard } from "./guard-report.ts";
 
 const rec = (o: object) => JSON.stringify({ ts: "t", ...o });
 const fixture = [
@@ -30,4 +30,24 @@ test("summarizeGuard keeps only the top 10 families", () => {
   const s = summarizeGuard(many);
   expect(s.topFamilies.length).toBe(10);
   expect(s.topFamilies[0]!.family).toBe("f11");
+});
+
+test("summarizeGuard reports the quiet rule apart from the cap rule", () => {
+  const s = summarizeGuard(
+    [
+      rec({ rule: "quiet", family: "bun test", removed: 2_000_000 }),
+      rec({ rule: "quiet", family: "bun test", removed: 1_000_000 }),
+      rec({ rule: "quiet", family: "pnpm lint", removed: 500_000 }),
+      rec({ rule: "cap", family: "git diff", cmdSha1: "a", removed: 100 }),
+    ].join("\n"),
+  );
+  expect(s.quiet.records).toBe(3);
+  expect(s.quiet.removedMB).toBeCloseTo(3.5);
+  expect(s.quiet.topFamilies[0]).toEqual({
+    family: "bun test",
+    removedBytes: 3_000_000,
+    records: 2,
+  });
+  expect(s.wouldRemoveMB).toBeCloseTo(0.0001);
+  expect(formatGuardReport(s)).toContain("Quiet rule: 3 records, 3.50 MB removed");
 });

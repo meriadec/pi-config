@@ -12,6 +12,11 @@ export interface GuardSummary {
   perRule: Record<string, number>;
   wouldRemoveMB: number;
   topFamilies: { family: string; removedBytes: number; caps: number }[];
+  quiet: {
+    records: number;
+    removedMB: number;
+    topFamilies: { family: string; removedBytes: number; records: number }[];
+  };
   refetch: { family: string; caps: number; refetches: number; rate: number }[];
 }
 
@@ -31,10 +36,22 @@ export function summarizeGuard(jsonl: string): GuardSummary {
     return e;
   };
   let removed = 0;
+  let quietRemoved = 0;
+  let quietRecords = 0;
+  const quietFam = new Map<string, { removedBytes: number; records: number }>();
   const capHashes = new Map<string, string>();
   for (const r of records) {
     const rule = r.rule ?? "unknown";
     perRule[rule] = (perRule[rule] ?? 0) + 1;
+    if (rule === "quiet") {
+      const family = r.family ?? "?";
+      const e = quietFam.get(family) ?? { removedBytes: 0, records: 0 };
+      e.removedBytes += r.removed ?? 0;
+      e.records++;
+      quietFam.set(family, e);
+      quietRemoved += r.removed ?? 0;
+      quietRecords++;
+    }
     if (rule === "cap") {
       const e = get(r.family ?? "?");
       e.removed += r.removed ?? 0;
@@ -59,6 +76,14 @@ export function summarizeGuard(jsonl: string): GuardSummary {
       .map(([family, e]) => ({ family, removedBytes: e.removed, caps: e.caps }))
       .sort((a, b) => b.removedBytes - a.removedBytes)
       .slice(0, 10),
+    quiet: {
+      records: quietRecords,
+      removedMB: quietRemoved / 1_000_000,
+      topFamilies: [...quietFam.entries()]
+        .map(([family, e]) => ({ family, ...e }))
+        .sort((a, b) => b.removedBytes - a.removedBytes)
+        .slice(0, 10),
+    },
     refetch: entries
       .map(([family, e]) => ({
         family,
@@ -80,6 +105,12 @@ export function formatGuardReport(s: GuardSummary): string {
   );
   for (const f of s.topFamilies)
     lines.push(`  ${f.family}: ${f.removedBytes} bytes (${f.caps} results)`);
+  lines.push(
+    "",
+    `Quiet rule: ${s.quiet.records} records, ${s.quiet.removedMB.toFixed(2)} MB removed`,
+  );
+  for (const f of s.quiet.topFamilies)
+    lines.push(`  ${f.family}: ${f.removedBytes} bytes (${f.records} results)`);
   lines.push("", "Re-fetch rate per family:");
   for (const f of s.refetch)
     lines.push(`  ${f.family}: ${(f.rate * 100).toFixed(1)}% (${f.refetches}/${f.caps})`);

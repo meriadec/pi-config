@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { appendRecord, LOG_PATH, newSessionId, parseMode, type GuardMode } from "./log.ts";
+import { quietSuccess } from "./quiet.ts";
 import { byteLength, DEFAULT_CAP_BYTES, reduceOutput, removedBytes } from "./reduce.ts";
 
 /** Command families (first two words) that the cap must skip. */
@@ -88,17 +89,42 @@ export function createGuard(opts: GuardOptions) {
       toolCallId: string;
       input: Record<string, unknown>;
       content: Part[];
+      isError?: boolean | undefined;
     }): { content: Part[] } | undefined {
       try {
         if (opts.mode === "off" || event.toolName !== "bash") return;
         const parts = Array.isArray(event.content) ? event.content : [];
         const textParts = parts.filter((p) => p.type === "text" && typeof p.text === "string");
-        const text = textParts.map((p) => p.text).join("\n");
-        const bytes = byteLength(text);
-        if (bytes <= cap) return;
+        const originalText = textParts.map((p) => p.text).join("\n");
         const command = typeof event.input?.["command"] === "string" ? event.input["command"] : "";
+        let text = originalText;
+        let quietApplied = false;
+        // Quiet rule: only for a successful result (isError === false, no exit-code text).
+        if (event.isError === false && !originalText.includes("Command exited with code")) {
+          const q = quietSuccess(command, originalText);
+          if (q) {
+            quietApplied = true;
+            text = q.text;
+            log({
+              toolCallId: event.toolCallId,
+              tool: event.toolName,
+              family: commandFamily(command),
+              cmdSha1: sha1(command),
+              bytes: byteLength(originalText),
+              removed: q.removedBytes,
+              rule: "quiet",
+            });
+          }
+        }
+        const others = parts.filter((p) => !(p.type === "text" && typeof p.text === "string"));
+        const quietResult = () =>
+          quietApplied && opts.mode === "live"
+            ? { content: [{ type: "text", text }, ...others] }
+            : undefined;
+        const bytes = byteLength(text);
+        if (bytes <= cap) return quietResult();
         const family = commandFamily(command);
-        if (NEVER_CAP.includes(family)) return;
+        if (NEVER_CAP.includes(family)) return quietResult();
         const hash = sha1(command);
         const removed = removedBytes(text, cap);
         const record = {
@@ -113,17 +139,16 @@ export function createGuard(opts: GuardOptions) {
         if (opts.mode === "shadow") {
           overCap.set(hash, family);
           log(record);
-          return;
+          return quietResult();
         }
         const safeId = event.toolCallId.replace(/[^A-Za-z0-9_-]/g, "_");
         const file = join(spillDir, `${sessionId}-${safeId}.txt`);
         mkdirSync(spillDir, { recursive: true, mode: 0o700 });
-        writeFileSync(file, text, { mode: 0o600 });
+        writeFileSync(file, originalText, { mode: 0o600 });
         const reduced = reduceOutput(text, cap, file);
         overCap.set(hash, family);
         spills.set(file, { hash, family });
         log(record);
-        const others = parts.filter((p) => !(p.type === "text" && typeof p.text === "string"));
         return { content: [{ type: "text", text: reduced }, ...others] };
       } catch {
         return;
