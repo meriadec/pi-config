@@ -22,6 +22,8 @@ import {
 } from "./rereads.ts";
 import { costBySession, summarizeCost, type MessageUsage } from "./cost.ts";
 import { PRICE_TABLE_VERSION } from "./prices.ts";
+import { analyzeImages, formatImages, scanSession, type SessionImages } from "./images.ts";
+import { readFileSync } from "node:fs";
 import { runSample, runScore } from "./validate.ts";
 
 const [cmd = "help"] = process.argv.slice(2);
@@ -259,6 +261,24 @@ async function validate() {
   else console.log("usage: validate sample [--n 100] [--seed 1] | validate score <answers-file>");
 }
 
+async function images() {
+  const sessions = await sessionFeatures(await openSessions());
+  const cache = loadCache();
+  const labels = new Map(
+    sessions.map((s) => [
+      s.file,
+      labelByRules(s).label ?? cache.get(s.file)?.label ?? "UNLABELLED",
+    ]),
+  );
+  const scanned: SessionImages[] = [];
+  for (const f of new Bun.Glob("*/*.jsonl").scanSync({
+    cwd: SESSIONS_GLOB.replace(/\/\*\/\*\.jsonl$/, ""),
+    absolute: true,
+  }))
+    scanned.push(scanSession(f, readFileSync(f, "utf8").split("\n").filter(Boolean)));
+  console.log(formatImages(analyzeImages(scanned, (f) => labels.get(f) ?? "UNLABELLED")));
+}
+
 const commands: Record<string, () => Promise<void>> = {
   labels,
   errors,
@@ -270,9 +290,10 @@ const commands: Record<string, () => Promise<void>> = {
   profile,
   cost,
   validate,
+  images,
 };
 if (commands[cmd]) await commands[cmd]();
 else
   console.log(
-    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|rereads|profile|cost|validate>",
+    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|rereads|profile|cost|validate|images>",
   );
