@@ -7,6 +7,11 @@ export type FailureClass =
   | "edit-would-empty"
   | "edit-conflict"
   | "edit-empty-request"
+  | "edit-no-match"
+  | "edit-bad-op"
+  | "read-misuse"
+  | "shell-syntax"
+  | "script-error"
   | "path-not-found"
   | "sandbox-capability"
   | "network-or-5xx"
@@ -31,6 +36,10 @@ export const TOOLING_CLASSES: ReadonlySet<FailureClass> = new Set<FailureClass>(
   "edit-would-empty",
   "edit-conflict",
   "edit-empty-request",
+  "edit-no-match",
+  "edit-bad-op",
+  "read-misuse",
+  "shell-syntax",
   "path-not-found",
   "sandbox-capability",
   "command-not-found",
@@ -46,11 +55,15 @@ export function classifyFailure(tool: string, head: string, tail = head): Failur
   if (tool === "edit" || tool === "write") {
     if (/Validation failed for tool/.test(all)) return "edit-schema-invalid";
     if (/E_BAD_REF|E_STALE_ANCHOR/.test(all)) return "edit-bad-anchor";
-    if (/E_MULTI_MATCH/.test(all)) return "edit-multi-match";
+    if (/E_MULTI_MATCH|Found \d+ occurrences of edits/.test(all)) return "edit-multi-match";
+    if (/E_NO_MATCH|Could not find (the exact text|edits\[)/.test(all)) return "edit-no-match";
+    if (/E_BAD_OP/.test(all)) return "edit-bad-op";
     if (/E_WOULD_EMPTY/.test(all)) return "edit-would-empty";
     if (/E_EDIT_CONFLICT/.test(all)) return "edit-conflict";
     if (/Edit request requires/.test(all)) return "edit-empty-request";
   }
+  if (tool === "read" && /EISDIR|is beyond end of file/.test(all)) return "read-misuse";
+  if (tool === "bash" && /unexpected EOF|syntax error near/.test(all)) return "shell-syntax";
   if (/ENOENT|File not found|No such file or directory/i.test(all)) return "path-not-found";
   if (/is not defined/.test(all) && tool === "codemode") return "sandbox-capability";
   if (/task_not_found/.test(all)) return "t3-task-not-found";
@@ -66,7 +79,9 @@ export function classifyFailure(tool: string, head: string, tail = head): Failur
   if (tool === "bash" && /\(no output\)(?:\s|\\n)+Command exited with code 1\b/.test(all))
     return "empty-result-exit1";
   if (tool === "bash" && /Command exited with code 143/.test(all)) return "killed-sigterm";
-  if (tool === "bash" && /lefthook|ERR_PNPM|Cannot find module/.test(head)) return "check-failed";
+  if (tool === "bash" && /lefthook|ERR_PNPM|Cannot find module|bun test v|CSpell/.test(head))
+    return "check-failed";
+  if (tool === "bash" && /Traceback \(most recent call last\)/.test(head)) return "script-error";
   if (tool === "bash" && CHECK_RUNNERS.test(head)) return "check-failed";
   if (tool === "bash" && /Command exited with code \d+/.test(tail)) return "exit-nonzero-other";
   return "unknown";

@@ -27,6 +27,17 @@ const cases: [string, string, string, string][] = [
     String.raw`[{"text":"(no output)\n\nCommand exited with code 1"}]`,
     "empty-result-exit1",
   ],
+  ["duplicate old text", "edit", "Found 2 occurrences of edits[1] in a.ts", "edit-multi-match"],
+  ["old text missing", "edit", "Could not find edits[5] in a.md.", "edit-no-match"],
+  ["empty append", "edit", "[E_BAD_OP] Append with empty lines", "edit-bad-op"],
+  ["read directory", "read", "EISDIR: illegal operation on a directory, read", "read-misuse"],
+  [
+    "shell quoting",
+    "bash",
+    "/bin/bash: -c: line 1: unexpected EOF while looking for matching",
+    "shell-syntax",
+  ],
+  ["python crash", "bash", "Traceback (most recent call last):\n  File x", "script-error"],
   ["sigterm", "bash", "(no output)  Command exited with code 143", "killed-sigterm"],
   ["abort", "bash", "x\n\nCommand aborted", "aborted"],
   [

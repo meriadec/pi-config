@@ -15,12 +15,19 @@ export async function openSessions(glob = SESSIONS_GLOB): Promise<DuckDBConnecti
       filename=true, ignore_errors=true, maximum_object_size=268435456)
     where type = 'message'`);
   await db.run(`create view tool_results as
-    select file, ts, message->>'toolName' as tool,
+    select file, ts, message->>'toolCallId' as call_id, message->>'toolName' as tool,
       coalesce((message->>'isError')::boolean, false) as is_error,
       length(message->>'content') as size,
       substr(message->>'content', 1, 600) as head,
       substr(message->>'content', greatest(length(message->>'content') - 300, 1)) as tail
     from messages where message->>'role' = 'toolResult'`);
+  await db.run(`create view tool_calls as
+    select file, ts, c->>'name' as tool, c->>'id' as call_id, c->'arguments' as args,
+      c->'arguments'->>'command' as command
+    from (select file, ts, unnest(from_json(message->'content', '["JSON"]')) as c
+          from messages
+          where message->>'role' = 'assistant' and json_type(message->'content') = 'ARRAY')
+    where c->>'type' = 'toolCall'`);
   return db;
 }
 

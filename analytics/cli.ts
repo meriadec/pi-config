@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { classifyFailure, TOOLING_CLASSES } from "./classify.ts";
+import { detectPolling } from "../agent/extensions/wait/polling.ts";
 import { openSessions, rows } from "./db.ts";
 
 const [cmd = "help"] = process.argv.slice(2);
@@ -45,6 +46,33 @@ async function context() {
   }
 }
 
-const commands: Record<string, () => Promise<void>> = { errors, context };
+/** How often models poll by hand. Validates the wait-guard rules against real history. */
+async function polling() {
+  const db = await openSessions();
+  const cmds = await rows<{ file: string; cmd: string }>(
+    db,
+    `select file, json_extract_string(c, '$.arguments.command') as cmd
+     from (select file, unnest(from_json(message->'content', '["json"]')) as c
+           from messages where message->>'role' = 'assistant' and json_type(message->'content') = 'ARRAY')
+     where json_extract_string(c, '$.name') = 'bash'`,
+  );
+  const byKind = new Map<string, number>();
+  const sessions = new Set<string>();
+  const samples = new Map<string, string>();
+  for (const { file, cmd } of cmds) {
+    const kind = cmd ? detectPolling(cmd) : undefined;
+    if (!kind) continue;
+    byKind.set(kind, (byKind.get(kind) ?? 0) + 1);
+    sessions.add(file);
+    if (!samples.has(kind)) samples.set(kind, cmd.slice(0, 120).replaceAll("\n", " "));
+  }
+  console.log(
+    `bash calls: ${cmds.length}, polling-like: ${[...byKind.values()].reduce((a, b) => a + b, 0)}, sessions: ${sessions.size}`,
+  );
+  for (const [k, v] of [...byKind].sort((a, b) => b[1] - a[1]))
+    console.log(String(v).padStart(6), k, "|", samples.get(k));
+}
+
+const commands: Record<string, () => Promise<void>> = { errors, context, polling };
 if (commands[cmd]) await commands[cmd]();
-else console.log("usage: bun analytics/cli.ts <errors|context>");
+else console.log("usage: bun analytics/cli.ts <errors|context|polling>");
