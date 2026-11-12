@@ -24,6 +24,7 @@ The Work control-plane package is developed in the separate `~/git/pi-work` repo
 
 - `agent/extensions/wait/` adds `wait_for`, `wait_list` and `wait_cancel`. PR and long-timer waits use T3 (`watch_pull_request`, `schedule_task`). Process, URL and short-timer waits run in-process and wake the session with a follow-up message. At the end of a turn the extension lists leftover processes the session started. Local waits end with the session.
 - `analytics/` loads `agent/sessions` into DuckDB: `bun analytics/cli.ts <errors|context|polling>`.
+- Skills audit: `bun analytics/skills-report.ts` prints per-skill size, sessions, first/last use, errors, cost and never-used skills. Findings and decisions: `docs/skills-audit.md`.
 - `experiments/waits/` holds the mock comparison and the display mock.
 
 ## Context guard
