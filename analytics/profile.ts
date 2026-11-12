@@ -12,6 +12,10 @@ export interface SessionProfileInput {
   rereadBytes: number;
   retryLoops: number;
   delegateCalls: number;
+  /** Recomputed USD for priced tokens only. */
+  cost: number;
+  /** Tokens of models with no known price. Their cost is missing, not zero. */
+  unpricedTokens: number;
 }
 
 export interface ProfileRow {
@@ -27,6 +31,11 @@ export interface ProfileRow {
   rereadMbPerSession: number;
   loopsPer100: number;
   delegatesPerSession: number;
+  costMean: number;
+  costMedian: number;
+  costTotal: number;
+  /** Sessions with unpriced tokens: costs above are lower bounds for these. */
+  unpricedSessions: number;
 }
 
 /** Nearest-rank percentile, p in (0, 100]. */
@@ -77,6 +86,10 @@ export function buildProfile(sessions: SessionProfileInput[]): ProfileRow[] {
       rereadMbPerSession: sum(g, (x) => x.rereadBytes) / MB / n,
       loopsPer100: (100 * sum(g, (x) => x.retryLoops)) / n,
       delegatesPerSession: sum(g, (x) => x.delegateCalls) / n,
+      costMean: sum(g, (x) => x.cost) / n,
+      costMedian: median(g.map((x) => x.cost)),
+      costTotal: sum(g, (x) => x.cost),
+      unpricedSessions: g.filter((x) => x.unpricedTokens > 0).length,
     };
   });
   return out.sort(
@@ -99,6 +112,10 @@ export function formatProfile(rows: ProfileRow[]): string {
     "rereadMB/s",
     "loops/100s",
     "deleg/s",
+    "$mean",
+    "$med",
+    "$total",
+    "unpriced_s",
   ];
   const f = (x: number, d = 1) => x.toFixed(d);
   const body = rows.map((r) => [
@@ -114,6 +131,10 @@ export function formatProfile(rows: ProfileRow[]): string {
     f(r.rereadMbPerSession, 2),
     f(r.loopsPer100),
     f(r.delegatesPerSession, 2),
+    f(r.costMean, 2),
+    f(r.costMedian, 2),
+    f(r.costTotal, 0) + (r.unpricedSessions > 0 ? "*" : ""),
+    String(r.unpricedSessions),
   ]);
   const w = head.map((h, i) => Math.max(h.length, ...body.map((b) => b[i]!.length)));
   const line = (c: string[]) =>

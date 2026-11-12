@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { buildProfile, median, percentile, type SessionProfileInput } from "./profile.ts";
+import {
+  buildProfile,
+  formatProfile,
+  median,
+  percentile,
+  type SessionProfileInput,
+} from "./profile.ts";
 
 const s = (o: Partial<SessionProfileInput>): SessionProfileInput => ({
   label: "implement",
@@ -13,6 +19,8 @@ const s = (o: Partial<SessionProfileInput>): SessionProfileInput => ({
   rereadBytes: 0,
   retryLoops: 0,
   delegateCalls: 0,
+  cost: 0,
+  unpricedTokens: 0,
   ...o,
 });
 
@@ -62,4 +70,19 @@ test("per-session means, MB and loops per 100 sessions", () => {
 
 test("zero tool results gives zero rate, not NaN", () => {
   expect(buildProfile([s({})])[0]!.errorRate).toBe(0);
+});
+
+test("cost mean, median and total per group", () => {
+  const [r] = buildProfile([1, 2, 9].map((c) => s({ cost: c })));
+  expect(r!.costMean).toBe(4);
+  expect(r!.costMedian).toBe(2);
+  expect(r!.costTotal).toBe(12);
+  expect(r!.unpricedSessions).toBe(0);
+});
+
+test("sessions with unpriced tokens are counted and marked, not treated as free", () => {
+  const rows = buildProfile([s({ cost: 5 }), s({ cost: 0, unpricedTokens: 10 })]);
+  expect(rows[0]!.unpricedSessions).toBe(1);
+  expect(formatProfile(rows)).toContain("5*");
+  expect(formatProfile(buildProfile([s({ cost: 5 })]))).not.toContain("5*");
 });

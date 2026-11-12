@@ -13,6 +13,8 @@ import {
 import { detectPolling } from "../agent/extensions/wait/polling.ts";
 import { buildProfile, formatProfile, type SessionProfileInput } from "./profile.ts";
 import { openSessions, rows } from "./db.ts";
+import { costBySession, summarizeCost, type MessageUsage } from "./cost.ts";
+import { PRICE_TABLE_VERSION } from "./prices.ts";
 
 const [cmd = "help"] = process.argv.slice(2);
 const pct = (a: number, b: number) => `${((100 * a) / b).toFixed(1)}%`;
@@ -125,6 +127,54 @@ async function labels() {
   console.log("origin:", Object.fromEntries(origins));
 }
 
+async function usageRows(db: Awaited<ReturnType<typeof openSessions>>): Promise<MessageUsage[]> {
+  const r = await rows<Record<string, string | null>>(
+    db,
+    `select file, message->>'model' as model,
+       (message->'usage'->>'input')::double as input, (message->'usage'->>'output')::double as output,
+       (message->'usage'->>'cacheRead')::double as cacheRead, (message->'usage'->>'cacheWrite')::double as cacheWrite,
+       coalesce((message->'usage'->'cost'->>'total')::double, 0) as notional
+     from messages where message->>'role' = 'assistant' and (message->'usage') is not null`,
+  );
+  return r.map((x) => ({
+    file: x.file!,
+    model: x.model ?? "unknown",
+    input: Number(x.input ?? 0),
+    output: Number(x.output ?? 0),
+    cacheRead: Number(x.cacheRead ?? 0),
+    cacheWrite: Number(x.cacheWrite ?? 0),
+    notional: Number(x.notional ?? 0),
+  }));
+}
+
+async function cost() {
+  const s = summarizeCost(await usageRows(await openSessions()));
+  const usd = (x: number) => `$${x.toFixed(2)}`;
+  console.log(
+    `prices: ${PRICE_TABLE_VERSION} + prices.override.json (USD per 1M tokens, public API)`,
+  );
+  console.log(`recomputed cost (priced models only): ${usd(s.total)}`);
+  console.log(
+    `tokens: ${s.tokens}, unpriced: ${s.unpricedTokens} (${pct(s.unpricedTokens, s.tokens)})`,
+  );
+  const unpriced = s.byModel.filter((m) => !m.priced);
+  if (unpriced.length) console.log("\nUNPRICED models (cost missing, not zero)");
+  for (const m of unpriced) console.log(String(m.tokens).padStart(14), m.model);
+  console.log("\ncost by model");
+  console.log(["model", "msgs", "tokens", "recomputed", "notional", "ratio"].join("\t"));
+  for (const m of s.byModel.filter((x) => x.priced))
+    console.log(
+      [
+        m.model,
+        m.messages,
+        m.tokens,
+        usd(m.cost),
+        usd(m.notional),
+        m.ratio?.toFixed(2) ?? "n/a",
+      ].join("\t"),
+    );
+}
+
 async function profile() {
   const db = await openSessions();
   const sessions = await sessionFeatures(db);
@@ -142,6 +192,7 @@ async function profile() {
     avoidableRereadBytesByFile(db),
     retryLoops(db),
   ]);
+  const costs = costBySession(await usageRows(db));
   const errs = new Map<string, { e: number; t: number }>();
   for (const r of await rows<{ file: string; tool: string; head: string; tail: string }>(
     db,
@@ -164,6 +215,8 @@ async function profile() {
     rereadBytes: rereads.get(s.file) ?? 0,
     retryLoops: loopStats.byFile.get(s.file) ?? 0,
     delegateCalls: delegates.get(s.file) ?? 0,
+    cost: costs.get(s.file)?.cost ?? 0,
+    unpricedTokens: costs.get(s.file)?.unpricedTokens ?? 0,
   }));
   const table = buildProfile(input);
   console.log(
@@ -179,6 +232,10 @@ const commands: Record<string, () => Promise<void>> = {
   loops,
   reads,
   profile,
+  cost,
 };
 if (commands[cmd]) await commands[cmd]();
-else console.log("usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|profile>");
+else
+  console.log(
+    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|profile|cost>",
+  );
