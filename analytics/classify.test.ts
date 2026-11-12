@@ -1,0 +1,43 @@
+import { expect, test } from "bun:test";
+import { classifyFailure } from "./classify.ts";
+
+const cases: [string, string, string, string][] = [
+  ["hashline anchor", "edit", "[E_BAD_REF] Invalid line reference", "edit-bad-anchor"],
+  ["schema", "edit", 'Validation failed for tool "edit":', "edit-schema-invalid"],
+  ["multi match", "edit", "[E_MULTI_MATCH] replace_text found multiple", "edit-multi-match"],
+  ["missing file on read", "read", "File not found: /tmp/a.png", "path-not-found"],
+  [
+    "codemode sandbox",
+    "codemode",
+    "ReferenceError: setTimeout is not defined",
+    "sandbox-capability",
+  ],
+  ["t3 task", "mcp__t3-code__task_status", '{"code":"task_not_found"}', "t3-task-not-found"],
+  [
+    "lint run",
+    "bash",
+    "$ biome check --error-on-warnings\nerror\n\nCommand exited with code 1",
+    "check-failed",
+  ],
+  ["plain exit", "bash", "boom\n\nCommand exited with code 2", "exit-nonzero-other"],
+  ["grep no match", "bash", "(no output)  Command exited with code 1", "empty-result-exit1"],
+  ["sigterm", "bash", "(no output)  Command exited with code 143", "killed-sigterm"],
+  ["abort", "bash", "x\n\nCommand aborted", "aborted"],
+  [
+    "5xx",
+    "mcp__enterprise_remote__list_workspaces",
+    "Revault request failed (503)",
+    "network-or-5xx",
+  ],
+  ["unknown", "bash", "hello", "unknown"],
+];
+
+for (const [name, tool, text, expected] of cases) {
+  test(`classifies ${name}`, () => {
+    expect(classifyFailure(tool, text)).toBe(expected as ReturnType<typeof classifyFailure>);
+  });
+}
+
+test("a test-runner header does not hide a missing file", () => {
+  expect(classifyFailure("bash", "$ bun test\nENOENT: no such file")).toBe("path-not-found");
+});

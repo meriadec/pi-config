@@ -4,7 +4,7 @@
   "type": "module",
   "sideEffects": false,
   "scripts": {
-    "test": "bun test agent/extensions agent/skills/create-pr agent/skills/vault-env",
+    "test": "bun test agent/extensions analytics agent/skills/create-pr agent/skills/vault-env",
     "typecheck": "tsgo --project tsconfig.json",
     "lint": "oxlint .",
     "format": "oxfmt --write .",
@@ -12,6 +12,7 @@
     "check": "bun run typecheck && bun run test && bun run lint && bun run format:check"
   },
   "devDependencies": {
+    "@duckdb/node-api": "^2.0.0-r.1",
     "@earendil-works/pi-ai": "0.80.2",
     "@earendil-works/pi-coding-agent": "0.80.2",
     "@earendil-works/pi-tui": "0.80.2",
