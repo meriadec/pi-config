@@ -23,6 +23,7 @@ import {
 import { costBySession, summarizeCost, type MessageUsage } from "./cost.ts";
 import { PRICE_TABLE_VERSION } from "./prices.ts";
 import { analyzeImages, formatImages, scanSession, type SessionImages } from "./images.ts";
+import { formatImpact, scanOutcome } from "./images-impact.ts";
 import { readFileSync } from "node:fs";
 import { runSample, runScore } from "./validate.ts";
 
@@ -270,6 +271,14 @@ async function images() {
       labelByRules(s).label ?? cache.get(s.file)?.label ?? "UNLABELLED",
     ]),
   );
+  if (process.argv.includes("--impact")) {
+    const dir = SESSIONS_GLOB.replace(/\/\*\/\*\.jsonl$/, "");
+    const out = [...new Bun.Glob("*/*.jsonl").scanSync({ cwd: dir, absolute: true })].map((f) =>
+      scanOutcome(f, readFileSync(f, "utf8").split("\n").filter(Boolean)),
+    );
+    console.log(formatImpact(out, (f) => labels.get(f) ?? "UNLABELLED"));
+    return;
+  }
   const scanned: SessionImages[] = [];
   for (const f of new Bun.Glob("*/*.jsonl").scanSync({
     cwd: SESSIONS_GLOB.replace(/\/\*\/\*\.jsonl$/, ""),
