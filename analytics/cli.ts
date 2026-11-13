@@ -27,6 +27,8 @@ import { formatImpact, scanOutcome } from "./images-impact.ts";
 import { readFileSync } from "node:fs";
 import { loadTailInputs } from "./tail-data.ts";
 import { buildTail, formatInterventions, formatTail, interventions, sessionTail } from "./tail.ts";
+import { loadModelInputs } from "./models-data.ts";
+import { buildReport, formatReport, keywordSample } from "./models.ts";
 import { runCompare, runRefresh, runSample, runScore } from "./validate.ts";
 
 const [cmd = "help"] = process.argv.slice(2);
@@ -266,6 +268,23 @@ async function tail() {
   console.log(formatInterventions(interventions(inputs)));
 }
 
+async function models() {
+  const a = process.argv.slice(3);
+  const label = a.includes("--label") ? a[a.indexOf("--label") + 1] : undefined;
+  const db = await openSessions();
+  const cache = loadCache();
+  const inputs = await loadModelInputs(
+    db,
+    await sessionFeatures(db),
+    (f) => labelFor(cache, f),
+    originOf,
+    (l) => !label || l === label,
+  );
+  console.log(formatReport(buildReport(inputs)));
+  console.log("\nKeyword hand-check sample (path | snippet):");
+  for (const s of keywordSample(inputs)) console.log(`${s.file} | ${s.snippet}`);
+}
+
 async function validate() {
   const [, , , sub, ...rest] = process.argv;
   const flag = (name: string, d: number) => {
@@ -324,9 +343,10 @@ const commands: Record<string, () => Promise<void>> = {
   validate,
   images,
   tail,
+  models,
 };
 if (commands[cmd]) await commands[cmd]();
 else
   console.log(
-    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|rereads|profile|cost|validate|images|tail>",
+    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|rereads|profile|cost|validate|images|tail|models>",
   );
