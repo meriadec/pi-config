@@ -7,6 +7,7 @@
 - Events: `pr.merged` (also ends on closed without merge), `pr.checks.done` (no check pending; lists failures; "no checks" counts as done only after 2 min), `pr.review` (new non-pending review or comment compared with the first poll; optional `reviewer`, case-insensitive part of the login), `pr.approved`, `time`, `process.exit`, `http.ready`.
 - A PR event on a PR that is no longer open ends at once and says why (except `pr.merged`).
 - `gh` errors back off (30 s doubling, max 5 min). 5 failures in a row end the wait with an error.
+- A queued message (`ctx.hasPendingMessages()`, polled every 2 s) ends any wait early, so a `time` wait is a maximum, not a fixed delay. This lets a finished delegated task wake the agent.
 - No maximum duration. The wait ends with the turn: `/reload`, a closed session or Stop. Nothing is saved to disk; the agent can start the wait again.
 - Several `wait_for` calls in parallel are allowed (each blocks its own call). `wait_cancel` aborts one by id. The footer status lists them.
 - `http.ready` waits for ONE answer with a status below 500. It does not check the body and does not retry. Tested against a real `Bun.serve` in `probe.test.ts`.

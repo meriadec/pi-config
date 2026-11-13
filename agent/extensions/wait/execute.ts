@@ -14,6 +14,10 @@ export interface WaitEnv {
   findTagged(): Promise<TaggedProcess[]>;
   /** Called when the set of active waits changes (status banner). */
   onChange(): void;
+  /** True when a message (user or delegated-task result) waits for the agent. Ends the wait early. */
+  hasPending?(): boolean;
+  /** How often to look at `hasPending`. Default 2000 ms. */
+  pendingPollMs?: number;
 }
 
 export interface ToolText {
@@ -56,6 +60,15 @@ export async function executeWait(
 
   const wait = env.active.start(waitLabel(resolved, env.conditions.now()), signal);
   env.onChange();
+  const flags: { woken: boolean } = { woken: false as boolean };
+  const poll =
+    env.hasPending &&
+    setInterval(() => {
+      if (!flags.woken && env.hasPending!()) {
+        flags.woken = true;
+        wait.controller.abort();
+      }
+    }, env.pendingPollMs ?? 2000);
   try {
     const outcome = await waitUntil(
       makeCheck(resolved, env.conditions),
@@ -70,14 +83,20 @@ export async function executeWait(
           details,
         );
       case "cancelled":
+        if (flags.woken && !signal?.aborted)
+          return text(
+            "The wait ended early: a new message is waiting for you (for example a finished delegated task). Read it and go on. Start the wait again only if still needed.",
+            { id: wait.id, outcome: "done" },
+          );
         return text(
           `Wait ${wait.id} was cancelled. Do not start it again unless the user asks.`,
           details,
         );
-      case "error":
+      default:
         return text(outcome.message, { ...details, error: outcome.message }, true);
     }
   } finally {
+    if (poll) clearInterval(poll);
     env.active.finish(wait.id);
     env.onChange();
   }

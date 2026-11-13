@@ -117,3 +117,18 @@ test("a bad spec returns an error and starts nothing", async () => {
   expect(res.isError).toBe(true);
   expect(changes()).toBe(0);
 });
+
+test("a queued message (finished delegate) ends a time wait early", async () => {
+  const { env } = setup();
+  let pending = false;
+  env.until = { sleep };
+  env.hasPending = () => pending;
+  env.pendingPollMs = 5;
+  const p = executeWait({ event: "time", afterMs: 60_000 }, env);
+  await Bun.sleep(20);
+  pending = true;
+  const res = await p;
+  expect(res.details.outcome).toBe("done");
+  expect(textOf(res)).toContain("ended early");
+  expect(env.active.list()).toEqual([]);
+});

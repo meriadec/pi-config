@@ -69,7 +69,9 @@ export default function (pi: ExtensionAPI) {
     active,
     findTagged: () => findTagged(sessionId, 0),
     onChange: refreshStatus,
+    hasPending: () => pendingCheck?.() ?? false,
   });
+  let pendingCheck: (() => boolean) | undefined;
 
   /**
    * Footer feedback. In T3 this becomes the "Pi · ..." banner above the composer. A wait also keeps
@@ -135,13 +137,14 @@ export default function (pi: ExtensionAPI) {
     description:
       "Block until an event happens, then return. The call stays open, so the thread keeps working and the user can press Stop to cancel it. Do NOT end your turn and do NOT poll with sleep or gh loops: when the call returns, go on with the user's instructions (for example rebase after a merge, or report to the user). " +
       "Events: pr.merged (also returns if the PR is closed without merge), pr.checks.done (no check pending; lists failures), pr.review (new review or comment after the wait began; optional reviewer, for example copilot), pr.approved (optional reviewer), time, process.exit (pid, or match: text in the command line of exactly one process this session started), http.ready (first answer with a status below 500). " +
-      "PR events poll gh every 30 s and cost no tokens. If the PR already has the review you want, check it with gh first: pr.review only sees NEW activity. The wait ends with the session or a reload.",
+      "PR events poll gh every 30 s and cost no tokens. If the PR already has the review you want, check it with gh first: pr.review only sees NEW activity. The wait ends with the session or a reload. It also ends early when a message is queued for you, for example when a delegated task finishes, so a long `time` wait is a maximum, not a fixed delay.",
     promptGuidelines: [
       "Use wait_for to wait for any event (PR merged, checks, review, approval, timer, process exit, HTTP ready) instead of sleep loops or polling commands. It blocks until the event; then continue the task.",
     ],
     parameters: params,
     async execute(_id, p, signal, _onUpdate, ctx) {
       trackUi(ctx);
+      pendingCheck = () => ctx.hasPendingMessages();
       return executeWait(p, envFor(), signal);
     },
   });
