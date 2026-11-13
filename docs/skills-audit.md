@@ -168,4 +168,6 @@ Only `pr-review-triage` is local. The others belong to the shared source.
 
 ## Applied actions
 
-None. The only local skill with zero uses is `stack-and-peel`. It is not a duplicate or subset of any skill that exists (its only possible twin, `stack`, is a dead link), and it is 2 days old. All other zero-use skills are symlinks to the shared source.
+On 2026-11-13 the user approved decision items 1, 2, 3, 5 and 6. Done: removed these seven symlinks from `agent/skills/` (the shared source in `~/.agents/skills` was NOT touched, so each one can come back with `ln -s`): `diagnose`, `stack`, `write-a-skill` (dead links), `to-prd`, `decision-mapping`, `resolving-merge-conflicts`, `to-issues`. A grep found no skill or doc that names them. `to-tickets` and `resolve-conflicts` remain.
+
+Not applied: items 12 (shorten `pr-review-triage`), 13, 14 and 15 (user choice).
