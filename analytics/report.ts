@@ -1,156 +1,110 @@
 #!/usr/bin/env bun
-/** Weekly report: `bun analytics/report.ts [--days 7]`. Compares the last N days with the N days before. */
-import type { DuckDBConnection } from "@duckdb/node-api";
+/**
+ * Weekly report: `bun analytics/report.ts [--since YYYY-MM-DD]`.
+ * Week = 7 days from --since (default: the last 7 days), compared with the 4 weeks before it.
+ * No network: labels come from the LLM v2 cache; new sessions get rule labels (cap 300 per run).
+ */
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
-import { detectPolling } from "../agent/extensions/wait/polling.ts";
 import { classifyFailure, TOOLING_CLASSES } from "./classify.ts";
 import { openSessions, rows } from "./db.ts";
+import { originOf } from "./label.ts";
+import { loadCache } from "./llm-label.ts";
+import { loadModelInputs } from "./models-data.ts";
+import { sessionFeatures } from "./sessions.ts";
+import { loadTailInputs } from "./tail-data.ts";
+import {
+  DAY_MS,
+  renderWeekly,
+  resolveLabels,
+  split,
+  windowsFrom,
+  type RuleLabel,
+  type WeeklySession,
+} from "./weekly.ts";
 
-export interface PeriodStats {
-  sessions: number;
-  toolCalls: number;
-  errors: number;
-  toolingErrors: number;
-  errorsByClass: Record<string, number>;
-  bigResults: number; // single tool results over 20 KB
-  resultMb: number;
-  pollingCalls: number;
-  waitForCalls: number;
+export const RULE_CACHE = join(import.meta.dir, "data", "weekly-labels.jsonl");
+
+export function loadRuleCache(file = RULE_CACHE) {
+  const m = new Map<string, RuleLabel>();
+  if (!existsSync(file)) return m;
+  for (const line of readFileSync(file, "utf8").split("\n"))
+    if (line) m.set((JSON.parse(line) as RuleLabel).file, JSON.parse(line) as RuleLabel);
+  return m;
 }
 
-const iso = (d: Date) => d.toISOString().replace("T", " ").replace("Z", "");
+/** DuckDB gives "YYYY-MM-DD hh:mm:ss[.fff]" in UTC. */
+export const parseStart = (s: string) =>
+  Date.parse(`${s.replace(" ", "T")}${/Z|[+-]\d\d:?\d\d$/.test(s) ? "" : "Z"}`);
 
-export async function collect(db: DuckDBConnection, from: Date, to: Date): Promise<PeriodStats> {
-  const win = `ts >= timestamp '${iso(from)}' and ts < timestamp '${iso(to)}'`;
-  const [totals] = await rows<{
-    n: string;
-    sessions: string;
-    big: string;
-    mb: string;
-    errs: string;
-  }>(
-    db,
-    `select count(*) n, count(distinct file) sessions,
-       count(*) filter (where size > 20000) big, coalesce(sum(size), 0) / 1e6 mb,
-       count(*) filter (where is_error) errs
-     from tool_results where ${win}`,
+export function parseSince(args: string[], now = new Date()): number {
+  const i = args.indexOf("--since");
+  if (i < 0) return now.getTime() - 7 * DAY_MS;
+  const v = args[i + 1] ?? "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v)))
+    throw new Error("--since needs YYYY-MM-DD");
+  return Date.parse(`${v}T00:00:00Z`);
+}
+
+export async function buildWeekly(args: string[], now = new Date()) {
+  const windows = windowsFrom(parseSince(args, now));
+  const db = await openSessions();
+  const all = (await sessionFeatures(db)).map((s) => ({
+    ...s,
+    startedMs: parseStart(s.startedAt),
+  }));
+  const inRange = all.filter(
+    (s) => s.startedMs >= windows.prevStart && s.startedMs < windows.weekEnd,
   );
-  const errs = await rows<{ tool: string; head: string; tail: string }>(
+  const labels = resolveLabels(inRange, loadCache(), loadRuleCache());
+  if (labels.added.length) {
+    mkdirSync(dirname(RULE_CACHE), { recursive: true });
+    appendFileSync(RULE_CACHE, labels.added.map((l) => `${JSON.stringify(l)}\n`).join(""));
+  }
+  const labelOf = (f: string) => labels.labelOf.get(f) ?? "UNLABELLED";
+  const tail = await loadTailInputs(db, inRange, labelOf, originOf, () => true);
+  const errs = new Map<string, Record<string, number>>();
+  for (const e of await rows<{ file: string; tool: string; head: string; tail: string }>(
     db,
-    `select tool, head, tail from tool_results where is_error and ${win}`,
-  );
-  const errorsByClass: Record<string, number> = {};
-  let toolingErrors = 0;
-  for (const e of errs) {
+    "select file, tool, head, tail from tool_results where is_error",
+  )) {
     const c = classifyFailure(e.tool, e.head, e.tail);
-    errorsByClass[c] = (errorsByClass[c] ?? 0) + 1;
-    if (TOOLING_CLASSES.has(c)) toolingErrors++;
+    if (!TOOLING_CLASSES.has(c)) continue;
+    const r = errs.get(e.file) ?? {};
+    r[c] = (r[c] ?? 0) + 1;
+    errs.set(e.file, r);
   }
-  const calls = await rows<{ name: string; cmd: string | null }>(
+  const start = new Map(inRange.map((s) => [s.file, s.startedMs]));
+  const sessions: WeeklySession[] = tail.map((t) => ({
+    file: t.file,
+    startedMs: start.get(t.file)!,
+    label: t.label,
+    usage: t.usage,
+    toolingErrors: errs.get(t.file) ?? {},
+    bashCommands: t.bashCommands,
+  }));
+  const weekFiles = new Set(split(sessions, windows).week.map((s) => s.file));
+  const modelInputs = await loadModelInputs(
     db,
-    `select json_extract_string(c, '$.name') as name, json_extract_string(c, '$.arguments.command') as cmd
-     from (select unnest(from_json(message->'content', '["json"]')) as c
-           from messages where message->>'role' = 'assistant' and json_type(message->'content') = 'ARRAY' and ${win})
-     where json_extract_string(c, '$.type') = 'toolCall'`,
+    inRange.filter((s) => weekFiles.has(s.file)),
+    labelOf,
+    originOf,
+    () => true,
   );
-  let pollingCalls = 0;
-  let waitForCalls = 0;
-  for (const c of calls) {
-    if (c.name === "wait_for") waitForCalls++;
-    if (c.name === "bash" && c.cmd && detectPolling(c.cmd)) pollingCalls++;
-  }
-  return {
-    sessions: Number(totals?.sessions ?? 0),
-    toolCalls: calls.length,
-    errors: errs.length,
-    toolingErrors,
-    errorsByClass,
-    bigResults: Number(totals?.big ?? 0),
-    resultMb: Math.round(Number(totals?.mb ?? 0)),
-    pollingCalls,
-    waitForCalls,
-  };
-}
-
-const per1k = (n: number, total: number) => (total === 0 ? "0.0" : ((1000 * n) / total).toFixed(1));
-const delta = (now: number, before: number) => {
-  if (before === 0) return now === 0 ? "=" : "new";
-  const d = Math.round((100 * (now - before)) / before);
-  return d === 0 ? "=" : `${d > 0 ? "+" : ""}${d}%`;
-};
-
-export function renderReport(
-  cur: PeriodStats,
-  prev: PeriodStats,
-  days: number,
-  today: string,
-): string {
-  const row = (label: string, a: string | number, b: string | number, d: string) =>
-    `| ${label} | ${a} | ${b} | ${d} |`;
-  const classes = Object.entries(cur.errorsByClass)
-    .sort((x, y) => y[1] - x[1])
-    .slice(0, 8)
-    .map(([k, v]) => `- ${k}: ${v} (before: ${prev.errorsByClass[k] ?? 0})`);
-  return [
-    `# Pi weekly report ${today} (last ${days} days vs the ${days} before)`,
-    "",
-    "| Metric | Now | Before | Change |",
-    "|---|---|---|---|",
-    row("Sessions with tool use", cur.sessions, prev.sessions, delta(cur.sessions, prev.sessions)),
-    row("Tool calls", cur.toolCalls, prev.toolCalls, delta(cur.toolCalls, prev.toolCalls)),
-    row(
-      "Errors per 1000 calls",
-      per1k(cur.errors, cur.toolCalls),
-      per1k(prev.errors, prev.toolCalls),
-      "",
-    ),
-    row(
-      "Tooling errors per 1000 calls",
-      per1k(cur.toolingErrors, cur.toolCalls),
-      per1k(prev.toolingErrors, prev.toolCalls),
-      "",
-    ),
-    row(
-      "Results over 20 KB",
-      cur.bigResults,
-      prev.bigResults,
-      delta(cur.bigResults, prev.bigResults),
-    ),
-    row("Tool result volume (MB)", cur.resultMb, prev.resultMb, delta(cur.resultMb, prev.resultMb)),
-    row(
-      "Hand-made polling commands",
-      cur.pollingCalls,
-      prev.pollingCalls,
-      delta(cur.pollingCalls, prev.pollingCalls),
-    ),
-    row(
-      "wait_for calls",
-      cur.waitForCalls,
-      prev.waitForCalls,
-      delta(cur.waitForCalls, prev.waitForCalls),
-    ),
-    "",
-    "## Top error classes",
-    ...(classes.length ? classes : ["- none"]),
-    "",
-  ].join("\n");
+  return renderWeekly({
+    date: now.toISOString().slice(0, 10),
+    windows,
+    sessions,
+    paths: new Map(inRange.map((s) => [s.file, s.file])),
+    modelInputs,
+    labelLine: labels.line,
+  });
 }
 
 if (import.meta.main) {
-  const i = process.argv.indexOf("--days");
-  const days = i > 0 ? Number(process.argv[i + 1]) : 7;
-  if (!(days > 0)) throw new Error("--days must be a positive number");
   const now = new Date();
-  const mid = new Date(now.getTime() - days * 86_400_000);
-  const start = new Date(mid.getTime() - days * 86_400_000);
-  const db = await openSessions();
-  const text = renderReport(
-    await collect(db, mid, now),
-    await collect(db, start, mid),
-    days,
-    now.toISOString().slice(0, 10),
-  );
+  const text = await buildWeekly(process.argv.slice(2), now);
   const dir = join(import.meta.dir, "data");
   await mkdir(dir, { recursive: true });
   await Bun.write(join(dir, `report-${now.toISOString().slice(0, 10)}.md`), text);
