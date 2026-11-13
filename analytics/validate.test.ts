@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { LABELS } from "./label.ts";
 import {
   candidates,
+  compareLabels,
   drawSample,
+  refreshSample,
+  type CompareRow,
   parseAnswers,
   renderSheet,
   scoreAnswers,
@@ -46,7 +49,10 @@ test("each label has at least 3 items, size and LLM share are respected", () => 
 });
 
 test("sheet never leaks label, source or confidence; batches of 20", () => {
-  const items = drawSample(pool, 45, 1).map((x) => ({ ...x, label: "zzsecretlabel" }));
+  const items = drawSample(pool, 45, 1).map((x) => ({
+    ...x,
+    label: "zzsecretlabel",
+  }));
   const md = renderSheet(items);
   expect(md).not.toContain("zzsecretlabel");
   expect(md).not.toMatch(/confidence|\bllm\b|\brule\b/i);
@@ -112,7 +118,96 @@ test("candidates skip delegated children and empty first messages", () => {
     }) as never;
   const c = candidates(
     [s("hello"), s("  "), s("Act as the implementation sub-agent for x")],
-    new Map(),
+    new Map(
+      ["hello", "  ", "Act as the implementation sub-agent for x"].map((f) => [
+        f,
+        { label: "design", confidence: 0.9 },
+      ]),
+    ),
   );
   expect(c.map((x) => x.file)).toEqual(["hello"]);
+  // a skill (tdd) must not decide: the cached LLM label does
+  expect(c[0]!.label).toBe("design");
+});
+
+test("refresh changes labels but never membership, numbers or order", () => {
+  const items: SampleItem[] = [
+    { ...mk(1, "design", "rule", null), n: 7 },
+    { ...mk(2, "implement", "llm", 0.4), n: 3 },
+  ];
+  const sessions = items.map((i) => ({
+    ...i,
+    firstSkill: i.n === 7 ? "codebase-design" : null,
+    startedAt: "",
+    lastText: "",
+  })) as never;
+  const cache = new Map([
+    [items[0]!.file, { label: "code-review", confidence: 0.9 }],
+    [items[1]!.file, { label: "implement", confidence: 0.8 }],
+  ]);
+  const out = refreshSample(items, sessions, cache);
+  expect(out.map((i) => [i.n, i.file])).toEqual(items.map((i) => [i.n, i.file]));
+  expect(out[0]).toMatchObject({
+    label: "code-review",
+    oldLabel: "design",
+    oldBy: "skill",
+    confidence: 0.9,
+  });
+  expect(out[1]).toMatchObject({
+    label: "implement",
+    oldLabel: "implement",
+    oldBy: "llm",
+  });
+  // second refresh keeps the original old label
+  expect(refreshSample(out, sessions, cache)[0]!.oldLabel).toBe("design");
+  expect(() => refreshSample(items, sessions, new Map())).toThrow();
+});
+
+test("score reports new and old accuracy on the same answers, by old source", () => {
+  const items: SampleItem[] = [
+    {
+      ...mk(1, "code-review", "llm", 0.9),
+      n: 1,
+      oldLabel: "design",
+      oldBy: "skill",
+    },
+    {
+      ...mk(2, "implement", "llm", 0.9),
+      n: 2,
+      oldLabel: "implement",
+      oldBy: "llm",
+    },
+  ];
+  const s = scoreAnswers(
+    items,
+    new Map([
+      [1, "code-review"],
+      [2, "implement"],
+    ]),
+  );
+  expect(s.correct).toBe(2);
+  expect(s.oldCorrect).toBe(1);
+  expect(s.oldByBy.skill).toEqual({ ok: 0, n: 1 });
+  expect(s.newByOldBy.skill).toEqual({ ok: 1, n: 1 });
+});
+
+test("compare: agreement by old source, top pairs, pi-config rule agreement", () => {
+  const r = (oldLabel: string, oldBy: CompareRow["oldBy"], newLabel: string): CompareRow => ({
+    oldLabel,
+    oldBy,
+    newLabel,
+  });
+  const c = compareLabels([
+    r("design", "skill", "code-review"),
+    r("design", "skill", "code-review"),
+    r("design", "skill", "design"),
+    r("pi-config", "project", "pi-config"),
+    r("pi-config", "project", "implement"),
+  ]);
+  expect(c.bySource.find(([k]) => k === "skill")![1]).toEqual({
+    agree: 1,
+    n: 3,
+  });
+  expect(c.topPairs[0]).toEqual(["design → code-review", 2]);
+  expect(c.projectRule).toEqual({ n: 2, agree: 1 });
 });

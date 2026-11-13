@@ -6,6 +6,16 @@ export interface SessionRow extends SessionFeatures {
   file: string;
   turns: number;
   startedAt: string;
+  /** Last user message, only when short (a closing request often names the real task). */
+  lastText: string;
+}
+
+export const LAST_TEXT_MAX = 300;
+
+/** The last user message, if short and different from the first one. */
+export function lastShort(last: string | null, first: string): string {
+  const t = (last ?? "").replace(/^<skill [^>]*>[\s\S]*?<\/skill>\s*/, "").trim();
+  return t.length > 0 && t.length <= LAST_TEXT_MAX && !first.includes(t) ? t : "";
 }
 
 /** One row per session: first user message (skill block stripped), first skill, and tool-shape counts. */
@@ -18,6 +28,7 @@ export async function sessionFeatures(db: DuckDBConnection): Promise<SessionRow[
     reads: string;
     turns: string;
     started: string;
+    last: string | null;
   }>(
     db,
     `with first_user as (
@@ -32,10 +43,15 @@ export async function sessionFeatures(db: DuckDBConnection): Promise<SessionRow[
        select file, count(*) filter (where tool in ('edit','write')) as edits,
          count(*) filter (where tool = 'bash') as bash, count(*) filter (where tool = 'read') as reads
        from tool_calls group by 1),
+     last_user as (
+       select file, case when json_type(c) = 'ARRAY' then coalesce(c->>'$[0].text', '') else trim(both '"' from c::varchar) end as text
+       from (select file, message->'content' as c,
+         row_number() over (partition by file order by ts desc) as rn
+         from messages where message->>'role' = 'user') where rn = 1),
      turns as (select file, count(*) as turns, min(ts) as started from messages group by 1)
      select t.file, fu.text as first, coalesce(s.edits,0) as edits, coalesce(s.bash,0) as bash,
-       coalesce(s.reads,0) as reads, t.turns, t.started
-     from turns t left join fu using (file) left join shape s using (file)`,
+       coalesce(s.reads,0) as reads, t.turns, t.started, lu.text as last
+     from turns t left join fu using (file) left join last_user lu using (file) left join shape s using (file)`,
   );
   return raw.map((r) => {
     const text = r.first ?? "";
@@ -50,6 +66,7 @@ export async function sessionFeatures(db: DuckDBConnection): Promise<SessionRow[
       reads: Number(r.reads),
       turns: Number(r.turns),
       startedAt: r.started,
+      lastText: lastShort(r.last, text),
     };
   });
 }

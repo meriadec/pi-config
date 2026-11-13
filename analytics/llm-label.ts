@@ -1,19 +1,26 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { LABELS, originOf, type Label } from "./label.ts";
+import { LABELS, originOf, skillHint, type Label } from "./label.ts";
 import { redact } from "./redact.ts";
 import type { SessionRow } from "./sessions.ts";
 
 export const LLM_MODEL = "openrouter/anthropic/claude-haiku-5.5";
-export const CACHE_FILE = new URL("./data/llm-labels.jsonl", import.meta.url).pathname;
+/** Bump when the prompt changes. Cached labels from another version are ignored. */
+export const PROMPT_VERSION = "v2-hint";
+export const CACHE_FILE = new URL("./data/llm-labels-v2.jsonl", import.meta.url).pathname;
+/** First-generation labels (skill-first prompt, only rule-unclear sessions). Comparison only. */
+export const LEGACY_CACHE_FILE = new URL("./data/llm-labels.jsonl", import.meta.url).pathname;
 
 export interface LlmLabel {
   file: string;
   label: Label;
   confidence: number;
   model: string;
+  promptVersion?: string;
 }
+
+const clean = (t: string, max: number) => redact(t).replace(/\s+/g, " ").slice(0, max);
 
 export function buildPrompt(batch: SessionRow[]): string {
   const items = batch.map((s, i) => ({
@@ -21,10 +28,19 @@ export function buildPrompt(batch: SessionRow[]): string {
     project: s.project.replace(/^--home-mpillet-/, "").replace(/--$/, ""),
     origin: originOf(s),
     shape: { edits: s.edits, bash: s.bash, reads: s.reads, turns: s.turns },
-    firstMessage: redact(s.firstText).replace(/\s+/g, " ").slice(0, 700),
+    skill: s.firstSkill,
+    skillSuggests: skillHint(s.firstSkill),
+    firstMessageAfterSkill: clean(s.firstText, 700),
+    ...(s.lastText ? { lastMessage: clean(s.lastText, 300) } : {}),
   }));
   return `Classify each coding-agent thread by the main task it handles.
 Labels: ${LABELS.join(", ")}.
+A skill name (\`skill\`, \`skillSuggests\`) is only a hint about the task, not the task. People often start a skill and then ask for something else.
+The user's own words after the skill (firstMessageAfterSkill, lastMessage) decide the label; use the skill only when those words are empty or unclear.
+Example: skill codebase-design, but the user says "please review the current changes" -> code-review. A status question -> explore-qa.
+Use the project and tool shape (edits, bash, reads) as weak evidence.
+- code-review: review a diff or current changes. pr-review: handle review comments on a PR.
+- pi-config: change the pi coding-agent setup (extensions, skills, prompts, themes).
 - explore-qa: questions, investigation, reports, no real code change wanted.
 - implement: build or change code. diagnose: find the cause of a failure or bug.
 - infra-ops: deploy, docker, k8s, CI, environment. other: none of the above.
@@ -44,7 +60,11 @@ export function parseAnswer(text: string, batch: SessionRow[]): LlmLabel[] {
   }
   if (!Array.isArray(arr)) return [];
   const out: LlmLabel[] = [];
-  for (const a of arr as { i?: number; label?: string; confidence?: number }[]) {
+  for (const a of arr as {
+    i?: number;
+    label?: string;
+    confidence?: number;
+  }[]) {
     const s = typeof a.i === "number" ? batch[a.i] : undefined;
     if (!s || !a.label || !(LABELS as readonly string[]).includes(a.label)) continue;
     out.push({
@@ -52,6 +72,7 @@ export function parseAnswer(text: string, batch: SessionRow[]): LlmLabel[] {
       label: a.label as Label,
       confidence: Number(a.confidence ?? 0),
       model: LLM_MODEL,
+      promptVersion: PROMPT_VERSION,
     });
   }
   return out;
@@ -70,29 +91,38 @@ function askModel(prompt: string): Promise<string> {
   });
 }
 
-export function loadCache(): Map<string, LlmLabel> {
+/** Cached labels for ONE prompt version. Other versions in the file are ignored, never mixed. */
+export function loadCache(file = CACHE_FILE, version: string | null = PROMPT_VERSION) {
   const m = new Map<string, LlmLabel>();
-  if (!existsSync(CACHE_FILE)) return m;
-  for (const line of readFileSync(CACHE_FILE, "utf8").split("\n")) {
-    if (line) {
-      const l = JSON.parse(line) as LlmLabel;
-      m.set(l.file, l);
-    }
+  if (!existsSync(file)) return m;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line) continue;
+    const l = JSON.parse(line) as LlmLabel;
+    if (version === null || l.promptVersion === version) m.set(l.file, l);
   }
   return m;
 }
 
+/** Old skill-first LLM labels, for comparison only. */
+export const loadLegacyCache = () => loadCache(LEGACY_CACHE_FILE, null);
+
 /** Label sessions in batches, in parallel, appending to a cache so a rerun only pays for new sessions. */
 export async function labelWithLlm(
   sessions: SessionRow[],
-  opts: { batch?: number; parallel?: number; limit?: number } = {},
+  opts: {
+    batch?: number;
+    parallel?: number;
+    limit?: number;
+    cacheFile?: string;
+  } = {},
 ) {
-  const cache = loadCache();
+  const file = opts.cacheFile ?? CACHE_FILE;
+  const cache = loadCache(file);
   const todo = sessions.filter((s) => !cache.has(s.file)).slice(0, opts.limit ?? Infinity);
   const size = opts.batch ?? 12;
   const batches: SessionRow[][] = [];
   for (let i = 0; i < todo.length; i += size) batches.push(todo.slice(i, i + size));
-  mkdirSync(dirname(CACHE_FILE), { recursive: true });
+  mkdirSync(dirname(file), { recursive: true });
   let next = 0;
   let failed = 0;
   const worker = async () => {
@@ -102,7 +132,7 @@ export async function labelWithLlm(
         const got = parseAnswer(await askModel(buildPrompt(b)), b);
         for (const l of got) {
           cache.set(l.file, l);
-          appendFileSync(CACHE_FILE, `${JSON.stringify(l)}\n`);
+          appendFileSync(file, `${JSON.stringify(l)}\n`);
         }
         if (got.length < b.length) failed++;
       } catch {

@@ -1,4 +1,7 @@
-/** Thread task taxonomy. Rules first (free, deterministic); an LLM only sees what rules leave as "unclear". */
+/**
+ * Thread task taxonomy. The LLM labels every session (see llm-label.ts); a skill name is only a hint.
+ * `labelByRules` is the OLD rule labeller, kept only to compare against the LLM labels. Do not use it as the answer.
+ */
 
 export const LABELS = [
   "pr-create",
@@ -63,6 +66,11 @@ const SKILL_LABEL: Record<string, Label> = {
   "manage-docker-images": "infra-ops",
 };
 
+/** Skill label this skill usually suggests. A hint for the LLM, never the answer. */
+export function skillHint(skill: string | null): Label | null {
+  return (skill && SKILL_LABEL[skill]) || null;
+}
+
 export type Origin = "human" | "delegated-child";
 
 /** Delegated children start from a machine-written brief, not from a person's words. */
@@ -78,6 +86,7 @@ export type Labelled =
   | { label: Label; by: "skill" | "project" | "keyword" }
   | { label: null; by: "unclear" };
 
+/** Legacy: skill name decided the label. Kept for the old-vs-new comparison only. */
 export function labelByRules(f: SessionFeatures): Labelled {
   if (f.firstSkill && SKILL_LABEL[f.firstSkill])
     return { label: SKILL_LABEL[f.firstSkill]!, by: "skill" };

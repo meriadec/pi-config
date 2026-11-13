@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { labelByRules, originOf, type SessionFeatures } from "./label.ts";
+import { labelByRules, originOf, skillHint, type SessionFeatures } from "./label.ts";
 
 const base: SessionFeatures = {
   firstSkill: null,
@@ -38,9 +38,16 @@ test("anything else is left for the LLM", () => {
   );
 });
 test("machine-written briefs are delegated children; a person's words are human", () => {
-  expect(originOf({ firstText: "Act as the implementation sub-agent for this task." })).toBe(
-    "delegated-child",
-  );
+  expect(
+    originOf({
+      firstText: "Act as the implementation sub-agent for this task.",
+    }),
+  ).toBe("delegated-child");
   expect(originOf({ firstText: "Delegation Job 2026 Task: do x" })).toBe("delegated-child");
   expect(originOf({ firstText: "can you act as a reviewer" })).toBe("human");
+});
+test("a skill maps to a suggestion only (null for unknown skills)", () => {
+  expect(skillHint("codebase-design")).toBe("design");
+  expect(skillHint("not-a-skill")).toBeNull();
+  expect(skillHint(null)).toBeNull();
 });

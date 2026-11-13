@@ -1,7 +1,7 @@
 /** Hand-validation of task labels: seeded sample, blind review sheet, answer scoring. */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { LABELS, labelByRules, originOf } from "./label.ts";
-import { loadCache } from "./llm-label.ts";
+import { loadCache, loadLegacyCache } from "./llm-label.ts";
 import { redact } from "./redact.ts";
 import type { SessionRow } from "./sessions.ts";
 
@@ -22,6 +22,9 @@ export interface SampleItem {
   label: string;
   source: "rule" | "llm";
   confidence: number | null;
+  /** Set by refresh: the old (rule-first) label and where it came from. `label` is the new LLM label. */
+  oldLabel?: string;
+  oldBy?: "skill" | "keyword" | "project" | "llm";
 }
 
 type Cand = Omit<SampleItem, "n">;
@@ -58,17 +61,15 @@ export function confBucket(c: number): "<0.5" | "0.5-0.8" | ">0.8" {
   return c < 0.5 ? "<0.5" : c <= 0.8 ? "0.5-0.8" : ">0.8";
 }
 
-/** Candidates: human-origin sessions with a label from rules, else from the LLM cache. */
+/** Candidates: human-origin sessions with an LLM label (the LLM labels everything; rules do not decide). */
 export function candidates(
   sessions: SessionRow[],
   cache: Map<string, { label: string; confidence: number }>,
 ): Cand[] {
   const out: Cand[] = [];
   for (const s of sessions) {
-    if (originOf(s) !== "human" || !s.firstText.trim()) continue;
-    const r = labelByRules(s);
-    const l = r.label === null ? cache.get(s.file) : undefined;
-    if (r.label === null && !l) continue;
+    const l = cache.get(s.file);
+    if (originOf(s) !== "human" || !s.firstText.trim() || !l) continue;
     out.push({
       file: s.file,
       project: shortProject(s.project),
@@ -77,9 +78,9 @@ export function candidates(
       bash: s.bash,
       reads: s.reads,
       turns: s.turns,
-      label: r.label ?? l!.label,
-      source: r.label === null ? "llm" : "rule",
-      confidence: r.label === null ? l!.confidence : null,
+      label: l.label,
+      source: "llm",
+      confidence: l.confidence,
     });
   }
   return out;
@@ -185,6 +186,11 @@ export interface Score {
   skipped: number;
   unanswered: number;
   bySource: Record<"rule" | "llm", { ok: number; n: number }>;
+  /** Old labels (before refresh) scored on the same answers, by old source. */
+  oldByBy: Record<string, { ok: number; n: number }>;
+  oldCorrect: number;
+  /** New labels scored by the OLD source of the item. */
+  newByOldBy: Record<string, { ok: number; n: number }>;
   byConf: Record<string, { ok: number; n: number }>;
   confusion: { truth: string; model: string; n: number }[]; // truth = owner label
   wrong: (SampleItem & { truth: string })[];
@@ -197,7 +203,14 @@ export function scoreAnswers(items: SampleItem[], answers: Map<number, string>):
     skipped: 0,
     unanswered: 0,
     bySource: { rule: { ok: 0, n: 0 }, llm: { ok: 0, n: 0 } },
-    byConf: { "<0.5": { ok: 0, n: 0 }, "0.5-0.8": { ok: 0, n: 0 }, ">0.8": { ok: 0, n: 0 } },
+    oldByBy: {},
+    oldCorrect: 0,
+    newByOldBy: {},
+    byConf: {
+      "<0.5": { ok: 0, n: 0 },
+      "0.5-0.8": { ok: 0, n: 0 },
+      ">0.8": { ok: 0, n: 0 },
+    },
     confusion: [],
     wrong: [],
   };
@@ -217,6 +230,16 @@ export function scoreAnswers(items: SampleItem[], answers: Map<number, string>):
     s.correct += ok;
     s.bySource[it.source].n++;
     s.bySource[it.source].ok += ok;
+    if (it.oldLabel) {
+      const o = (s.oldByBy[it.oldBy ?? "llm"] ??= { ok: 0, n: 0 });
+      const oldOk = a === it.oldLabel ? 1 : 0;
+      o.n++;
+      o.ok += oldOk;
+      s.oldCorrect += oldOk;
+      const nb = (s.newByOldBy[it.oldBy ?? "llm"] ??= { ok: 0, n: 0 });
+      nb.n++;
+      nb.ok += ok;
+    }
     if (it.source === "llm") {
       const b = s.byConf[confBucket(it.confidence ?? 0)]!;
       b.n++;
@@ -229,7 +252,11 @@ export function scoreAnswers(items: SampleItem[], answers: Map<number, string>):
     }
   }
   s.confusion = [...pairs]
-    .map(([k, n]) => ({ truth: k.split("\t")[0]!, model: k.split("\t")[1]!, n }))
+    .map(([k, n]) => ({
+      truth: k.split("\t")[0]!,
+      model: k.split("\t")[1]!,
+      n,
+    }))
     .sort((a, b) => b.n - a.n || a.truth.localeCompare(b.truth));
   return s;
 }
@@ -240,8 +267,18 @@ export function renderReport(items: SampleItem[], s: Score, errors: string[]): s
     "",
     `Scored ${s.scored} of ${items.length} (skipped ${s.skipped}, unanswered ${s.unanswered}).`,
     `- Overall accuracy: ${acc(s.correct, s.scored)}`,
-    `- Rule labels: ${acc(s.bySource.rule.ok, s.bySource.rule.n)}`,
-    `- LLM labels: ${acc(s.bySource.llm.ok, s.bySource.llm.n)}`,
+    ...(items.some((i) => i.oldLabel)
+      ? [
+          `- Old labels (rules first) on the same answers: ${acc(s.oldCorrect, s.scored)}`,
+          ...Object.entries(s.oldByBy).map(
+            ([k, v]) =>
+              `  - old ${k}: old ${acc(v.ok, v.n)} → new ${acc(s.newByOldBy[k]!.ok, s.newByOldBy[k]!.n)}`,
+          ),
+        ]
+      : [
+          `- Rule labels: ${acc(s.bySource.rule.ok, s.bySource.rule.n)}`,
+          `- LLM labels: ${acc(s.bySource.llm.ok, s.bySource.llm.n)}`,
+        ]),
     "",
     "## LLM accuracy by confidence",
     ...Object.entries(s.byConf).map(([k, v]) => `- ${k}: ${acc(v.ok, v.n)}`),
@@ -255,7 +292,7 @@ export function renderReport(items: SampleItem[], s: Score, errors: string[]): s
     ...(s.wrong.length
       ? s.wrong.map(
           (w) =>
-            `- ${w.n}. you: ${w.truth}; label: ${w.label} (${w.source}${w.confidence === null ? "" : ` ${w.confidence}`}) — ${w.firstText}`,
+            `- ${w.n}. you: ${w.truth}; label: ${w.label} (${w.oldBy ? `old ${w.oldLabel} by ${w.oldBy}; ` : w.source}${w.confidence === null ? "" : ` ${w.confidence}`}) — ${w.firstText}`,
         )
       : ["- none"]),
   ];
@@ -281,4 +318,145 @@ export function runScore(answersFile: string): string {
   const report = renderReport(items, scoreAnswers(items, answers), errors);
   writeFileSync(`${VALIDATION_DIR}report.md`, report);
   return report;
+}
+
+/**
+ * Refresh truth fields for the new labelling. Same items, same numbers, same order.
+ * Old label and source move to oldLabel/oldBy (kept on a second refresh); label and confidence come from the new cache.
+ */
+export function refreshSample(
+  items: SampleItem[],
+  sessions: SessionRow[],
+  cache: Map<string, { label: string; confidence: number }>,
+): SampleItem[] {
+  const byFile = new Map(sessions.map((s) => [s.file, s]));
+  return items.map((it) => {
+    const l = cache.get(it.file);
+    if (!l) throw new Error(`no new label for item ${it.n} (${it.file})`);
+    const s = byFile.get(it.file);
+    const rule = s ? labelByRules(s) : { label: null, by: "unclear" as const };
+    return {
+      ...it,
+      oldLabel: it.oldLabel ?? it.label,
+      oldBy: it.oldBy ?? (it.source === "rule" && rule.label ? rule.by : "llm"),
+      label: l.label,
+      source: "llm",
+      confidence: l.confidence,
+    };
+  });
+}
+
+export async function runRefresh(sessions: SessionRow[]): Promise<string> {
+  const path = `${VALIDATION_DIR}sample.json`;
+  const items = JSON.parse(readFileSync(path, "utf8")) as SampleItem[];
+  const out = refreshSample(items, sessions, loadCache());
+  writeFileSync(path, `${JSON.stringify(out, null, 1)}\n`);
+  return `refreshed ${out.length} items (numbers and order unchanged); changed label: ${out.filter((i) => i.label !== i.oldLabel).length}`;
+}
+
+export interface CompareRow {
+  oldLabel: string; // rule label, else legacy LLM label, else UNLABELLED
+  oldBy: "skill" | "keyword" | "project" | "llm" | "none";
+  newLabel: string;
+}
+
+const pct = (a: number, b: number) => (b ? `${((100 * a) / b).toFixed(1)}% (${a}/${b})` : "n/a");
+
+/** Old rule labels against new LLM labels. Pure, so it is testable. */
+export function compareLabels(rowsIn: CompareRow[], topN = 5) {
+  const group = (key: (r: CompareRow) => string) => {
+    const m = new Map<string, { agree: number; n: number }>();
+    for (const r of rowsIn) {
+      const g = m.get(key(r)) ?? { agree: 0, n: 0 };
+      g.n++;
+      if (r.oldLabel === r.newLabel) g.agree++;
+      m.set(key(r), g);
+    }
+    return [...m].sort((a, b) => b[1].n - a[1].n);
+  };
+  const pairs = new Map<string, number>();
+  for (const r of rowsIn)
+    if (r.oldLabel !== r.newLabel) {
+      const k = `${r.oldLabel} → ${r.newLabel}`;
+      pairs.set(k, (pairs.get(k) ?? 0) + 1);
+    }
+  const dist = (pick: (r: CompareRow) => string) => {
+    const m = new Map<string, number>();
+    for (const r of rowsIn) m.set(pick(r), (m.get(pick(r)) ?? 0) + 1);
+    return m;
+  };
+  const piRows = rowsIn.filter((r) => r.oldBy === "project");
+  return {
+    bySource: group((r) => r.oldBy),
+    byOldLabel: group((r) => r.oldLabel),
+    topPairs: [...pairs].sort((a, b) => b[1] - a[1]).slice(0, topN),
+    before: dist((r) => r.oldLabel),
+    after: dist((r) => r.newLabel),
+    projectRule: {
+      n: piRows.length,
+      agree: piRows.filter((r) => r.oldLabel === r.newLabel).length,
+    },
+  };
+}
+
+export async function runCompare(sessions: SessionRow[], answersFile: string): Promise<string> {
+  const llm = loadCache();
+  const legacy = loadLegacyCache();
+  const rowsAll: (CompareRow & { file: string; human: boolean })[] = sessions.map((s) => {
+    const r = labelByRules(s);
+    const old = r.label ?? legacy.get(s.file)?.label;
+    return {
+      file: s.file,
+      human: originOf(s) === "human",
+      oldLabel: old ?? "UNLABELLED",
+      oldBy: r.label ? r.by : old ? "llm" : "none",
+      newLabel: llm.get(s.file)?.label ?? "UNLABELLED",
+    };
+  });
+  const rows = rowsAll.filter((r) => r.newLabel !== "UNLABELLED");
+  const c = compareLabels(rows);
+  const ruleOnly = compareLabels(rows.filter((r) => r.oldBy !== "llm" && r.oldBy !== "none"));
+  const lines = (g: [string, { agree: number; n: number }][]) =>
+    g.map(([k, v]) => `- ${k}: ${pct(v.agree, v.n)}`);
+  const keys = [...new Set([...c.before.keys(), ...c.after.keys()])].sort(
+    (a, b) => (c.after.get(b) ?? 0) - (c.after.get(a) ?? 0),
+  );
+  const out = [
+    "# Old rule labels vs new LLM labels",
+    "",
+    `Sessions compared: ${rows.length} of ${sessions.length} (human ${rows.filter((r) => r.human).length}).`,
+    `Rule-labelled sessions agreeing with the LLM: ${pct(
+      ruleOnly.bySource.reduce((a, [, v]) => a + v.agree, 0),
+      ruleOnly.bySource.reduce((a, [, v]) => a + v.n, 0),
+    )}`,
+    "",
+    "## Agreement by old source",
+    ...lines(c.bySource),
+    "",
+    "## Agreement by old label (rule-labelled only)",
+    ...lines(ruleOnly.byOldLabel),
+    "",
+    "## Top 5 changes (old → new)",
+    ...c.topPairs.map(([k, n]) => `- ${k}: ${n}`),
+    "",
+    `## pi-config project rule: agrees with LLM on ${pct(c.projectRule.agree, c.projectRule.n)}`,
+    "",
+    "## Distribution (before / after)",
+    ...keys.map((k) => `- ${k}: ${c.before.get(k) ?? 0} / ${c.after.get(k) ?? 0}`),
+  ];
+  const items = JSON.parse(readFileSync(`${VALIDATION_DIR}sample.json`, "utf8")) as SampleItem[];
+  const { answers } = parseAnswers(readFileSync(answersFile, "utf8"));
+  const sc = scoreAnswers(items, answers);
+  out.push(
+    "",
+    "## Owner answers (weak signal: partly accepted by default)",
+    `- old: ${pct(sc.oldCorrect, sc.scored)}; new: ${pct(sc.correct, sc.scored)}`,
+    ...Object.entries(sc.oldByBy).map(
+      ([k, v]) =>
+        `- old ${k}: old ${pct(v.ok, v.n)}; new ${pct(sc.newByOldBy[k]!.ok, sc.newByOldBy[k]!.n)}`,
+    ),
+  );
+  const text = `${out.join("\n")}\n`;
+  writeFileSync(`${VALIDATION_DIR}compare.md`, text);
+  return text;
 }

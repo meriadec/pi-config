@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { labelByRules, originOf } from "./label.ts";
-import { labelWithLlm, loadCache } from "./llm-label.ts";
+import { originOf } from "./label.ts";
+import { labelWithLlm, loadCache, PROMPT_VERSION } from "./llm-label.ts";
 import { sessionFeatures } from "./sessions.ts";
 import { classifyFailure, TOOLING_CLASSES } from "./classify.ts";
 import {
@@ -25,7 +25,7 @@ import { PRICE_TABLE_VERSION } from "./prices.ts";
 import { analyzeImages, formatImages, scanSession, type SessionImages } from "./images.ts";
 import { formatImpact, scanOutcome } from "./images-impact.ts";
 import { readFileSync } from "node:fs";
-import { runSample, runScore } from "./validate.ts";
+import { runCompare, runRefresh, runSample, runScore } from "./validate.ts";
 
 const [cmd = "help"] = process.argv.slice(2);
 const pct = (a: number, b: number) => `${((100 * a) / b).toFixed(1)}%`;
@@ -126,23 +126,22 @@ async function labels() {
   const args = process.argv.slice(3);
   const limit = Number(args[args.indexOf("--limit") + 1]) || undefined;
   const all = await sessionFeatures(await openSessions());
-  const decided = all.map((s) => ({ s, r: labelByRules(s) }));
-  const unclear = decided.filter((d) => d.r.label === null).map((d) => d.s);
   if (args.includes("--llm")) {
-    const { asked, partialOrFailedBatches } = await labelWithLlm(unclear, { limit });
+    const { asked, partialOrFailedBatches } = await labelWithLlm(all, {
+      limit,
+    });
     console.log(`llm asked: ${asked}, partial or failed batches: ${partialOrFailedBatches}`);
   }
   const cache = loadCache();
   const counts = new Map<string, number>();
   const origins = new Map<string, number>();
-  for (const { s, r } of decided) {
-    const label = r.label ?? cache.get(s.file)?.label ?? "UNLABELLED";
-    const key = `${label}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+  for (const s of all) {
+    const label = cache.get(s.file)?.label ?? "UNLABELLED";
+    counts.set(label, (counts.get(label) ?? 0) + 1);
     const o = originOf(s);
     origins.set(o, (origins.get(o) ?? 0) + 1);
   }
-  console.log(`sessions: ${all.length}, rules decided: ${all.length - unclear.length}`);
+  console.log(`sessions: ${all.length}, llm labelled: ${cache.size} (prompt ${PROMPT_VERSION})`);
   for (const [k, v] of [...counts].sort((a, b) => b[1] - a[1]))
     console.log(String(v).padStart(6), k);
   console.log("origin:", Object.fromEntries(origins));
@@ -215,17 +214,19 @@ async function profile() {
   ]);
   const costs = costBySession(await usageRows(db));
   const errs = new Map<string, { e: number; t: number }>();
-  for (const r of await rows<{ file: string; tool: string; head: string; tail: string }>(
-    db,
-    "select file, tool, head, tail from tool_results where is_error",
-  )) {
+  for (const r of await rows<{
+    file: string;
+    tool: string;
+    head: string;
+    tail: string;
+  }>(db, "select file, tool, head, tail from tool_results where is_error")) {
     const x = errs.get(r.file) ?? { e: 0, t: 0 };
     x.e++;
     if (TOOLING_CLASSES.has(classifyFailure(r.tool, r.head, r.tail))) x.t++;
     errs.set(r.file, x);
   }
   const input: SessionProfileInput[] = sessions.map((s) => ({
-    label: labelByRules(s).label ?? cache.get(s.file)?.label ?? "UNLABELLED",
+    label: cache.get(s.file)?.label ?? "UNLABELLED",
     origin: originOf(s),
     assistantTurns: turns.get(s.file) ?? 0,
     toolCalls: calls.get(s.file) ?? 0,
@@ -259,18 +260,20 @@ async function validate() {
     );
     console.log(`sample: ${items.length} items -> analytics/data/validation/sample.md`);
   } else if (sub === "score" && rest[0]) console.log(runScore(rest[0]));
-  else console.log("usage: validate sample [--n 100] [--seed 1] | validate score <answers-file>");
+  else if (sub === "refresh")
+    console.log(await runRefresh(await sessionFeatures(await openSessions())));
+  else if (sub === "compare" && rest[0])
+    console.log(await runCompare(await sessionFeatures(await openSessions()), rest[0]));
+  else
+    console.log(
+      "usage: validate sample [--n 100] [--seed 1] | validate refresh | validate score <answers-file> | validate compare <answers-file>",
+    );
 }
 
 async function images() {
   const sessions = await sessionFeatures(await openSessions());
   const cache = loadCache();
-  const labels = new Map(
-    sessions.map((s) => [
-      s.file,
-      labelByRules(s).label ?? cache.get(s.file)?.label ?? "UNLABELLED",
-    ]),
-  );
+  const labels = new Map(sessions.map((s) => [s.file, cache.get(s.file)?.label ?? "UNLABELLED"]));
   if (process.argv.includes("--impact")) {
     const dir = SESSIONS_GLOB.replace(/\/\*\/\*\.jsonl$/, "");
     const out = [...new Bun.Glob("*/*.jsonl").scanSync({ cwd: dir, absolute: true })].map((f) =>
