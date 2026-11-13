@@ -25,6 +25,8 @@ import { PRICE_TABLE_VERSION } from "./prices.ts";
 import { analyzeImages, formatImages, scanSession, type SessionImages } from "./images.ts";
 import { formatImpact, scanOutcome } from "./images-impact.ts";
 import { readFileSync } from "node:fs";
+import { loadTailInputs } from "./tail-data.ts";
+import { buildTail, formatInterventions, formatTail, interventions, sessionTail } from "./tail.ts";
 import { runCompare, runRefresh, runSample, runScore } from "./validate.ts";
 
 const [cmd = "help"] = process.argv.slice(2);
@@ -246,6 +248,24 @@ async function profile() {
   );
 }
 
+async function tail() {
+  const a = process.argv.slice(3);
+  const opt = (n: string, d: string) => (a.includes(n) ? a[a.indexOf(n) + 1]! : d);
+  const label = opt("--label", "implement");
+  const db = await openSessions();
+  const cache = loadCache();
+  const inputs = await loadTailInputs(
+    db,
+    await sessionFeatures(db),
+    (f) => labelFor(cache, f),
+    originOf,
+    (l, o) => l === label && o === "human",
+  );
+  const report = buildTail(inputs.map(sessionTail), { top: Number(opt("--top", "5")) });
+  console.log(formatTail(report, `${label} (human)`));
+  console.log(formatInterventions(interventions(inputs)));
+}
+
 async function validate() {
   const [, , , sub, ...rest] = process.argv;
   const flag = (name: string, d: number) => {
@@ -303,9 +323,10 @@ const commands: Record<string, () => Promise<void>> = {
   cost,
   validate,
   images,
+  tail,
 };
 if (commands[cmd]) await commands[cmd]();
 else
   console.log(
-    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|rereads|profile|cost|validate|images>",
+    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|rereads|profile|cost|validate|images|tail>",
   );
