@@ -208,3 +208,5 @@ name: resolving-merge-conflicts
 description: "Use when you need to resolve an in-progress git merge/rebase conflict."
 ---
 ```
+
+Deleted (2026-11-13, user decision): `~/.agents/skills/resolving-merge-conflicts`. It was not in a git repository, so it cannot be restored from git. `resolve-conflicts` replaces it.
