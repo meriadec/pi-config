@@ -192,3 +192,5 @@ description: >-
   numbers, fast draft and range renders.
 ---
 ```
+
+Finding (2026-11-13): Pi also discovers skills in `~/.agents/skills` by itself, so removing a link from `agent/skills/` does NOT remove the skill from the system prompt. To hide a shared skill, add an exclusion to the `skills` array in `agent/settings.json`: `"-/home/mpillet/.agents/skills/<name>"` (exact path). Done now for `slidev` and `resolving-merge-conflicts`; checked in a real Pi session. The other retired names (`to-prd`, `to-issues`, `decision-mapping`) did not show in the prompt before this change, so they need no exclusion.
