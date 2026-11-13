@@ -116,7 +116,7 @@ export default function (pi: ExtensionAPI) {
     label: "Wait for",
     description:
       "Wait for an event and get woken when it happens. Use it for a PR event, a timer, a process exit, or a URL that becomes ready. Never poll with sleep or gh loops. After the call, end your turn. " +
-      "Local waits (process.exit, http.ready, timers under 60 s) end when this session ends or reloads; PR watches and timers of 60 s or more are kept by T3. " +
+      "Local waits (process.exit, http.ready, timers) end when this session ends or reloads; only PR watches are kept by T3. " +
       "pr.review and pr.checks both start the same T3 watch: T3 wakes this thread on ANY PR event (reviews, checks, comments, conflicts) because it has no filter. It does not wake on merge. " +
       "process.exit takes pid, or match (text in the command line of exactly one process this session started). " +
       "http.ready waits for ONE answer with a status below 500; it does not check the body or retry.",
@@ -133,7 +133,7 @@ export default function (pi: ExtensionAPI) {
     name: "wait_list",
     label: "List waits",
     description:
-      "List waits made by wait_for (local waits, PR watches, T3 timers) and processes this session started that still run.",
+      "List waits made by wait_for (local waits, PR watches) and processes this session started that still run.",
     parameters: Type.Object({}),
     async execute(_id, _p, _signal, _onUpdate, ctx) {
       return listWaits(envFor(ctx));
@@ -144,7 +144,7 @@ export default function (pi: ExtensionAPI) {
     name: "wait_cancel",
     label: "Cancel wait",
     description:
-      "Cancel a wait by id (from wait_list): a local wait, a PR watch (unwatch_pull_request) or a T3 timer (delete_scheduled_task).",
+      "Cancel a wait by id (from wait_list): a local wait, or a PR watch (unwatch_pull_request).",
     parameters: Type.Object({ id: Type.String() }),
     async execute(_id, p, _signal, _onUpdate, ctx) {
       return cancelWait(p.id, envFor(ctx));

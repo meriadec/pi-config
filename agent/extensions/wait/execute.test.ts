@@ -21,8 +21,6 @@ function setup(opts: { fail?: string; tagged?: TaggedProcess[]; taskResult?: unk
     tools: [
       { name: "mcp__t3-code__watch_pull_request" },
       { name: "mcp__t3-code__unwatch_pull_request" },
-      { name: "mcp__t3-code__schedule_task" },
-      { name: "mcp__t3-code__delete_scheduled_task" },
     ],
     executeTool: async (name, args) => {
       calls.push({ name, args });
@@ -55,15 +53,11 @@ test("a PR wait calls watch_pull_request and says T3 wakes on ANY event", async 
   expect(res.isError).toBe(false);
 });
 
-test("a timer of 60 s or more calls schedule_task with runAt = now + afterMs", async () => {
-  const { env, calls } = setup();
-  const res = await executeWait({ event: "time", afterMs: 90_000, note: "hi" }, env);
-  expect(calls[0]?.name).toBe("mcp__t3-code__schedule_task");
-  expect(calls[0]?.args).toMatchObject({
-    prompt: "hi",
-    schedule: { type: "once", runAt: "2026-11-12T10:01:30.000Z" },
-  });
-  expect(textOf(res)).toContain("t1");
+test("a timer of 60 s or more stays local and makes no T3 automation", async () => {
+  const { env, calls, runner } = setup();
+  await executeWait({ event: "time", afterMs: 90_000, note: "hi" }, env);
+  expect(calls).toEqual([]);
+  expect(runner.list()).toHaveLength(1);
 });
 
 test("a timer under 60 s stays local and the text says local waits end with the session", async () => {
@@ -122,32 +116,19 @@ test("a missing T3 tool returns an error", async () => {
   expect(res.details.error).toContain("not available");
 });
 
-test("wait_list shows PR watches and timers; wait_cancel stops them in T3", async () => {
+test("wait_list shows PR watches; wait_cancel stops them in T3", async () => {
   const { env, calls } = setup();
   await executeWait({ event: "pr.review", pr: PR }, env);
-  await executeWait({ event: "time", afterMs: 120_000 }, env);
-  const list = textOf(await listWaits(env));
-  expect(list).toContain("p1: PR watch");
-  expect(list).toContain("t1: T3 timer");
-
+  expect(textOf(await listWaits(env))).toContain("p1: PR watch");
   calls.length = 0;
-  const c1 = await cancelWait("p1", env);
-  const c2 = await cancelWait("t1", env);
-  expect(c1.isError).toBe(false);
-  expect(c2.isError).toBe(false);
-  expect(calls).toEqual([
-    { name: "mcp__t3-code__unwatch_pull_request", args: { url: PR } },
-    {
-      name: "mcp__t3-code__delete_scheduled_task",
-      args: { scheduledTaskId: "scheduled-task:abc" },
-    },
-  ]);
+  expect((await cancelWait("p1", env)).isError).toBe(false);
+  expect(calls).toEqual([{ name: "mcp__t3-code__unwatch_pull_request", args: { url: PR } }]);
   expect(textOf(await listWaits(env))).toContain("No waits");
 });
 
 test("a failed cancel keeps the entry and reports route, tool and error", async () => {
   const { env } = setup();
-  await executeWait({ event: "time", afterMs: 120_000 }, env);
+  await executeWait({ event: "pr.review", pr: PR }, env);
   const failing = {
     ...env,
     executeTool: async () => ({
@@ -155,35 +136,10 @@ test("a failed cancel keeps the entry and reports route, tool and error", async 
       result: { content: [{ type: "text", text: "nope" }] },
     }),
   };
-  const res = await cancelWait("t1", failing);
+  const res = await cancelWait("p1", failing);
   expect(res.isError).toBe(true);
-  expect(res.details).toMatchObject({ route: "t3", tool: "delete_scheduled_task" });
+  expect(res.details).toMatchObject({ route: "t3", tool: "unwatch_pull_request" });
   expect(env.remote.list(NOW)).toHaveLength(1);
-});
-
-test("the task id is parsed from a JSON text result when there is no structured content", async () => {
-  const { env, calls } = setup();
-  const textOnly = {
-    ...env,
-    executeTool: async (name: string, args: unknown) => {
-      calls.push({ name, args });
-      return {
-        isError: false,
-        result: { content: [{ type: "text", text: '{"scheduledTaskId":"scheduled-task:zz"}' }] },
-      };
-    },
-  };
-  await executeWait({ event: "time", afterMs: 120_000 }, textOnly);
-  calls.length = 0;
-  await cancelWait("t1", textOnly);
-  expect(calls[0]?.args).toEqual({ scheduledTaskId: "scheduled-task:zz" });
-});
-
-test("a timer that already ran in T3 leaves wait_list", async () => {
-  const { env } = setup();
-  await executeWait({ event: "time", afterMs: 120_000 }, env);
-  expect(env.remote.list(NOW + 119_000)).toHaveLength(1);
-  expect(env.remote.list(NOW + 120_000)).toHaveLength(0);
 });
 
 test("wait_cancel cancels a local wait", async () => {

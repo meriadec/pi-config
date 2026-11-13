@@ -2,8 +2,8 @@
 
 ## Choices
 
-- Timers of 60 s or more go to T3 `schedule_task` on purpose: T3 keeps them when Pi restarts. T3 accepts shorter `once` runs (tested 2026-11-13 at 25 s ahead), so 60 s is our choice (`MIN_T3_SCHEDULE_MS` in `route.ts`), not a T3 limit. Shorter timers stay local.
-- Local waits (process, URL, timers under 60 s) are not saved. They end when the session ends or reloads. This is said in the `wait_for` description and result text.
+- All timers are local. T3 `schedule_task` was used for timers of 60 s or more, but it makes a global automation in T3 for every project that never goes away (removed 2026-11). Cost: a timer ends with the session. Better primitive to find: a thread-bound, self-deleting wake-up.
+- Local waits (process, URL, timers) are not saved. They end when the session ends or reloads. This is said in the `wait_for` description and result text.
 - PR watches: `pr.review` and `pr.checks` start the same `watch_pull_request`. T3 has no filter: it wakes on ANY PR event. T3 does not wake on merge, so there is no `pr.merged`.
 - `http.ready` waits for ONE answer with a status below 500. It does not check the body and does not retry. Tested against a real `Bun.serve` in `runner.test.ts`.
 - `process.exit` takes `pid`, or `match`: text in the command line of exactly one process that carries this session's tag. A shell that only wraps a matching child is ignored. With 0 or 2+ matches the tool returns an error with up to 5 candidates.

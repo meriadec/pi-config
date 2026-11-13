@@ -6,7 +6,7 @@ import { parseWaitSpec } from "./spec.ts";
 /** What `wait_for`, `wait_list` and `wait_cancel` do. Pure logic: all I/O comes in through `WaitEnv`. */
 
 export const LOCAL_NOTE =
-  "Local waits end when this session ends or reloads; PR watches and timers of 60 s or more are kept by T3.";
+  "Local waits end when this session ends or reloads; Only PR watches are kept by T3.";
 export const PR_NOTE =
   "T3 wakes this thread on ANY event of that PR (reviews, checks, comments, conflicts): it has no filter. Look at what changed before you act.";
 
@@ -113,17 +113,6 @@ export async function callT3(env: WaitEnv, short: string, args: unknown): Promis
   }
 }
 
-/** Find a string value by key in a parsed T3 result. */
-function findKey(body: unknown, key: string, depth = 0): string | undefined {
-  if (typeof body !== "object" || body === null || depth > 4) return undefined;
-  for (const [k, v] of Object.entries(body)) {
-    if (k === key && typeof v === "string") return v;
-    const inner = findKey(v, key, depth + 1);
-    if (inner !== undefined) return inner;
-  }
-  return undefined;
-}
-
 export async function executeWait(input: unknown, env: WaitEnv): Promise<ToolText> {
   let spec: ReturnType<typeof parseWaitSpec>;
   try {
@@ -151,31 +140,6 @@ export async function executeWait(input: unknown, env: WaitEnv): Promise<ToolTex
       route: route.via,
       id: item.id,
     });
-  }
-
-  if (route.via === "t3.schedule_task" && spec.event === "time") {
-    const runAt = env.now() + spec.afterMs;
-    const done = await callT3(env, "schedule_task", {
-      title: "Wait over",
-      prompt: noteText ?? "The wait you asked for is over.",
-      schedule: { type: "once", runAt: new Date(runAt).toISOString() },
-    });
-    if (!done.ok) return fail(route.via, "schedule_task", done.error);
-    const taskId = findKey(done.body, "scheduledTaskId");
-    const item = env.remote.add({
-      kind: "timer",
-      description: `T3 timer at ${new Date(runAt).toISOString()}`,
-      runAt,
-      stop:
-        taskId === undefined
-          ? undefined
-          : { tool: "delete_scheduled_task", args: { scheduledTaskId: taskId } },
-    });
-    const warn = taskId === undefined ? " T3 gave no task id, so wait_cancel cannot stop it." : "";
-    return text(
-      `Timer ${item.id} scheduled in T3 for ${new Date(runAt).toISOString()}. T3 keeps it if Pi restarts.${warn} End your turn.`,
-      { route: route.via, id: item.id },
-    );
   }
 
   let local: LocalSpec;

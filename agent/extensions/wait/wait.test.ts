@@ -10,7 +10,6 @@ function fakeT3() {
   const calls: string[] = [];
   const t3: T3Ports = {
     watchPullRequest: async (u) => void calls.push(`watch ${u}`),
-    scheduleOnce: async (at) => void calls.push(`schedule ${at}`),
     sendToThread: async (m) => void calls.push(`send ${m}`),
   };
   return { calls, t3 };
@@ -18,34 +17,18 @@ function fakeT3() {
 
 test("a PR review wait is delegated to T3 watch_pull_request", async () => {
   const { calls, t3 } = fakeT3();
-  const route = await registerWait(parseWaitSpec({ event: "pr.review", pr: PR }), t3, () => 0);
+  const route = await registerWait(parseWaitSpec({ event: "pr.review", pr: PR }), t3);
   expect(route.via).toBe("t3.watch_pull_request");
   expect(calls).toEqual([`watch ${PR}`]);
 });
 
-test("a long timer uses T3 schedule_task at now + delay", async () => {
-  const { calls, t3 } = fakeT3();
-  await registerWait({ event: "time", afterMs: 120_000 }, t3, () => 0);
-  expect(calls).toEqual(["schedule 1970-01-01T00:02:00.000Z"]);
-});
-
-test("the router splits timers at 60 s: 59_999 ms local, 60_000 ms T3", () => {
-  expect(chooseRoute({ event: "time", afterMs: 59_999 }).via).toBe("local-runner");
-  expect(chooseRoute({ event: "time", afterMs: 60_000 }).via).toBe("t3.schedule_task");
-});
-
-test("registerWait sends no schedule for a local timer", async () => {
-  const { calls, t3 } = fakeT3();
-  await registerWait({ event: "time", afterMs: 59_999 }, t3, () => 0);
-  expect(calls).toEqual([]);
-});
-
-test("registerWait computes runAt from now() + afterMs", async () => {
-  const { calls, t3 } = fakeT3();
-  await registerWait({ event: "time", afterMs: 90_000 }, t3, () =>
-    Date.UTC(2026, 10, 12, 10, 0, 0),
-  );
-  expect(calls).toEqual(["schedule 2026-11-12T10:01:30.000Z"]);
+test("every timer stays local, long ones too: no T3 automation is made", async () => {
+  for (const afterMs of [1_000, 59_999, 60_000, 3_600_000]) {
+    expect(chooseRoute({ event: "time", afterMs }).via).toBe("local-runner");
+    const { calls, t3 } = fakeT3();
+    await registerWait({ event: "time", afterMs }, t3);
+    expect(calls).toEqual([]);
+  }
 });
 
 test("pr.merged is not a wait event", () => {
