@@ -171,3 +171,24 @@ Only `pr-review-triage` is local. The others belong to the shared source.
 On 2026-11-13 the user approved decision items 1, 2, 3, 5 and 6. Done: removed these seven symlinks from `agent/skills/` (the shared source in `~/.agents/skills` was NOT touched, so each one can come back with `ln -s`): `diagnose`, `stack`, `write-a-skill` (dead links), `to-prd`, `decision-mapping`, `resolving-merge-conflicts`, `to-issues`. A grep found no skill or doc that names them. `to-tickets` and `resolve-conflicts` remain.
 
 Not applied: items 12 (shorten `pr-review-triage`), 13, 14 and 15 (user choice).
+
+On 2026-11-13 the user decided more:
+
+- Removed the links `slidev` and `writing-great-skills` from `agent/skills/` (shared sources untouched; restore with `ln -s`).
+- `humanizer`, `writing-for-agents` (the model reads it by itself in 27 of 28 sessions, so it stays auto-invoked) and `pr-review-triage` stay as they are.
+- `fframes-video`: set to manual-only. The shared source `~/.agents/skills/fframes-video/SKILL.md` (not a git repo) got `disable-model-invocation: true` and a one-line description. Its description is now out of the system prompt (about 175 tokens per session saved). Original frontmatter, to restore it:
+
+```yaml
+---
+name: fframes-video
+description: >-
+  Create, animate, review and render videos in code with fframes (Rust, SVG scenes, ffmpeg
+  encoding, Skia GPU rendering). Use whenever the user wants a video, animation, motion graphic,
+  explainer, promo, social clip, title card, podcast visual, lyric/caption video or any rendered
+  .mp4/.webm made programmatically, or asks to change, fix, speed up or check an fframes video.
+  Covers installing fframes, creating a project, designing good-looking motion, sound (music,
+  voice, SFX, loudness), watching it in a real-time preview window, and checking the result
+  without watching it: frames and contact sheets as PNG, automatic problem detection, loudness
+  numbers, fast draft and range renders.
+---
+```
