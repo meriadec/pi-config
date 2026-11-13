@@ -1,5 +1,7 @@
 # Design note: T3 "waiting list"
 
+> **Status (2026-11-13): not pursued.** The user decided to make no change to T3 Code. This note stays as a record. The Pi extension in `agent/extensions/wait/` works with the T3 notifications that exist today. Pending waits stay invisible in T3 until they fire.
+
 Status: proposal. Author: research sub-agent. No T3 Code file was changed.
 Read: `~/git/t3code` at commit `9e8553853` (2026-11-04). The tree was dirty
 (keybinding files in `apps/web`, `packages/contracts`, `packages/shared`). None of those
