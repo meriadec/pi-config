@@ -2,19 +2,35 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import { cancelWait, executeWait, listWaits, RemoteWaits, type WaitEnv } from "./execute.ts";
+import { ActiveWaits } from "./active.ts";
+import { cancelWait, executeWait, listWaits, type WaitEnv } from "./execute.ts";
+import { ghPrView } from "./gh.ts";
+import { sleep } from "./until.ts";
 import { detectPolling, pollingHint } from "./polling.ts";
 import { httpUp, isAlive } from "./probe.ts";
 import { LeftoverWatch } from "./leftovers.ts";
 import { findTagged, SESSION_TAG_ENV } from "./procscan.ts";
-import { LocalRunner, type LocalWait } from "./runner.ts";
 import { statusLine } from "./status.ts";
 
 const LEFTOVER_MIN_AGE_S = 30;
 
 const params = Type.Object({
-  event: StringEnum(["pr.review", "pr.checks", "time", "process.exit", "http.ready"] as const),
+  event: StringEnum([
+    "pr.merged",
+    "pr.checks.done",
+    "pr.review",
+    "pr.approved",
+    "time",
+    "process.exit",
+    "http.ready",
+  ] as const),
   pr: Type.Optional(Type.String({ description: "Full GitHub pull request URL (pr.* events)" })),
+  reviewer: Type.Optional(
+    Type.String({
+      description:
+        "Only for pr.review and pr.approved: part of the reviewer login, for example copilot",
+    }),
+  ),
   afterMs: Type.Optional(Type.Number({ description: "Delay in milliseconds (time event)" })),
   pid: Type.Optional(
     Type.Number({ description: "Process id, for example $! (process.exit event)" }),
@@ -33,55 +49,36 @@ const params = Type.Object({
       description: "URL to probe (http.ready event). Fires on the first answer below 500.",
     }),
   ),
-  note: Type.Optional(Type.String({ description: "Text to show again when the wait fires" })),
+  note: Type.Optional(Type.String({ description: "Text to add to the result when the wait ends" })),
 });
 
 export default function (pi: ExtensionAPI) {
   const sessionId = randomUUID();
-  let runner: LocalRunner | undefined;
-  /** True between `session_shutdown` and the next `session_start`. No message may leave then. */
+  /** True between `session_shutdown` and the next `session_start`. */
   let shutDown = false;
-  const remote = new RemoteWaits();
+  const active = new ActiveWaits();
 
-  const getRunner = () =>
-    (runner ??= new LocalRunner({
+  const envFor = (): WaitEnv => ({
+    conditions: {
       now: Date.now,
+      prView: ghPrView,
       isAlive,
       probeHttp: httpUp,
-      setInterval: (fn, ms) => setInterval(fn, ms),
-      clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
-      fire: (_w: LocalWait, message: string) => {
-        if (shutDown) return;
-        refreshStatus();
-        pi.sendUserMessage(`[wait fired] ${message}`, { deliverAs: "followUp" });
-      },
-    }));
-
-  const envFor = (ctx: {
-    tools: WaitEnv["tools"];
-    executeTool: WaitEnv["executeTool"];
-  }): WaitEnv => ({
-    tools: ctx.tools,
-    executeTool: (name, args) => ctx.executeTool(name, args),
-    runner: getRunner,
-    remote,
-    now: Date.now,
+    },
+    until: { sleep },
+    active,
     findTagged: () => findTagged(sessionId, 0),
+    onChange: refreshStatus,
   });
 
   /**
-   * Footer feedback. In T3 this becomes the "Pi · ..." banner above the composer (web and mobile).
+   * Footer feedback. In T3 this becomes the "Pi · ..." banner above the composer. A wait also keeps
+   * its tool call open, so T3 shows the thread as working and its Stop button aborts the wait.
    * The text is static, so it is set only when the waits change, never on a clock.
    */
   let ui: { setStatus(key: string, text: string | undefined): void } | undefined;
   const refreshStatus = () => {
-    const prWatches = remote.list(Date.now()).filter((r) => r.kind === "pr").length;
-    ui?.setStatus("wait", shutDown ? undefined : statusLine(runner?.list() ?? [], prWatches));
-  };
-  const trackStatus = (ctx: { hasUI: boolean; ui: NonNullable<typeof ui> }) => {
-    if (!ctx.hasUI) return;
-    ui = ctx.ui;
-    refreshStatus();
+    ui?.setStatus("wait", shutDown ? undefined : statusLine(active.list().map((w) => w.label)));
   };
 
   pi.on("session_start", () => {
@@ -91,9 +88,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     shutDown = true;
+    active.cancelAll();
     refreshStatus();
-    runner?.stopAll();
-    runner = undefined;
     if (process.env[SESSION_TAG_ENV] === sessionId) delete process.env[SESSION_TAG_ENV];
   });
 
@@ -129,23 +125,24 @@ export default function (pi: ExtensionAPI) {
     await leftovers.onAgentEnd();
   });
 
+  const trackUi = (ctx: { hasUI: boolean; ui: NonNullable<typeof ui> }) => {
+    if (ctx.hasUI) ui = ctx.ui;
+  };
+
   pi.registerTool({
     name: "wait_for",
     label: "Wait for",
     description:
-      "Wait for an event and get woken when it happens. Use it for a PR event, a timer, a process exit, or a URL that becomes ready. Never poll with sleep or gh loops. After the call, end your turn. " +
-      "Local waits (process.exit, http.ready, timers) end when this session ends or reloads; only PR watches are kept by T3. " +
-      "pr.review and pr.checks both start the same T3 watch: T3 wakes this thread on ANY PR event (reviews, checks, comments, conflicts) because it has no filter. It does not wake on merge. " +
-      "process.exit takes pid, or match (text in the command line of exactly one process this session started). " +
-      "http.ready waits for ONE answer with a status below 500; it does not check the body or retry.",
+      "Block until an event happens, then return. The call stays open, so the thread keeps working and the user can press Stop to cancel it. Do NOT end your turn and do NOT poll with sleep or gh loops: when the call returns, go on with the user's instructions (for example rebase after a merge, or report to the user). " +
+      "Events: pr.merged (also returns if the PR is closed without merge), pr.checks.done (no check pending; lists failures), pr.review (new review or comment after the wait began; optional reviewer, for example copilot), pr.approved (optional reviewer), time, process.exit (pid, or match: text in the command line of exactly one process this session started), http.ready (first answer with a status below 500). " +
+      "PR events poll gh every 30 s and cost no tokens. If the PR already has the review you want, check it with gh first: pr.review only sees NEW activity. The wait ends with the session or a reload.",
     promptGuidelines: [
-      "Use wait_for to wait for any event (PR event, timer, process exit, HTTP ready) instead of sleep loops or polling commands.",
+      "Use wait_for to wait for any event (PR merged, checks, review, approval, timer, process exit, HTTP ready) instead of sleep loops or polling commands. It blocks until the event; then continue the task.",
     ],
     parameters: params,
-    async execute(_id, p, _signal, _onUpdate, ctx) {
-      const res = await executeWait(p, envFor(ctx));
-      trackStatus(ctx);
-      return res;
+    async execute(_id, p, signal, _onUpdate, ctx) {
+      trackUi(ctx);
+      return executeWait(p, envFor(), signal);
     },
   });
 
@@ -153,23 +150,20 @@ export default function (pi: ExtensionAPI) {
     name: "wait_list",
     label: "List waits",
     description:
-      "List waits made by wait_for (local waits, PR watches) and processes this session started that still run.",
+      "List active waits made by wait_for and processes this session started that still run.",
     parameters: Type.Object({}),
-    async execute(_id, _p, _signal, _onUpdate, ctx) {
-      return listWaits(envFor(ctx));
+    async execute() {
+      return listWaits(envFor());
     },
   });
 
   pi.registerTool({
     name: "wait_cancel",
     label: "Cancel wait",
-    description:
-      "Cancel a wait by id (from wait_list): a local wait, or a PR watch (unwatch_pull_request).",
+    description: "Cancel an active wait by id (from wait_list). Its wait_for call returns.",
     parameters: Type.Object({ id: Type.String() }),
-    async execute(_id, p, _signal, _onUpdate, ctx) {
-      const res = await cancelWait(p.id, envFor(ctx));
-      trackStatus(ctx);
-      return res;
+    async execute(_id, p) {
+      return cancelWait(p.id, envFor());
     },
   });
 }

@@ -1,45 +1,22 @@
 import { expect, test } from "bun:test";
 import { detectPolling, pollingHint } from "./polling.ts";
 import { ProcessRegistry, looksLongLived, mayStartBackground } from "./registry.ts";
-import { chooseRoute, registerWait, type T3Ports } from "./route.ts";
 import { parseWaitSpec } from "./spec.ts";
 
 const PR = "https://github.com/o/r/pull/7";
 
-function fakeT3() {
-  const calls: string[] = [];
-  const t3: T3Ports = {
-    watchPullRequest: async (u) => void calls.push(`watch ${u}`),
-    sendToThread: async (m) => void calls.push(`send ${m}`),
-  };
-  return { calls, t3 };
-}
-
-test("a PR review wait is delegated to T3 watch_pull_request", async () => {
-  const { calls, t3 } = fakeT3();
-  const route = await registerWait(parseWaitSpec({ event: "pr.review", pr: PR }), t3);
-  expect(route.via).toBe("t3.watch_pull_request");
-  expect(calls).toEqual([`watch ${PR}`]);
+test("PR events parse, with an optional reviewer on review events only", () => {
+  expect(parseWaitSpec({ event: "pr.merged", pr: PR })).toEqual({ event: "pr.merged", pr: PR });
+  expect(parseWaitSpec({ event: "pr.review", pr: PR, reviewer: " copilot " })).toEqual({
+    event: "pr.review",
+    pr: PR,
+    reviewer: "copilot",
+  });
+  expect(() => parseWaitSpec({ event: "pr.merged", pr: PR, reviewer: "x" })).toThrow("reviewer");
 });
 
-test("every timer stays local, long ones too: no T3 automation is made", async () => {
-  for (const afterMs of [1_000, 59_999, 60_000, 3_600_000]) {
-    expect(chooseRoute({ event: "time", afterMs }).via).toBe("local-runner");
-    const { calls, t3 } = fakeT3();
-    await registerWait({ event: "time", afterMs }, t3);
-    expect(calls).toEqual([]);
-  }
-});
-
-test("pr.merged is not a wait event", () => {
-  expect(() => parseWaitSpec({ event: "pr.merged", pr: PR })).toThrow("unknown event");
-});
-
-test("process and http waits need the local runner", () => {
-  expect(chooseRoute({ event: "process.exit", label: "vite", pid: 1 }).via).toBe("local-runner");
-  expect(chooseRoute({ event: "http.ready", url: "http://localhost:3000" }).via).toBe(
-    "local-runner",
-  );
+test("the old pr.checks event is gone", () => {
+  expect(() => parseWaitSpec({ event: "pr.checks", pr: PR })).toThrow("unknown event");
 });
 
 test("a malformed spec fails with a clear message", () => {
@@ -47,6 +24,7 @@ test("a malformed spec fails with a clear message", () => {
     "full GitHub pull request URL",
   );
   expect(() => parseWaitSpec({ event: "nope" })).toThrow("unknown event");
+  expect(() => parseWaitSpec({ event: "time", afterMs: 0 })).toThrow("afterMs");
 });
 
 test("detects hand-made polling but not normal commands", () => {

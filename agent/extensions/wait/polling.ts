@@ -38,10 +38,10 @@ export function detectPolling(command: string): PollingKind | undefined {
 
 export function pollingHint(kind: PollingKind): string {
   if (kind === "gh-poll") {
-    return "Do not poll GitHub by hand. Call wait_for({event:'pr.review'|'pr.checks', pr}) instead.";
+    return "Do not poll GitHub by hand. Call wait_for({event:'pr.merged'|'pr.checks.done'|'pr.review'|'pr.approved', pr}); it blocks until the event.";
   }
   if (kind === "startup-pause") {
-    return "A fixed pause after a background start is fragile. Call wait_for({event:'http.ready', url}) and end your turn, or use a bounded loop: timeout 60 bash -c 'until curl -sf URL; do sleep 1; done'.";
+    return "A fixed pause after a background start is fragile. Call wait_for({event:'http.ready', url}), or use a bounded loop: timeout 60 bash -c 'until curl -sf URL; do sleep 1; done'.";
   }
   return "Do not poll with sleep. Call wait_for with the event you wait for.";
 }
