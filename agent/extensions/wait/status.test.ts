@@ -18,10 +18,10 @@ test("no waits gives no status", () => {
 
 test("a timer shows its end time, and the text never changes while it waits", () => {
   const t = w("w1", { event: "time", afterMs: 90_000 });
-  expect(statusLine([t], 0)).toBe(`⏳ timer until ${at(90_000)}`);
+  expect(statusLine([t], 0)).toBe(`⏳ 1 wait: ⏰${at(90_000)}`);
 });
 
-test("process, url and PR watches show together; extra waits are counted", () => {
+test("all waits show, count first, so a cut one-line banner still shows the count", () => {
   const list = [
     w("w1", { event: "process.exit", label: "vite", pid: 1 }),
     w("w2", { event: "http.ready", url: "http://localhost:3000" }),
@@ -29,6 +29,6 @@ test("process, url and PR watches show together; extra waits are counted", () =>
     w("w4", { event: "time", afterMs: 5000 }),
   ];
   expect(statusLine(list, 2)).toBe(
-    `⏳ waiting for vite to exit · waiting for localhost:3000 · timer until ${at(5000)} · +1 · 2 PR watches`,
+    `⏳ 6 waits: vite exit, localhost:3000 up, ⏰${at(5000)}, ⏰${at(5000)}, 2 PRs`,
   );
 });
