@@ -212,3 +212,19 @@ description: "Use when you need to resolve an in-progress git merge/rebase confl
 Deleted (2026-11-13, user decision): `~/.agents/skills/resolving-merge-conflicts`. It was not in a git repository, so it cannot be restored from git. `resolve-conflicts` replaces it.
 
 Deleted (2026-11-13, user decision): `~/.agents/skills/to-prd`, `to-issues` and `decision-mapping`. They are replaced by `to-spec`, `to-tickets` and `wayfinder`. No other shared skill referenced them. The folder is not in git, so they cannot be restored from git. 40 skills remain.
+
+On 2026-11-13 the user set `humanizer` to manual-only (`disable-model-invocation: true` in the shared source, not in git). Its 300-character description is out of the system prompt. Original frontmatter, to restore:
+
+```yaml
+---
+name: humanizer
+description: |
+  Rewrite AI-sounding text so it reads naturally without changing what it says.
+  Use when editing or reviewing prose for inflated claims,
+  sales language, vague sources, repetitive structure, stock AI words, passive
+  voice, filler, or chatbot artifacts. Based on Wikipedia's "Signs of AI writing."
+license: MIT
+metadata:
+  version: "2.11.2"
+---
+```
