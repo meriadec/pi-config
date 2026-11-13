@@ -40,7 +40,8 @@ Only rungs 1 and 2 are required; 2 may itself be one commit. Rungs 3 and 4 appea
    - Completion: the user has explicitly approved a concrete plan. Do not touch history before this.
 
 4. **Reshape and verify.**
-   - Record the current `HEAD^{tree}` before changing history.
+   - Record the current `HEAD^{tree}` and `HEAD` hash (`OLD_HEAD`) before changing history. Do NOT create a backup branch: the reflog already keeps `OLD_HEAD`, and `git diff OLD_HEAD HEAD` is the tree check. Make a named backup only when the user asks for one, and then make exactly one, never one per step.
+   - Rewrite on the branch itself, or on one temporary branch that you delete at the end. A rebase moves every other branch inside the range when `rebase.updateRefs` is on, so do not leave extra refs there.
    - Reshape the history to match the approved plan (interactive rebase to reorder/squash/reword, or soft-reset the branch to `<base>` and rebuild the commits from staged hunks when fusions cut across the original boundaries).
    - Always commit with `--no-verify` to bypass pre-commit hooks. This step reshapes history, not the job the hooks check.
    - **Refresh every reshaped commit message.** For each commit that was fused, split, or had hunks moved in or out, re-read its final `git show --stat` and rewrite the subject and body to match what it now contains — never inherit a stale subject from one of the originals. Drop mentions of content that moved out; add mentions of content that moved in (extra packages, ADRs, docs, tests).
@@ -50,4 +51,5 @@ Only rungs 1 and 2 are required; 2 may itself be one commit. Rungs 3 and 4 appea
 5. **Report.**
    - Give a short recap of the new stack.
    - Name any hiccup or attention point (a conflict resolved, a hunk that was hard to place, an intentional drop).
+   - Give `OLD_HEAD` so the user can undo with `git reset --hard <OLD_HEAD>` (the reflog keeps it).
    - Remind the user that pushing is their call.
