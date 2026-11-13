@@ -29,6 +29,7 @@ import { loadTailInputs } from "./tail-data.ts";
 import { buildTail, formatInterventions, formatTail, interventions, sessionTail } from "./tail.ts";
 import { loadModelInputs } from "./models-data.ts";
 import { buildReport, formatReport, keywordSample } from "./models.ts";
+import { formatNudge, loadNudgeLog } from "./nudge-replay.ts";
 import { runCompare, runRefresh, runSample, runScore } from "./validate.ts";
 
 const [cmd = "help"] = process.argv.slice(2);
@@ -344,9 +345,10 @@ const commands: Record<string, () => Promise<void>> = {
   images,
   tail,
   models,
+  nudge: async () => console.log(formatNudge(loadNudgeLog())),
 };
 if (commands[cmd]) await commands[cmd]();
 else
   console.log(
-    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|rereads|profile|cost|validate|images|tail|models>",
+    "usage: bun analytics/cli.ts <labels|errors|context|polling|loops|reads|rereads|profile|cost|validate|images|tail|models|nudge>",
   );
