@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { detectPolling } from "./polling.ts";
-import { ProcessRegistry, looksLongLived } from "./registry.ts";
+import { ProcessRegistry, looksLongLived, mayStartBackground } from "./registry.ts";
 import { chooseRoute, registerWait, type T3Ports } from "./route.ts";
 import { parseWaitSpec } from "./spec.ts";
 
@@ -29,11 +29,27 @@ test("a long timer uses T3 schedule_task at now + delay", async () => {
   expect(calls).toEqual(["schedule 1970-01-01T00:02:00.000Z"]);
 });
 
-test("a short timer stays local because T3 schedules need at least a minute", () => {
-  expect(chooseRoute({ event: "time", afterMs: 30_000 })).toEqual({
-    via: "local-runner",
-    poller: "timer",
-  });
+test("the router splits timers at 60 s: 59_999 ms local, 60_000 ms T3", () => {
+  expect(chooseRoute({ event: "time", afterMs: 59_999 }).via).toBe("local-runner");
+  expect(chooseRoute({ event: "time", afterMs: 60_000 }).via).toBe("t3.schedule_task");
+});
+
+test("registerWait sends no schedule for a local timer", async () => {
+  const { calls, t3 } = fakeT3();
+  await registerWait({ event: "time", afterMs: 59_999 }, t3, () => 0);
+  expect(calls).toEqual([]);
+});
+
+test("registerWait computes runAt from now() + afterMs", async () => {
+  const { calls, t3 } = fakeT3();
+  await registerWait({ event: "time", afterMs: 90_000 }, t3, () =>
+    Date.UTC(2026, 10, 12, 10, 0, 0),
+  );
+  expect(calls).toEqual(["schedule 2026-11-12T10:01:30.000Z"]);
+});
+
+test("pr.merged is not a wait event", () => {
+  expect(() => parseWaitSpec({ event: "pr.merged", pr: PR })).toThrow("unknown event");
 });
 
 test("process and http waits need the local runner", () => {
@@ -59,6 +75,16 @@ test("detects hand-made polling but not normal commands", () => {
   expect(detectPolling("gh pr view 7 --json reviews")).toBeUndefined();
   expect(detectPolling("sleep 1200")).toBe("long-sleep");
   expect(detectPolling("sleep 15; kubectl get pods")).toBeUndefined();
+  expect(detectPolling("sleep 19")).toBeUndefined();
+  expect(detectPolling("sleep 20; kubectl get pods")).toBe("long-sleep");
+  expect(detectPolling("sleep 29")).toBe("long-sleep");
+  expect(detectPolling("sleep 25 && echo ok")).toBe("long-sleep");
+  expect(detectPolling("timeout 120 sleep 90")).toBe("long-sleep");
+  expect(detectPolling("timeout -s KILL 120 sleep 90")).toBe("long-sleep");
+  expect(detectPolling("bash -c 'sleep 45; echo done'")).toBe("long-sleep");
+  expect(detectPolling('sh -c "sleep 300"')).toBe("long-sleep");
+  expect(detectPolling("timeout 5 sleep 3")).toBeUndefined();
+  expect(detectPolling("bash -c 'sleep 5'")).toBeUndefined();
   expect(
     detectPolling("cat > f <<'E'\nwhile true; do gh pr view; sleep 30; done\nE"),
   ).toBeUndefined();
@@ -77,4 +103,15 @@ test("registry reports live processes only", () => {
   expect(r.endOfTurnNote(600_000)).toBe("");
   expect(looksLongLived("pnpm dev")).toBe(true);
   expect(looksLongLived("git status")).toBe(false);
+});
+
+test("background markers: ' &', nohup, setsid, disown, long-lived commands", () => {
+  expect(mayStartBackground("pnpm x > log 2>&1 &")).toBe(true);
+  expect(mayStartBackground("nohup ./run")).toBe(true);
+  expect(mayStartBackground("setsid foo")).toBe(true);
+  expect(mayStartBackground("foo; disown")).toBe(true);
+  expect(mayStartBackground("pnpm dev")).toBe(true);
+  expect(mayStartBackground("ls -la && git status")).toBe(false);
+  expect(mayStartBackground("echo a 2>&1 | head")).toBe(false);
+  expect(mayStartBackground("cmd &> out.log")).toBe(false);
 });

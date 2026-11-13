@@ -1,11 +1,14 @@
 /** What an agent can ask to wait for. The agent says WHAT, never HOW. */
 export type WaitSpec =
-  | { event: "pr.review" | "pr.checks" | "pr.merged"; pr: string }
+  | { event: "pr.review" | "pr.checks"; pr: string }
   | { event: "time"; afterMs: number }
-  | { event: "process.exit"; label: string; pid: number }
+  | { event: "process.exit"; label: string; pid?: number; match?: string }
   | { event: "http.ready"; url: string };
 
 export type WaitEventName = WaitSpec["event"];
+
+const stringOr = (v: unknown, fallback: string) =>
+  typeof v === "string" && v !== "" ? v : fallback;
 
 export function parseWaitSpec(input: unknown): WaitSpec {
   if (typeof input !== "object" || input === null) throw new Error("wait spec must be an object");
@@ -15,12 +18,12 @@ export function parseWaitSpec(input: unknown): WaitSpec {
     afterMs?: unknown;
     pid?: unknown;
     label?: unknown;
+    match?: unknown;
     url?: unknown;
   };
   switch (o.event) {
     case "pr.review":
     case "pr.checks":
-    case "pr.merged":
       if (
         typeof o.pr !== "string" ||
         !/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(o.pr)
@@ -32,9 +35,15 @@ export function parseWaitSpec(input: unknown): WaitSpec {
       if (typeof o.afterMs !== "number" || !(o.afterMs > 0)) throw new Error("afterMs must be > 0");
       return { event: "time", afterMs: o.afterMs };
     case "process.exit":
-      if (typeof o.pid !== "number" || typeof o.label !== "string")
-        throw new Error("pid and label are required");
-      return { event: "process.exit", label: o.label, pid: o.pid };
+      if (typeof o.pid === "number" && typeof o.match === "string")
+        throw new Error("give pid or match, not both");
+      if (typeof o.pid === "number") {
+        return { event: "process.exit", label: stringOr(o.label, `pid ${o.pid}`), pid: o.pid };
+      }
+      if (typeof o.match === "string" && o.match.trim() !== "") {
+        return { event: "process.exit", label: stringOr(o.label, o.match), match: o.match };
+      }
+      throw new Error("process.exit needs pid or match");
     case "http.ready":
       if (typeof o.url !== "string" || !/^https?:\/\//.test(o.url))
         throw new Error("url must be http(s)");

@@ -14,6 +14,11 @@ export function looksLongLived(command: string): boolean {
   return LONG_LIVED.test(command);
 }
 
+/** True when a bash command may leave a process behind after it returns. Triggers the leftover scan. */
+export function mayStartBackground(command: string): boolean {
+  return /\s&(?![&>])|\bnohup\b|\bsetsid\b|\bdisown\b/.test(command) || looksLongLived(command);
+}
+
 export class ProcessRegistry {
   private readonly items = new Map<number, TrackedProcess>();
 

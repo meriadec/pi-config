@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { httpUp } from "./probe.ts";
 import {
   LocalRunner,
   MAX_LOCAL_WAITS,
@@ -7,7 +8,13 @@ import {
   type RunnerDeps,
 } from "./runner.ts";
 
-function harness(opts: { alive?: Set<number>; httpUp?: () => boolean } = {}) {
+function harness(
+  opts: {
+    alive?: Set<number>;
+    httpUp?: () => boolean;
+    probe?: (url: string) => Promise<boolean>;
+  } = {},
+) {
   let now = 0;
   const alive = opts.alive ?? new Set<number>();
   const fired: string[] = [];
@@ -15,7 +22,7 @@ function harness(opts: { alive?: Set<number>; httpUp?: () => boolean } = {}) {
   const deps: RunnerDeps = {
     now: () => now,
     isAlive: (pid) => alive.has(pid),
-    probeHttp: async () => opts.httpUp?.() ?? false,
+    probeHttp: opts.probe ?? (async () => opts.httpUp?.() ?? false),
     setInterval: () => ++timers,
     clearInterval: () => void timers--,
     fire: (_w: LocalWait, message: string) => void fired.push(message),
@@ -94,4 +101,47 @@ test("refuses more waits than the cap", () => {
   const h = harness();
   for (let i = 0; i < MAX_LOCAL_WAITS; i++) h.runner.add({ event: "time", afterMs: 1000 });
   expect(() => h.runner.add({ event: "time", afterMs: 1000 })).toThrow("too many active waits");
+});
+
+test("a check that ends after stopAll drops its result and never fires", async () => {
+  let release: (v: boolean) => void = () => {};
+  const h = harness({ probe: () => new Promise<boolean>((res) => (release = res)) });
+  h.runner.add({ event: "http.ready", url: "http://x" });
+  const pending = h.runner.tick();
+  h.runner.stopAll();
+  release(true);
+  await pending;
+  expect(h.fired).toEqual([]);
+});
+
+test("a closed runner refuses new waits", () => {
+  const h = harness();
+  h.runner.stopAll();
+  expect(() => h.runner.add({ event: "time", afterMs: 1000 })).toThrow("session has ended");
+});
+
+test("http wait on a real server ignores 5xx and fires on the first answer below 500", async () => {
+  let status = 503;
+  const server = Bun.serve({ port: 0, fetch: () => new Response("x", { status }) });
+  try {
+    const h = harness({ probe: httpUp });
+    h.runner.add({ event: "http.ready", url: `http://127.0.0.1:${server.port}/` });
+    await h.runner.tick();
+    expect(h.fired).toEqual([]);
+    status = 404;
+    await h.runner.tick();
+    expect(h.fired).toHaveLength(1);
+    expect(h.fired[0]).toContain("answers");
+    await h.runner.tick();
+    expect(h.fired).toHaveLength(1);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("httpUp is false when nothing listens", async () => {
+  const server = Bun.serve({ port: 0, fetch: () => new Response("x") });
+  const url = `http://127.0.0.1:${server.port}/`;
+  await server.stop(true);
+  expect(await httpUp(url)).toBe(false);
 });

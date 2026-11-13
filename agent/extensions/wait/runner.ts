@@ -1,10 +1,14 @@
-import type { WaitSpec } from "./spec.ts";
+/** A spec the runner can poll. `process.exit` is already resolved to a pid. */
+export type LocalSpec =
+  | { event: "time"; afterMs: number }
+  | { event: "process.exit"; label: string; pid: number }
+  | { event: "http.ready"; url: string };
 
 /** Local waits: process exit, HTTP ready, short timers. All I/O is injected, so tests use fake time. */
 export interface RunnerDeps {
   now(): number;
   isAlive(pid: number): boolean;
-  /** True when the URL answers with a non-5xx status. Must not throw. */
+  /** True when the URL answers once with a status below 500. Must not throw. */
   probeHttp(url: string): Promise<boolean>;
   setInterval(fn: () => void, ms: number): unknown;
   clearInterval(handle: unknown): void;
@@ -13,7 +17,7 @@ export interface RunnerDeps {
 
 export interface LocalWait {
   id: string;
-  spec: Extract<WaitSpec, { event: "time" | "process.exit" | "http.ready" }>;
+  spec: LocalSpec;
   createdAt: number;
   deadline: number;
   note?: string;
@@ -31,6 +35,8 @@ export class LocalRunner {
   private readonly busy = new Set<string>();
   private handle: unknown;
   private seq = 0;
+  /** Set by `stopAll`. A closed runner never fires and never adds. */
+  private closed = false;
 
   private readonly deps: RunnerDeps;
 
@@ -38,7 +44,8 @@ export class LocalRunner {
     this.deps = deps;
   }
 
-  add(spec: LocalWait["spec"], opts: { note?: string; timeoutMs?: number } = {}): LocalWait {
+  add(spec: LocalSpec, opts: { note?: string; timeoutMs?: number } = {}): LocalWait {
+    if (this.closed) throw new Error("the session has ended; local waits are closed");
     if (this.waits.size >= MAX_LOCAL_WAITS) {
       throw new Error(
         `too many active waits (max ${MAX_LOCAL_WAITS}); cancel one with wait_cancel`,
@@ -67,7 +74,9 @@ export class LocalRunner {
     return [...this.waits.values()];
   }
 
+  /** End of session: drop all waits. A check that is still running drops its result. */
   stopAll(): void {
+    this.closed = true;
     this.waits.clear();
     this.stopTimerIfIdle();
   }
@@ -76,10 +85,12 @@ export class LocalRunner {
   async tick(): Promise<void> {
     const now = this.deps.now();
     for (const wait of this.list()) {
+      if (this.closed) return;
       if (this.busy.has(wait.id)) continue;
       this.busy.add(wait.id);
       try {
         const message = await this.check(wait, now);
+        if (this.closed) return;
         if (message !== undefined && this.waits.delete(wait.id)) this.deps.fire(wait, message);
       } finally {
         this.busy.delete(wait.id);

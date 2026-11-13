@@ -9,11 +9,14 @@ export interface T3Ports {
 }
 
 export type Route =
-  | { via: "t3.watch_pull_request"; note?: string }
+  | { via: "t3.watch_pull_request" }
   | { via: "t3.schedule_task" }
   | { via: "local-runner"; poller: "pid" | "http" | "timer" };
 
-/** T3 `schedule_task` needs a future time; very short waits stay local. */
+/**
+ * Timers at or above this go to T3 on purpose: T3 keeps them when Pi restarts.
+ * T3 accepts shorter `once` runs (tested at 25 s), so this is a choice, not a limit.
+ */
 export const MIN_T3_SCHEDULE_MS = 60_000;
 
 export function chooseRoute(spec: WaitSpec): Route {
@@ -21,11 +24,6 @@ export function chooseRoute(spec: WaitSpec): Route {
     case "pr.review":
     case "pr.checks":
       return { via: "t3.watch_pull_request" };
-    case "pr.merged":
-      return {
-        via: "t3.watch_pull_request",
-        note: "T3 does not wake on merge; linked PRs settle the thread on merge",
-      };
     case "time":
       return spec.afterMs >= MIN_T3_SCHEDULE_MS
         ? { via: "t3.schedule_task" }

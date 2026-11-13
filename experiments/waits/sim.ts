@@ -1,15 +1,24 @@
 #!/usr/bin/env bun
-/** Mock comparison of wait strategies. Uses the real router, guard and registry with a fake T3. */
-import { detectPolling } from "../../agent/extensions/wait/polling.ts";
+/**
+ * Mock comparison of wait strategies. It runs the real `executeWait` (the body of the `wait_for`
+ * tool), the real guard and the real local runner. Only T3 is fake: `executeTool` records calls.
+ */
+import {
+  executeWait,
+  RemoteWaits,
+  type ToolText,
+  type WaitEnv,
+} from "../../agent/extensions/wait/execute.ts";
+import { detectPolling, pollingHint } from "../../agent/extensions/wait/polling.ts";
 import { ProcessRegistry } from "../../agent/extensions/wait/registry.ts";
-import { registerWait, type T3Ports } from "../../agent/extensions/wait/route.ts";
-import type { WaitSpec } from "../../agent/extensions/wait/spec.ts";
+import { LocalRunner } from "../../agent/extensions/wait/runner.ts";
 
 const PR = "https://github.com/o/r/pull/7";
 
 interface Scenario {
   name: string;
-  spec: WaitSpec;
+  /** The arguments the model passes to `wait_for`. */
+  spec: Record<string, unknown>;
   /** What a model does today without help. */
   naiveCommand: string;
 }
@@ -46,16 +55,54 @@ interface Outcome {
   agentCalls: number;
   t3Visible: string;
   weakness: string;
+  /** Text the model gets back from `wait_for`, when it was called. */
+  toolText?: string;
 }
 
-function fakeT3() {
-  const log: string[] = [];
-  const t3: T3Ports = {
-    watchPullRequest: async (u) => void log.push(`PR watch ${u.split("/").slice(-2).join("#")}`),
-    scheduleOnce: async () => void log.push("scheduled task"),
-    sendToThread: async () => void log.push("thread message"),
+const NOW = Date.UTC(2026, 10, 12, 10, 0, 0);
+
+/** Real tool logic, fake T3: `executeTool` records the call and answers like T3 does. */
+function simEnv() {
+  const calls: string[] = [];
+  const runner = new LocalRunner({
+    now: () => NOW,
+    isAlive: () => true,
+    probeHttp: async () => false,
+    setInterval: () => 1,
+    clearInterval: () => {},
+    fire: () => {},
+  });
+  const env: WaitEnv = {
+    tools: [
+      "watch_pull_request",
+      "unwatch_pull_request",
+      "schedule_task",
+      "delete_scheduled_task",
+    ].map((n) => ({ name: `mcp__t3-code__${n}` })),
+    executeTool: async (name, args) => {
+      calls.push(`${name.replace("mcp__t3-code__", "")} ${JSON.stringify(args)}`);
+      return {
+        isError: false,
+        result: {
+          content: [{ type: "text", text: "ok" }],
+          structuredContent: { scheduledTaskId: "scheduled-task:sim" },
+        },
+      };
+    },
+    runner: () => runner,
+    remote: new RemoteWaits(),
+    now: () => NOW,
+    findTagged: async () => [],
   };
-  return { log, t3 };
+  return { env, calls, runner };
+}
+
+async function callWaitFor(
+  s: Scenario,
+): Promise<{ res: ToolText; calls: string[]; local: boolean }> {
+  const { env, calls, runner } = simEnv();
+  const res = await executeWait(s.spec, env);
+  return { res, calls, local: runner.list().length > 0 };
 }
 
 /** Today: the model improvises with bash. */
@@ -67,38 +114,31 @@ function baseline(): Outcome {
   };
 }
 
-/** Option A: guard rejects the polling command and names the primitive. */
+/** Option A: the guard only adds a hint to the bash result (soft: it never blocks). */
 async function optionA(s: Scenario): Promise<Outcome> {
-  const guarded = detectPolling(s.naiveCommand) !== undefined;
-  const { log, t3 } = fakeT3();
-  const covered = s.spec.event.startsWith("pr.") || s.spec.event === "time";
-  if (!guarded) return { ...baseline(), weakness: `guard missed: ${s.naiveCommand}` };
-  if (covered) {
-    await registerWait(s.spec, t3, () => 0);
-    return {
-      agentCalls: 2,
-      t3Visible: log.join(", "),
-      weakness: "one wasted call; model must pick the right primitive",
-    };
-  }
+  const kind = detectPolling(s.naiveCommand);
+  if (kind === undefined) return { ...baseline(), weakness: `guard missed: ${s.naiveCommand}` };
+  const b = await optionB(s);
   return {
     agentCalls: 2,
-    t3Visible: "nothing",
-    weakness: "no primitive exists: model falls back to bash",
+    t3Visible: b.t3Visible,
+    weakness:
+      "the bash call runs first (the hint comes after it); the model must then call wait_for",
   };
 }
 
 /** Option B: one wait_for tool routes by event. */
 async function optionB(s: Scenario): Promise<Outcome> {
-  const { log, t3 } = fakeT3();
-  const route = await registerWait(s.spec, t3, () => 0);
-  const local = route.via === "local-runner";
+  const { res, calls, local } = await callWaitFor(s);
   return {
     agentCalls: 1,
-    t3Visible: local ? "thread message when event fires (local runner)" : log.join(", "),
+    t3Visible: local
+      ? "thread message when event fires (local runner)"
+      : calls.map((c) => c.split(" ")[0]).join(", "),
     weakness: local
-      ? "needs local runner; no native T3 status item"
+      ? "local: ends with the session; no native T3 status item"
       : "none beyond what T3 shows today",
+    toolText: res.content[0].text,
   };
 }
 
@@ -112,11 +152,12 @@ function optionC(): string {
 const rows: string[] = [
   "# Wait strategies: mock comparison",
   "",
-  "Generated by `bun experiments/waits/sim.ts`. Agent calls = tool calls the model makes. No token numbers: they would be invented.",
+  "Generated by `bun experiments/waits/sim.ts`. Real code: `executeWait` (the `wait_for` logic), the router, the guard and the local runner. Fake: T3 (`executeTool` records calls). Agent calls = tool calls the model makes. No token numbers: they would be invented.",
   "",
   "| Scenario | Strategy | Agent calls | Visible in T3 | Weakness |",
   "|---|---|---|---|---|",
 ];
+const outputs: string[] = [];
 for (const s of scenarios) {
   const b = baseline();
   const a = await optionA(s);
@@ -124,14 +165,46 @@ for (const s of scenarios) {
   rows.push(`| ${s.name} | today | ${b.agentCalls} | ${b.t3Visible} | ${b.weakness} |`);
   rows.push(`| | A guard | ${a.agentCalls} | ${a.t3Visible} | ${a.weakness} |`);
   rows.push(`| | B wait_for | ${bb.agentCalls} | ${bb.t3Visible} | ${bb.weakness} |`);
+  const { calls } = await callWaitFor(s);
+  const kind = detectPolling(s.naiveCommand);
+  outputs.push(
+    `### ${s.name}`,
+    "",
+    `- Naive command: \`${s.naiveCommand}\``,
+    `- Guard: ${kind === undefined ? "no hint" : `\`${kind}\`: ${pollingHint(kind)}`}`,
+    `- \`wait_for\` args: \`${JSON.stringify(s.spec)}\``,
+    `- T3 calls: ${calls.length ? calls.map((c) => `\`${c}\``).join("; ") : "none"}`,
+    `- Result text: ${bb.toolText}`,
+    "",
+  );
 }
 rows.push(
   "",
+  "## Actual outputs",
+  "",
+  ...outputs,
   "## Option C: end-of-turn note (independent of A and B)",
+  "",
+  "The real note is built by `describeLeftovers` from a scan of tagged processes, and only after a bash command that may start a background process. This block is the older registry note, shown for the wording only.",
   "",
   "```",
   optionC(),
   "```",
+  "",
+  "## Live evidence (real T3 thread, 2026-11-12)",
+  "",
+  '- `process.exit` local wake: the runner called `pi.sendUserMessage(..., { deliverAs: "followUp" })`. T3 started a run and showed a "Background activity updated" notification.',
+  "- `schedule_task` with type `once` at +90 s fired about 5 s after `runAt`.",
+  '- `watch_pull_request` woke the thread with "#N: checks passed, new comments".',
+  "- Tested 2026-11-13: `schedule_task` accepts a `once` run only 25 s ahead. Timers of 60 s or more go to T3 on purpose: T3 keeps them when Pi restarts.",
+  "- T3 does not wake on PR merge. `watch_pull_request` has no filter: it wakes on every event.",
+  "",
+  "## Not met",
+  "",
+  "- Local waits have no native T3 status item before they fire. T3 does not know about them (see `docs/design/t3-waiting-list.md`).",
+  "- The strategy comparison counts calls only. It has no web or mobile evidence.",
+  "- `t3_thread_send` is not used: Pi's own follow-up message wakes the session. `t3_background_wait` is Claude-only and not usable here.",
+  "- Local waits are not saved. They end when the session ends or reloads.",
   "",
 );
 const out = rows.join("\n");
