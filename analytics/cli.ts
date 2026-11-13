@@ -11,7 +11,7 @@ import {
   retryLoops,
 } from "./reports.ts";
 import { detectPolling } from "../agent/extensions/wait/polling.ts";
-import { buildProfile, formatProfile, type SessionProfileInput } from "./profile.ts";
+import { buildProfile, formatProfile, labelFor, type SessionProfileInput } from "./profile.ts";
 import { openSessions, rows, SESSIONS_GLOB } from "./db.ts";
 import {
   findRereads,
@@ -226,7 +226,7 @@ async function profile() {
     errs.set(r.file, x);
   }
   const input: SessionProfileInput[] = sessions.map((s) => ({
-    label: cache.get(s.file)?.label ?? "UNLABELLED",
+    label: labelFor(cache, s.file),
     origin: originOf(s),
     assistantTurns: turns.get(s.file) ?? 0,
     toolCalls: calls.get(s.file) ?? 0,

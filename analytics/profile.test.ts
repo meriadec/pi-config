@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+import { CACHE_FILE, LEGACY_CACHE_FILE } from "./llm-label.ts";
 import { expect, test } from "bun:test";
 import {
   buildProfile,
   formatProfile,
+  labelFor,
   median,
   percentile,
   type SessionProfileInput,
@@ -85,4 +88,30 @@ test("sessions with unpriced tokens are counted and marked, not treated as free"
   expect(rows[0]!.unpricedSessions).toBe(1);
   expect(formatProfile(rows)).toContain("5*");
   expect(formatProfile(buildProfile([s({ cost: 5 })]))).not.toContain("5*");
+});
+
+test("profile labels come from the label source given, not an old one", () => {
+  const current = new Map([["f1", { label: "diagnose" }]]);
+  const stale = new Map([["f1", { label: "implement" }]]);
+  const rows = (src: typeof current) =>
+    buildProfile([s({ label: labelFor(src, "f1"), cost: 2 }), s({ label: labelFor(src, "f2") })]);
+  expect(
+    rows(current)
+      .map((r) => r.label)
+      .sort(),
+  ).toEqual(["UNLABELLED", "diagnose"]);
+  expect(
+    rows(stale)
+      .map((r) => r.label)
+      .sort(),
+  ).toEqual(["UNLABELLED", "implement"]);
+});
+
+test("analytics commands read the current label cache, never the legacy one", () => {
+  expect(CACHE_FILE.endsWith("llm-labels-v2.jsonl")).toBe(true);
+  expect(CACHE_FILE).not.toBe(LEGACY_CACHE_FILE);
+  const cli = readFileSync(new URL("./cli.ts", import.meta.url), "utf8");
+  expect(cli).not.toContain("loadLegacyCache");
+  expect(cli).not.toContain("labelByRules");
+  expect(cli).not.toContain("LEGACY_CACHE_FILE");
 });

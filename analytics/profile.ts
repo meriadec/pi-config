@@ -141,3 +141,9 @@ export function formatProfile(rows: ProfileRow[]): string {
     c.map((v, i) => (i < 2 ? v.padEnd(w[i]!) : v.padStart(w[i]!))).join("  ");
   return [line(head), ...body.map(line)].join("\n");
 }
+
+export const UNLABELLED = "UNLABELLED";
+
+/** Label for one session from the label source given. The caller picks the source (current LLM cache). */
+export const labelFor = (labels: ReadonlyMap<string, { label: string }>, file: string) =>
+  labels.get(file)?.label ?? UNLABELLED;
