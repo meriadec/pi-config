@@ -52,6 +52,7 @@ export default function (pi: ExtensionAPI) {
       clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
       fire: (_w: LocalWait, message: string) => {
         if (shutDown) return;
+        refreshStatus();
         pi.sendUserMessage(`[wait fired] ${message}`, { deliverAs: "followUp" });
       },
     }));
@@ -68,28 +69,18 @@ export default function (pi: ExtensionAPI) {
     findTagged: () => findTagged(sessionId, 0),
   });
 
-  /** Footer feedback: redrawn every second while a wait is active. Stopped at session end. */
+  /**
+   * Footer feedback. In T3 this becomes the "Pi · ..." banner above the composer (web and mobile).
+   * The text is static, so it is set only when the waits change, never on a clock.
+   */
   let ui: { setStatus(key: string, text: string | undefined): void } | undefined;
-  let statusTimer: ReturnType<typeof setInterval> | undefined;
   const refreshStatus = () => {
-    const now = Date.now();
-    const line = shutDown
-      ? undefined
-      : statusLine(
-          runner?.list() ?? [],
-          remote.list(now).filter((r) => r.kind === "pr").length,
-          now,
-        );
-    ui?.setStatus("wait", line);
-    if (line === undefined && statusTimer !== undefined) {
-      clearInterval(statusTimer);
-      statusTimer = undefined;
-    }
+    const prWatches = remote.list(Date.now()).filter((r) => r.kind === "pr").length;
+    ui?.setStatus("wait", shutDown ? undefined : statusLine(runner?.list() ?? [], prWatches));
   };
   const trackStatus = (ctx: { hasUI: boolean; ui: NonNullable<typeof ui> }) => {
     if (!ctx.hasUI) return;
     ui = ctx.ui;
-    statusTimer ??= setInterval(refreshStatus, 1000);
     refreshStatus();
   };
 
