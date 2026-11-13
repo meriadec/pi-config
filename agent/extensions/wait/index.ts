@@ -8,6 +8,7 @@ import { httpUp, isAlive } from "./probe.ts";
 import { LeftoverWatch } from "./leftovers.ts";
 import { findTagged, SESSION_TAG_ENV } from "./procscan.ts";
 import { LocalRunner, type LocalWait } from "./runner.ts";
+import { statusLine } from "./status.ts";
 
 const LEFTOVER_MIN_AGE_S = 30;
 
@@ -67,6 +68,31 @@ export default function (pi: ExtensionAPI) {
     findTagged: () => findTagged(sessionId, 0),
   });
 
+  /** Footer feedback: redrawn every second while a wait is active. Stopped at session end. */
+  let ui: { setStatus(key: string, text: string | undefined): void } | undefined;
+  let statusTimer: ReturnType<typeof setInterval> | undefined;
+  const refreshStatus = () => {
+    const now = Date.now();
+    const line = shutDown
+      ? undefined
+      : statusLine(
+          runner?.list() ?? [],
+          remote.list(now).filter((r) => r.kind === "pr").length,
+          now,
+        );
+    ui?.setStatus("wait", line);
+    if (line === undefined && statusTimer !== undefined) {
+      clearInterval(statusTimer);
+      statusTimer = undefined;
+    }
+  };
+  const trackStatus = (ctx: { hasUI: boolean; ui: NonNullable<typeof ui> }) => {
+    if (!ctx.hasUI) return;
+    ui = ctx.ui;
+    statusTimer ??= setInterval(refreshStatus, 1000);
+    refreshStatus();
+  };
+
   pi.on("session_start", () => {
     shutDown = false;
     process.env[SESSION_TAG_ENV] = sessionId;
@@ -74,6 +100,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     shutDown = true;
+    refreshStatus();
     runner?.stopAll();
     runner = undefined;
     if (process.env[SESSION_TAG_ENV] === sessionId) delete process.env[SESSION_TAG_ENV];
@@ -125,7 +152,9 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: params,
     async execute(_id, p, _signal, _onUpdate, ctx) {
-      return executeWait(p, envFor(ctx));
+      const res = await executeWait(p, envFor(ctx));
+      trackStatus(ctx);
+      return res;
     },
   });
 
@@ -147,7 +176,9 @@ export default function (pi: ExtensionAPI) {
       "Cancel a wait by id (from wait_list): a local wait, or a PR watch (unwatch_pull_request).",
     parameters: Type.Object({ id: Type.String() }),
     async execute(_id, p, _signal, _onUpdate, ctx) {
-      return cancelWait(p.id, envFor(ctx));
+      const res = await cancelWait(p.id, envFor(ctx));
+      trackStatus(ctx);
+      return res;
     },
   });
 }
