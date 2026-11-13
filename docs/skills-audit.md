@@ -193,4 +193,18 @@ description: >-
 ---
 ```
 
-Finding (2026-11-13): Pi also discovers skills in `~/.agents/skills` by itself, so removing a link from `agent/skills/` does NOT remove the skill from the system prompt. To hide a shared skill, add an exclusion to the `skills` array in `agent/settings.json`: `"-/home/mpillet/.agents/skills/<name>"` (exact path). Done now for `slidev` and `resolving-merge-conflicts`; checked in a real Pi session. The other retired names (`to-prd`, `to-issues`, `decision-mapping`) did not show in the prompt before this change, so they need no exclusion.
+Update (2026-11-13, later): the user does not want exclusions in `agent/settings.json`, so they were removed again. Pi also discovers skills in `~/.agents/skills` by itself, so a removed link in `agent/skills/` does not hide a skill from the system prompt. The way used: `disable-model-invocation: true` in the frontmatter of the shared source (not a git repo). It keeps `/skill:name` and removes the description from the prompt. Done for `slidev` and `resolving-merge-conflicts`, checked in a real Pi session. Original frontmatter, to restore:
+
+```yaml
+---
+name: slidev
+description: Create and present web-based slidedecks for developers using Slidev with Markdown, Vue components, code highlighting, animations, and interactive features. Use when building technical presentations, conference talks, code walkthroughs, teaching materials, or developer decks.
+---
+```
+
+```yaml
+---
+name: resolving-merge-conflicts
+description: "Use when you need to resolve an in-progress git merge/rebase conflict."
+---
+```

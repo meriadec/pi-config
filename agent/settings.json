@@ -13,9 +13,5 @@
   ],
   "packages": [
     "npm:pi-hashline-edit"
-  ],
-  "skills": [
-    "-/home/mpillet/.agents/skills/slidev",
-    "-/home/mpillet/.agents/skills/resolving-merge-conflicts"
   ]
 }
