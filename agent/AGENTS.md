@@ -11,3 +11,7 @@
 ## Reporting annoying things
 
 When a command gives an unexpected error, or an instruction contradicts an earlier one, append one line to ~/AGENT_LOGGED_PROBLEMS.md. Format: `date | tool | symptom`. Log only problems worth the user's attention.
+
+## Test env
+
+If `.scratch/<NAME>/env.md` exists for the work (NAME is a ticket or any topic), read it before you test. If you need a Vault env and no recipe exists, you may create one from the `vault-env` skill file `recipe-template.md`. A recipe is optional. Write the instance name, expiry and versions back into its State section.

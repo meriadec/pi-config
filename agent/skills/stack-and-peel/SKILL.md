@@ -15,7 +15,7 @@ Ask the user once, before the first step. Done when each item has an answer:
 - Merge type (default: squash and merge).
 - Base branch (default: `main`).
 - Gates: default is to ask before each push, PR creation, thread reply and Copilot request. The phrase "go alone" removes the gates for the rest of the run.
-- Checkout: push by sha by default. Use a worktree only when the user wants to run checks on the peel. The user names its folder.
+- Checkout: always use a worktree for the peel and run checks on it. Choose the folder name yourself (for example `../<repo>-peel-<topic>`). Do not ask the user.
 
 ## Loop
 
