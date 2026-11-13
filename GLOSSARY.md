@@ -15,3 +15,7 @@ _Avoid_: prompt, chat message, question text
 **Semantic Grillade State**:
 The durable interview state persisted to the Pi session, including active unanswered question, submitted answers, pending documentation proposals, and final actions.
 _Avoid_: UI state, draft state, scroll state
+
+**Supervisor**:
+A dedicated screen to triage GitHub notifications without leaving Pi.
+_Avoid_: GitHub Inbox, notification dashboard
