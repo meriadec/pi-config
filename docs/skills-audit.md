@@ -210,3 +210,5 @@ description: "Use when you need to resolve an in-progress git merge/rebase confl
 ```
 
 Deleted (2026-11-13, user decision): `~/.agents/skills/resolving-merge-conflicts`. It was not in a git repository, so it cannot be restored from git. `resolve-conflicts` replaces it.
+
+Deleted (2026-11-13, user decision): `~/.agents/skills/to-prd`, `to-issues` and `decision-mapping`. They are replaced by `to-spec`, `to-tickets` and `wayfinder`. No other shared skill referenced them. The folder is not in git, so they cannot be restored from git. 40 skills remain.
