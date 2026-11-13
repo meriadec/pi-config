@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { detectPolling } from "./polling.ts";
+import { detectPolling, pollingHint } from "./polling.ts";
 import { ProcessRegistry, looksLongLived, mayStartBackground } from "./registry.ts";
 import { chooseRoute, registerWait, type T3Ports } from "./route.ts";
 import { parseWaitSpec } from "./spec.ts";
@@ -114,4 +114,29 @@ test("background markers: ' &', nohup, setsid, disown, long-lived commands", () 
   expect(mayStartBackground("ls -la && git status")).toBe(false);
   expect(mayStartBackground("echo a 2>&1 | head")).toBe(false);
   expect(mayStartBackground("cmd &> out.log")).toBe(false);
+});
+
+test("a fixed pause after a background start gets the startup hint", () => {
+  expect(detectPolling("(pnpm dev > /tmp/d.log 2>&1 &); sleep 25; curl -s localhost:3000")).toBe(
+    "startup-pause",
+  );
+  expect(detectPolling("nohup node server.js & sleep 30; curl localhost:3000")).toBe(
+    "startup-pause",
+  );
+  expect(detectPolling("sleep 25; kubectl get pods")).toBe("long-sleep");
+  expect(pollingHint("startup-pause")).toContain("http.ready");
+  expect(pollingHint("startup-pause")).toContain("timeout 60 bash -c");
+});
+
+test("a bounded loop with short sleeps is a normal readiness check, an unbounded one is not", () => {
+  expect(
+    detectPolling("timeout 60 bash -c 'until curl -sf localhost:3000; do sleep 1; done'"),
+  ).toBeUndefined();
+  expect(detectPolling("until curl -sf localhost:3000; do sleep 1; done")).toBe("sleep-loop");
+  expect(
+    detectPolling("timeout 600 bash -c 'until curl -sf localhost:3000; do sleep 30; done'"),
+  ).toBe("sleep-loop");
+  expect(detectPolling("timeout 300 bash -c 'while true; do gh pr view 7; sleep 2; done'")).toBe(
+    "gh-poll",
+  );
 });
